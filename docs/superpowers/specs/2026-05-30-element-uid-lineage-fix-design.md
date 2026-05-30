@@ -5,9 +5,9 @@
 **Status:** DESIGN rev 2 — revised per code review (split entity-commit from lineage); awaiting user review before writing-plans
 **Hard requirement addressed:** every extracted field value must be traceable to its source text chunk, document, and page (data-lineage requirement).
 
-## Open questions (must resolve before writing-plans)
-1. **Lineage-commit policy (drives Component 2C):** if an entity's lineage cannot be resolved, should the pipeline (a) **refuse to commit** it (strict — enforces "no entity without lineage"), or (b) **commit it + log a soft-fail TODO** (recall-safe, lineage best-effort)? My earlier "keep worker unchanged = guarantee" was wrong; either choice needs explicit code.
-2. **Scope:** confirm production `air_defense_v3` (non-narrowed) shares these failures, or is this branch/merged-path specific? Component 1's diagnostic answers this.
+## Decisions (resolved with user)
+1. **Lineage-commit policy = STRICT refuse-to-commit (DECIDED).** No entity commits without resolvable lineage (chunk + document + page). There is NO soft-fail commit path — an entity whose lineage cannot be resolved is NOT written to the graph, and the gap is logged + surfaced as a failure signal (not silently committed). This is the hard requirement (line 6) enforced literally. Component 2C is now mandatory, not conditional.
+2. **Scope check is part of Component 1** and requires an explicit production-config comparison run (see Component 1) — not just the single branch SA-2 run — so we know before implementation whether production `air_defense_v3` (non-narrowed) is also affected.
 
 ## Problem
 
@@ -41,7 +41,7 @@ Two independent workstreams, because the two failures have different causes:
 - **A. Entity-commit:** diagnose why 22 merged entities don't reach ArcadeDB (service post-filter / postprocess / merge dispatch-vs-commit / `_import_graph_phase_nodes` / `upsert_nodes_batch_sync`), then fix the actual break. **Do not assume element_uid is involved.**
 - **B. Lineage:** fix docling-graph so `element_uid` AND `page` populate (both delta routes), so committed entities carry real lineage edges + properties.
 
-**Hard-lineage guarantee — explicit decision needed (review finding, High):** "leave the worker unchanged" does NOT guarantee "no entity without lineage commits" — current code can commit an entity with empty `record.provenance`. If the hard rule is to be *enforced*, the design needs an explicit lineage-required commit gate (worker or service side). **Open question for the user** (see below) — the answer shapes workstream A's commit policy.
+**Hard-lineage guarantee — DECIDED: STRICT.** "Leave the worker unchanged" does NOT guarantee "no entity without lineage commits" — current code (`_import_graph_phase_nodes`, pipeline.py:1295) upserts *every* `merged.entities` item unconditionally. Strict enforcement therefore requires an explicit lineage-required gate **at the worker import boundary** (Component 2C) — NOT service-side, which a cached/rehydrated pass output can bypass. No soft-fail commit path exists.
 
 ## Components
 
@@ -49,18 +49,23 @@ Two independent workstreams, because the two failures have different causes:
 **Goal:** localize the entity-commit break by instrumenting each stage *separately*, NOT assuming element_uid.
 **Instrument, in order:** (1) docling-graph service post-filter / IDENTITY_FILTER / postprocess (does the response still carry the entities?); (2) `load_completed_pass_outputs` + rehydrate (we confirmed 24/21/36/47 offline — verify in the real run); (3) `merge_and_resolve` output count in the *real* run (offline replay = 22); (4) merge **dispatch vs. commit** — was `derive_ontology_graph_merge` actually invoked for `9d48fc1e`, and did `_import_graph_phase_nodes` → `upsert_nodes_batch_sync` execute and return RIDs?; (5) ArcadeDB write result.
 **Also (workstream B diagnostic):** instrument the provenance path on BOTH delta routes — `extract_chunks_with_metadata` return AND `_extract_delta_from_pre_built_chunks` (`source_refs` count, `page_numbers`), the `strategy_ops` set, and the `main.py` read of `last_chunk_metadata`.
-**How:** one instrumented `graph_only` run on the SA-2 doc (already ingested), idle pool.
-**Output:** definitive localization of (A) the commit break and (B) the provenance-empty source, before any fix.
+**How:** instrumented `graph_only` runs on the SA-2 doc (already ingested), idle pool.
+**Scope/production check (review finding, Medium):** run the diagnostic under BOTH configs to answer the production-impact question before implementation: (i) the current branch config (merged + narrow_only + wire-off), and (ii) a production-representative config — `air_defense_v3` bundle, **non-narrowed** (VECTOR_ROUTER_MODE=shadow or disabled, EXTRACTION_INDEX_MODE per production). If both show empty `last_chunk_metadata` / 0 committed entities, the defect is systemic (fix once, everywhere via the shared path); if only the branch config does, scope the fix to the narrowed path. Capture which.
+**Output:** definitive localization of (A) the commit break and (B) the provenance-empty source, plus (C) whether production config is affected — before any fix.
 
 ### Component 2A — Fix entity commit (location from Component 1)
 **Goal:** ensure merged entities actually upsert to ArcadeDB. Fix the specific break Component 1 finds (e.g. merge not dispatched, upsert error swallowed, post-filter dropping all). Likely worker/service side.
 
 ### Component 2B — Fix lineage population (docling-graph)
 **Goal:** populate `element_uid` AND `page` for every entity on whichever delta route runs, so committed entities carry real lineage. Must cover the pre-built-chunk route (carry `page_numbers`/evidence units or resolve `source_refs` against the DoclingDocument — `page_numbers:[]` today) AND the from-document route (empty `last_chunk_metadata`).
-**Constraint:** docling-graph changes land as a tracked patch `docker/docling-graph/patches/0005-*.patch` (gitignored clone; applied at build per the 0003/0004 pattern; must apply cleanly against a clean clone). Worker/service changes (2A, and any lineage-gate) are normal commits on the branch.
+**Required API/data-shape change (review finding, Medium):** `synthesize_provenance_from_pass_output` (provenance.py:84) currently receives only `chunk_to_self_refs` and hardcodes `page=None` (provenance.py:155) — it has no page data to emit. To produce a resolved `page`, its signature must change to also receive chunk metadata (e.g. a `chunk_to_page_numbers` / chunk-metadata map, or the full `last_chunk_metadata` which already carries `page_numbers`). `_resolve_page` (provenance.py:284, reads only `page_numbers`) and the primary `build_provenance_from_context` path must be aligned to the same page source. The patch (0005) covers all three: the from-document map build, the pre-built-chunk map build, and the synthesizer/resolver signature+page-fill.
+**Constraint:** docling-graph changes land as a tracked patch `docker/docling-graph/patches/0005-*.patch` (gitignored clone; applied at build per the 0003/0004 pattern; must apply cleanly against a clean clone). Worker changes (2A, 2C) are normal commits on the branch.
 
-### Component 2C — Lineage-required commit gate (CONDITIONAL — pending user decision)
-**Only if** the user confirms the hard rule "no entity without lineage commits." Add an explicit gate (worker or service side) that refuses to commit an entity lacking resolvable lineage, rather than relying on docling-graph always succeeding. If the user prefers "commit + soft-fail TODO when lineage can't resolve," this component is replaced by a soft-fail log per [[feedback_softfails_to_todo]]. **This is an open question (below), not yet decided.**
+### Component 2C — Lineage-required commit gate at the worker import boundary (MANDATORY)
+**Goal:** enforce strict lineage — reject any entity lacking resolvable lineage (element_uid + document + page) **before** it is written to ArcadeDB.
+**Authoritative location (review finding, Medium):** the gate MUST live at `_import_graph_phase_nodes` (pipeline.py:1295), which today does `node_records = [_build_node_record(e) for e in merged.entities]` → `upsert_nodes_batch_sync(...)` — upserting *every* merged entity unconditionally. A service-side (docling-graph) gate is insufficient because cached/rehydrated pass outputs bypass it; the worker import is the single chokepoint every commit passes through.
+**Behavior:** partition `merged.entities` into lineage-resolvable vs. not; upsert only the resolvable set; for the rejected set, do NOT commit — record a hard failure signal (count + identities) on the pass/run and log loudly (NOT a silent skip). 2B should make the rejected set empty in the normal case; 2C guarantees correctness if 2B ever regresses.
+**No soft-fail commit path** — rejection means "not in the graph," surfaced as a failure, never "committed without lineage."
 
 ### Component 3 — Verification gate
 **Goal:** prove entities + lineage commit end-to-end.
@@ -74,15 +79,16 @@ Two independent workstreams, because the two failures have different causes:
 
 1. **Component-1 diagnostic** is itself the first test: instrumented run localizes BOTH the commit break and the provenance-empty source before any change.
 2. **docling-graph unit tests** (clone's suite AND mirrored to `tests/unit/` so `scripts/run_tests.sh` collects them): for BOTH delta routes, assert the produced metadata carries non-empty `self_refs` AND `page_numbers`, and that `last_chunk_metadata` is non-empty at the read site.
-3. **Provenance unit test:** `synthesize_provenance_from_pass_output` with a populated `chunk_to_self_refs` emits non-empty `element_uid` AND resolved `page` for every entity (regression guard).
-4. **Entity-commit unit/integration test:** the specific break Component 1 finds gets a focused regression test (e.g. merge dispatched + upsert returns RIDs for N entities).
-5. **End-to-end gate (Component 3)** on the SA-2 doc — all checks, including the field→chunk→**page** trace and the empty-doc discriminator.
-6. **Patch durability:** `0005-*.patch` applies cleanly against a clean clone in the Docker build.
+3. **Provenance unit test:** `synthesize_provenance_from_pass_output`, given the NEW page-bearing input (the signature change from 2B — chunk-metadata / `chunk_to_page_numbers` map), emits non-empty `element_uid` AND resolved (non-null) `page` for every entity. Pin the new signature so the page source can't silently regress to `None`.
+4. **Lineage-gate unit test (Component 2C):** at the import boundary, an entity WITH resolvable lineage upserts; an entity WITHOUT is rejected (not upserted) and recorded as a failure — proves strict enforcement independent of 2B.
+5. **Entity-commit unit/integration test:** the specific break Component 1 finds gets a focused regression test (e.g. merge dispatched + upsert returns RIDs for N entities).
+6. **End-to-end gate (Component 3)** on the SA-2 doc — all checks, including the field→chunk→**page** trace and the empty-doc discriminator.
+7. **Patch durability:** `0005-*.patch` applies cleanly against a clean clone in the Docker build.
 
 ## Out of scope
-- The worker's strict-drop policy stays (no soft-fail). 
+- **No soft-fail commit path anywhere** (clarifies review Low finding). Strict lineage is enforced end-to-end: the existing `_parse_pass_response` provenance-row strict-drop stays, AND the new Component 2C gate rejects (does not commit) any entity lacking resolvable lineage. "Reject" = not written to graph + surfaced as a failure; never "committed without lineage."
 - Chunk-minimization / coverage work (deferred — depends on this fix landing first so recall/lineage data is real).
 - The paused notebooks-collection ingest restarts AFTER this fix lands (re-run all 21 docs fresh on the fixed code).
 
 ## Scope / production-impact note
-All evidence is from the walltime branch + merged/narrow path. Whether production `air_defense_v3` (non-narrowed) is affected is **unconfirmed**; the 82 existing CommunityReports imply entities committed at some earlier point. Component 1's diagnostic + Component 3's gate will clarify whether this is branch/path-specific or systemic. If systemic, the patch fixes it everywhere (the provenance path is shared).
+All evidence so far is from the walltime branch + merged/narrow path. Component 1 now includes an explicit production-config (`air_defense_v3`, non-narrowed) comparison run to resolve this BEFORE implementation. The 82 existing CommunityReports imply entities committed at some earlier point. If the defect is systemic, the shared provenance + import path means the fix applies everywhere; if narrowed-path-specific, the fix is scoped accordingly. Component 1's output records which.
