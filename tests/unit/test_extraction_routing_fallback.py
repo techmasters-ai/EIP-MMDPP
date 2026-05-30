@@ -367,9 +367,11 @@ class TestRelaxedDenseNoReEmbed:
         body = resp.json()
         diag = body["diagnostics"]
 
-        # Fallback must have escalated (not "none")
+        # Fallback must have escalated (not "none").
+        # "degraded" is the correct label when the pool is non-empty after all
+        # cheaper ladder levels but still below top_k threshold (I1 fix).
         assert diag["fallback_level"] in ("relaxed_dense", "lexical_table",
-                                           "identity_anchor", "full"), (
+                                           "identity_anchor", "full", "degraded"), (
             f"Expected escalation, got fallback_level={diag['fallback_level']!r}"
         )
 
@@ -654,6 +656,158 @@ class TestFallbackToFullOrWouldSkip:
 
 
 # ---------------------------------------------------------------------------
+# I1. Partial selection (low coverage but non-empty) → fallback_level="degraded"
+# ---------------------------------------------------------------------------
+
+class TestPartialSelectionDegradedLevel:
+    """I1 regression: when the ladder exhausts all cheaper levels but selected_mcs
+    is non-empty (coverage low but non-zero), the response must be mode=selected_refs
+    AND diagnostics.fallback_level must be "degraded" — never "full" or "would_skip".
+
+    Before the fix, the code set:
+        _e2_fallback_level = "full" if profile.fallback_to_full else "would_skip"
+    even on the proceed-with-partial path, corrupting A/B analytics keyed on
+    fallback_level=="full".
+    """
+
+    @pytest.mark.asyncio
+    async def test_partial_selection_fallback_level_is_degraded(self):
+        """Partial pool (below top_k threshold) + non-empty selected_mcs →
+        mode=selected_refs AND fallback_level='degraded' (never 'full')."""
+        from app.services.extraction_candidate_scoring import MergedCandidate
+        from app.services.extraction_chunk_search import MultiChannelState
+
+        run_id = "run-i1-degraded"
+
+        # Build a single candidate — below top_k=3 threshold → ladder fires,
+        # but selected_mcs is non-empty (1 candidate) → partial path taken.
+        mc = MergedCandidate(
+            candidate_key=f"{run_id}:chunk_0",
+            chunk_index=0,
+            self_ref="chunk_0",
+            chunk_text="radar system ERP data",
+            source_refs=["#/texts/0"],
+            token_count=50,
+            page_number=1,
+            vector_score=0.7,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+        )
+        pool = [mc]
+        diag_obj = SimpleNamespace(
+            raw_row_count=1,
+            entity_dense_count=1,
+            field_dense_total_count=0,
+            per_field_dense_counts={},
+            lexical_hit_count=0,
+            pattern_hit_count=0,
+            pool_size=1,
+            filter_strategy="direct_cosine",
+        )
+        state = MultiChannelState(
+            rows=[],
+            entity_dense=[],
+            field_dense={},
+            lex_hits={},
+            pat_hits={},
+            raw_row_count=0,
+        )
+
+        profile = _make_profile(
+            top_n_candidates=10,
+            top_k=3,          # requires 3; we only have 1 → coverage insufficient
+            field_query_top_k=5,
+            fallback_min_field_coverage=1,
+            min_similarity=0.0,
+            fallback_to_full=True,  # even with fallback_to_full=True, must be "degraded"
+        )
+        # Disable subset_schema_extraction to avoid Record-unwrap in this test
+        profile.subset_schema_extraction = False
+        pass_def = _make_pass_def(profile)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        signals_mock = _make_signals(entity_query="radar power rf")
+
+        from httpx import ASGITransport, AsyncClient
+        from app.main import create_app
+
+        app = create_app()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                # Use search_extraction_chunks_multi_channel_full mock (merged path)
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag_obj, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
+                # score_candidates returns the 1 candidate
+                patch("app.api.v1.extraction_routing.score_candidates",
+                      return_value=[(mc, 0.7)]),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=lambda query, candidates, top_k: [
+                          dict(c, reranker_score=0.7) for c in candidates
+                      ]),
+                patch("app.api.v1.extraction_routing.get_settings") as mock_settings,
+            ):
+                settings = MagicMock()
+                settings.extraction_index_mode = "merged"
+                settings.reranker_enabled = True
+                settings.vector_router_retrieval_mode = "direct"
+                mock_settings.return_value = settings
+
+                resp = await ac.post(
+                    "/v1/extraction/chunk-scope",
+                    json={
+                        "pipeline_run_id": run_id,
+                        "bundle_key": _BUNDLE_KEY,
+                        "pass_name": _PASS_NAME,
+                    },
+                )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # Mode must be selected_refs (non-empty selection proceeded)
+        assert body["mode"] == "selected_refs", (
+            f"Partial non-empty selection must produce mode=selected_refs; "
+            f"got mode={body['mode']!r}"
+        )
+
+        diag = body["diagnostics"]
+        # fallback_level must be "degraded" — not "full" (the I1 bug value)
+        assert diag["fallback_level"] == "degraded", (
+            f"Partial selection must produce fallback_level='degraded'; "
+            f"got fallback_level={diag['fallback_level']!r} — "
+            f"'full' here means the I1 bug is NOT fixed"
+        )
+        # Explicitly confirm it is NOT "full"
+        assert diag["fallback_level"] != "full", (
+            "fallback_level must never be 'full' when mode=selected_refs "
+            "(I1 regression: 'full' corrupts A/B analytics)"
+        )
+        assert diag["fallback_level"] != "would_skip", (
+            "fallback_level must never be 'would_skip' when mode=selected_refs"
+        )
+
+
+# ---------------------------------------------------------------------------
 # E3 edge cases
 # ---------------------------------------------------------------------------
 
@@ -840,11 +994,11 @@ class TestLegacyFullFallbackUnchanged:
         diag = body["diagnostics"]
 
         # With only 1 row (below top_k=5 threshold) and no lexical hits or
-        # anchors, the ladder should escalate but the selected_mcs may be non-empty
-        # (1 candidate selected). The ladder sets level=full/would_skip only if
-        # selected_mcs is empty at the end. Since we have 1 selected candidate,
-        # the endpoint returns selected_refs (with level=full set as the coverage
-        # label). Either way, the ladder must have escalated.
+        # anchors, the ladder should escalate but selected_mcs may be non-empty
+        # (1 candidate selected). When selected_mcs is non-empty after ladder
+        # exhaustion, the endpoint returns selected_refs with
+        # fallback_level="degraded" (I1 fix). Either way, the ladder must have
+        # escalated (fallback_level != "none").
         assert diag["fallback_level"] != "none", (
             f"1-candidate pool below top_k threshold must escalate, "
             f"got fallback_level={diag['fallback_level']!r}"

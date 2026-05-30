@@ -55,6 +55,7 @@ from app.services.extraction_candidate_scoring import (
 )
 from app.services.extraction_query_builder import (
     build_retrieval_profile,
+    _record_cls_from_pass_cls,
 )
 from app.services.ontology_bundles import load_bundle_manifest
 from app.services.ontology_templates import UnknownBundleError
@@ -895,7 +896,10 @@ async def chunk_scope(
                             )
                         # If we still have some selected (coverage low but non-zero),
                         # proceed with what we have rather than failing to full.
-                        _e2_fallback_level = "full" if profile.fallback_to_full else "would_skip"
+                        # Use "degraded" (not "full"/"would_skip") — the response
+                        # mode will be selected_refs, not full/would_skip, and
+                        # labelling it "full" would corrupt A/B analytics.
+                        _e2_fallback_level = "degraded"
 
         # -------------------------------------------------------------------
         # END E2 FALLBACK LADDER
@@ -918,7 +922,10 @@ async def chunk_scope(
             if d is not None:
                 top_k_results.append(d)
             else:
-                # Defensive fallback: build a minimal dict from mc
+                # Defensive fallback: build a full-shape dict from mc so
+                # downstream expansion sees a consistent key set (matches
+                # pool_dicts construction above). page_number is required for
+                # data lineage — must always be present.
                 top_k_results.append({
                     "content_text": mc.chunk_text,
                     "self_ref": mc.self_ref,
@@ -926,6 +933,15 @@ async def chunk_scope(
                     "chunk_index": mc.chunk_index,
                     "source_refs": mc.source_refs,
                     "token_count": mc.token_count,
+                    "page_number": mc.page_number,
+                    "alias_hits": mc.alias_hits,
+                    "pattern_hits": mc.pattern_hits,
+                    "negative_hits": mc.negative_hits,
+                    "section_hits": mc.section_hits,
+                    "content_type": mc.content_type,
+                    "retrieval_sources": mc.retrieval_sources,
+                    "supported_field_hints": mc.supported_field_hints,
+                    "merged_candidate": mc,
                 })
 
         # The shared merged-mode expansion block below uses top_k_results with
@@ -1432,9 +1448,16 @@ async def chunk_scope(
         # active fields must reflect that same evidence set. selected_mcs carries
         # the MergedCandidate objects, which hold supported_field_hints.
         if profile.subset_schema_extraction:
+            # Unwrap Pass→Record: template_cls may be a Pass wrapper (e.g.
+            # RadarPowerRfPass whose only model_field is the list wrapper
+            # radar_systems). active_fields() and supported_field_hints carry
+            # Record-level names, so we must pass the inner Record class.
+            # _record_cls_from_pass_cls returns None for an already-Record
+            # class (identity passes) — so "or template_cls" handles both.
+            _record_cls = _record_cls_from_pass_cls(template_cls) or template_cls
             _f2_selected_mcs_only = [mc for mc, _ in selected_mcs]
-            _f2_all_fields = list(template_cls.model_fields.keys())
-            _f2_active = _active_fields(_f2_selected_mcs_only, template_cls, profile)
+            _f2_all_fields = list(_record_cls.model_fields.keys())
+            _f2_active = _active_fields(_f2_selected_mcs_only, _record_cls, profile)
             _f2_field_subset = _f2_active
             _f4_active_field_count = len(_f2_active)
             _f4_dropped_field_count = len(_f2_all_fields) - len(_f2_active)

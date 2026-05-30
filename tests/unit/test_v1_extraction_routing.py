@@ -1577,3 +1577,109 @@ class TestF2F4FieldSubset:
         )
         assert data["diagnostics"]["active_field_count"] is None
         assert data["diagnostics"]["dropped_field_count"] is None
+
+    @pytest.mark.asyncio
+    async def test_field_subset_uses_record_class_not_pass_wrapper(self, app):
+        """C1 regression: field_subset must use the inner Record class, not the
+        Pass wrapper.
+
+        Pass wrappers (e.g. RadarPowerRfPass) have a single model_field —
+        the list wrapper field (e.g. ``radar_systems``). Candidates carry
+        Record-level field hints (e.g. ``tx_peak_power_kw``). If the endpoint
+        passes the Pass class to active_fields(), the intersection is empty
+        (``{'tx_peak_power_kw'} & {'radar_systems'}`` == ∅) → field_subset
+        is always empty and the feature is silently inert.
+
+        Fix: unwrap via _record_cls_from_pass_cls(pass_cls) or pass_cls.
+        """
+        from pydantic import BaseModel
+
+        # Two-level fake: Record has real field names; Pass wraps it in a list.
+        class _FakeRecord(BaseModel):
+            model_config = {"graph_id_fields": ["system_name"]}
+            system_name: str = ""        # identity → always kept
+            tx_peak_power_kw: float = 0.0  # has evidence → kept
+            erp_dbw: float = 0.0         # no evidence → dropped
+
+        class _FakePass(BaseModel):
+            radar_systems: list[_FakeRecord] = []  # the only Pass-level field
+
+        pass_def = self._make_mc_pass_def(subset_schema_extraction=True)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        # mc has evidence for tx_peak_power_kw only (Record-level name)
+        mc = self._make_mc_with_refs(0, field_hints={"tx_peak_power_kw"})
+        pool = [mc]
+        diag = self._make_multi_channel_diag()
+        state = self._make_mc_state(pool)
+        scored = [(mc, 0.9)]
+
+        def _fake_rerank(query, candidates, top_k):
+            return [dict(c, reranker_score=0.85) for c in candidates]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                # Patch to return the two-level Pass fake (NOT a flat Record)
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=_FakePass),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
+                patch("app.api.v1.extraction_routing.score_candidates",
+                      return_value=scored),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings",
+                      return_value=settings_mock),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "selected_refs"
+
+        field_subset = data["field_subset"]
+        assert field_subset is not None, (
+            "field_subset must be populated with Record-level names when "
+            "subset_schema_extraction=True and _FakePass is returned"
+        )
+
+        # Record-level names must appear
+        assert "system_name" in field_subset, (
+            f"system_name (identity field) must be in field_subset; got {field_subset!r}"
+        )
+        assert "tx_peak_power_kw" in field_subset, (
+            f"tx_peak_power_kw (evidenced field) must be in field_subset; "
+            f"got {field_subset!r}"
+        )
+
+        # The Pass-level wrapper field must NOT appear
+        assert "radar_systems" not in field_subset, (
+            f"radar_systems is a Pass-wrapper field, not a Record field — "
+            f"must NOT be in field_subset; got {field_subset!r}"
+        )
+
+        # erp_dbw has no evidence and is not identity → should be dropped
+        assert "erp_dbw" not in field_subset, (
+            f"erp_dbw has no evidence → must be dropped; got {field_subset!r}"
+        )

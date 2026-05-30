@@ -1023,15 +1023,15 @@ def run_extraction_pass(
         # thread-local.  LlmBackend.extract_from_markdown reads this and builds
         # a restricted prompt schema when non-None.  field_subset=None (default)
         # is the opt-out path — byte-identical full-schema behavior.
-        if field_subset is not None:
-            _pass_llm_schema_overrides.field_subset = field_subset
-            logger.info(
-                "GRAPH_EXTRACTION_FIELD_SUBSET pass=%s fields=%d subset=%s",
-                pass_name,
-                len(field_subset),
-                field_subset[:10],  # log first 10 to keep lines short
-            )
         try:
+            if field_subset is not None:
+                _pass_llm_schema_overrides.field_subset = field_subset
+                logger.info(
+                    "GRAPH_EXTRACTION_FIELD_SUBSET pass=%s fields=%d subset=%s",
+                    pass_name,
+                    len(field_subset),
+                    field_subset[:10],  # log first 10 to keep lines short
+                )
             context = run_pipeline(config)
         except Exception as exc:
             # Library raised PipelineError (or anything else). Build a stub

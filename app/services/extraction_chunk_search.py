@@ -563,6 +563,12 @@ async def identity_anchor_queries(
 
     # --- 1. Query the graph store for each identity type (per-type try/except). ---
     for identity_type in identity_types:
+        if not identity_type.isidentifier():
+            # Defensive guard: skip types that can't be safe SQL identifiers.
+            # identity_type comes from the trusted manifest but ArcadeDB cannot
+            # parameterize vertex type names; an invalid identifier would corrupt
+            # the query rather than raise a parameterization error.
+            continue
         try:
             rows = await store._client.query(
                 store._database,
