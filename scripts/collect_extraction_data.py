@@ -76,6 +76,61 @@ def chunk_scope(run, bundle, pass_name):
         return {}
 
 
+_IDENTITY_FIELDS = {"system_name", "missile_name", "designation", "identity_name", "name"}
+
+
+def value_fill_and_provenance(rid, pass_name):
+    """Read extract_pass_response_json for the latest attempt and compute the
+    REAL recall signal for chunk-minimization:
+      - entities, entities_with_value (vs name-only shells)
+      - field_values_filled / field_values_possible (the true recall metric —
+        NOT entity count, which is inflated by shell entities)
+      - provenance_populated: are evidence_ids/self_refs actually recorded per
+        entity? (needed to link a value back to a source chunk). If empty,
+        chunk-minimization must use ablation, not provenance correlation.
+      - evidence_self_refs: union of self_refs cited across the pass's provenance
+        (the chunks that actually produced output, when populated).
+    """
+    rows = psql("SELECT extract_pass_response_json FROM ingest.pipeline_pass_outputs "
+                "WHERE pipeline_run_id='" + rid + "' AND pass_name='" + pass_name + "' "
+                "ORDER BY attempt DESC LIMIT 1")
+    blob = "".join(rows) if rows else ""
+    out = {"entities": "", "entities_with_value": "", "values_filled": "",
+           "values_possible": "", "value_fill_pct": "", "provenance_populated": "",
+           "evidence_self_ref_count": ""}
+    if not blob:
+        return out
+    try:
+        d = json.loads(blob)
+    except Exception:
+        return out
+    po = d.get("pass_output") or {}
+    key = next(iter(po), None)
+    recs = po.get(key) or [] if key else []
+    recs = [r for r in recs if isinstance(r, dict)]
+    if recs:
+        value_fields = [f for f in recs[0].keys() if f not in _IDENTITY_FIELDS]
+        empties = (None, "", [], {})
+        filled = sum(1 for r in recs for f in value_fields if r.get(f) not in empties)
+        poss = len(recs) * max(len(value_fields), 1)
+        ent_val = sum(1 for r in recs if any(r.get(f) not in empties for f in value_fields))
+        out.update(entities=len(recs), entities_with_value=ent_val,
+                   values_filled=filled, values_possible=poss,
+                   value_fill_pct=round(100 * filled / max(poss, 1), 1))
+    # provenance availability (evidence_ids / self_refs populated?)
+    prov = d.get("provenance") or []
+    sref = set()
+    pop = 0
+    for p in prov if isinstance(prov, list) else []:
+        eids = (p.get("evidence_ids") or []) + (p.get("self_refs") or [])
+        if eids:
+            pop += 1
+            sref.update(eids)
+    out["provenance_populated"] = f"{pop}/{len(prov)}" if prov else "0/0"
+    out["evidence_self_ref_count"] = len(sref)
+    return out
+
+
 def greedy_set_cover(chunk_fields):
     """chunk_fields: list[set[str]] (per scored chunk). Return (#chunks, ranks) to
     cover the union of all evidenced fields."""
@@ -138,8 +193,16 @@ def collect_run(run, router_mode):
             wmin = round(float(wallms) / 60000, 1) if wallms else ""
         except Exception:
             pass
+        # --- THE REAL recall metric: field-value fill (not entity count) + provenance ---
+        vf = value_fill_and_provenance(rid, pass_n)
         rec = {"router_mode": router_mode, "doc": doc, "run_id": rid, "bundle": bundle,
                "pass": pass_n, "status": status, "entities": ents, "rels": rels,
+               # value-fill = true recall signal for chunk-minimization:
+               "entities_with_value": vf["entities_with_value"],
+               "values_filled": vf["values_filled"], "values_possible": vf["values_possible"],
+               "value_fill_pct": vf["value_fill_pct"],
+               "provenance_populated": vf["provenance_populated"],
+               "evidence_self_refs": vf["evidence_self_ref_count"],
                "wall_min": wmin, "llm_chunks": llmc, "total_chunks": total_chunks,
                "total_tokens": total_tokens, "fields_with_evidence": "", "min_set_cover": "",
                # three distinct "chunks to LLM" measures (the chunk-minimization axis):
@@ -177,6 +240,8 @@ def main():
     runs = discover_runs(args.since, args.runs or None)
     print(f"[collect] {len(runs)} run(s) | router_mode={args.router_mode}")
     cols = ["router_mode", "doc", "run_id", "bundle", "pass", "status", "entities", "rels",
+            "entities_with_value", "values_filled", "values_possible", "value_fill_pct",
+            "provenance_populated", "evidence_self_refs",
             "wall_min", "llm_chunks", "total_chunks", "total_tokens",
             "fields_with_evidence", "min_set_cover", "selected_chunk_count", "expanded_refs",
             "selected_tokens", "full_doc_tokens", "channel_counts"]
