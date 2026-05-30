@@ -134,20 +134,23 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run against the existing SA-2 graph_only run** (`9d48fc1e-62fd-4b03-a98c-98a35bda3b8e`, doc `ddaa9e36-2854-47c3-bc94-ff38d531dafd`).
+- [ ] **Step 2: Merge-replay on the existing SA-2 run + snapshot-delta on a FRESH run.** Two parts, because committed counts are global (not run-scoped):
+  - (a) **Offline merge replay** on the existing run to get the expected entity count:
+    Run: `python3 scripts/diagnose_lineage_commit.py --run 9d48fc1e-62fd-4b03-a98c-98a35bda3b8e --doc ddaa9e36-2854-47c3-bc94-ff38d531dafd`
+    Expected: prints `merge_and_resolve entities: ~22` (the count that SHOULD commit). The printed "GLOBAL entities" is informational only.
+  - (b) **Snapshot-delta around a fresh extraction** to measure what actually commits for THAT run:
+    Run: `python3 scripts/diagnose_lineage_commit.py --snapshot pre` → record `SNAPSHOT_PRE global_entity_count=<P>`; trigger a fresh SA-2 graph_only run (idle pool), wait terminal; `python3 scripts/diagnose_lineage_commit.py --snapshot post` → record `SNAPSHOT_POST global_entity_count=<Q>`.
+    Expected: delta `Q-P` is the entities this run committed. If `Q-P` ≈ 0 while merge replay ≈ 22 → **COMMIT BREAK confirmed** (downstream of merge).
 
-Run: `python3 scripts/diagnose_lineage_commit.py --run 9d48fc1e-62fd-4b03-a98c-98a35bda3b8e --doc ddaa9e36-2854-47c3-bc94-ff38d531dafd`
-Expected: prints merged≈22 vs committed=0 → COMMIT BREAK confirmed; localizes whether merge replay succeeds (isolating commit-path vs merge-logic).
-
-- [ ] **Step 3: Localize the commit break precisely.** With the merge-replay number in hand, add temporary `logger.info` instrumentation to `_import_graph_phase_nodes` (pipeline.py:1295-1308) logging `len(merged.entities)`, `len(node_records)`, and `len(node_rids)` after `upsert_nodes_batch_sync`. Trigger a fresh SA-2 graph_only run on an idle pool; capture the worker log. (This temp logging is removed in Task 4.)
+- [ ] **Step 3: Localize the commit break precisely.** With the merge-replay number + the fresh-run delta in hand, add temporary `logger.info` instrumentation to `_import_graph_phase_nodes` (pipeline.py:1295-1308) logging `len(merged.entities)`, `len(node_records)`, and `len(node_rids)` after `upsert_nodes_batch_sync`. Re-trigger a fresh SA-2 graph_only run on an idle pool; capture the worker log. (This temp logging is removed in Task 4.)
 
 Run: `docker logs eip-mmdpp-worker-graph-1 --since 30m 2>&1 | grep -iE "import_graph_phase|upsert_nodes|node_rids"`
 Expected: identifies whether (i) merge wasn't dispatched, (ii) `merged.entities` is empty at import, (iii) `upsert_nodes_batch_sync` raised/returned 0, or (iv) it returned RIDs but they aren't queryable (DB/type mismatch).
 
-- [ ] **Step 4: Production-config comparison run.** Set `VECTOR_ROUTER_MODE=shadow` and bundle `air_defense_v3` (recreate worker-graph + docling-graph from worktree, `-p eip-mmdpp`, force-recreate), run a graph_only extraction on the SA-2 doc, idle pool, and re-run the diagnostic.
+- [ ] **Step 4: Production-config comparison run (snapshot-delta).** Set `VECTOR_ROUTER_MODE=shadow` and bundle `air_defense_v3` (recreate worker-graph + docling-graph from worktree, `-p eip-mmdpp`, force-recreate). `--snapshot pre`, run a graph_only extraction on the SA-2 doc (idle pool, wait terminal), `--snapshot post`; also run the offline merge replay with `--bundle air_defense_v3`.
 
-Run: `python3 scripts/diagnose_lineage_commit.py --run <new_shadow_run_id> --bundle air_defense_v3 --doc ddaa9e36-2854-47c3-bc94-ff38d531dafd`
-Expected: records whether the commit break + empty provenance also occur under production config (systemic) or not (narrowed-path-specific).
+Run: `python3 scripts/diagnose_lineage_commit.py --snapshot pre` … (fresh run) … `python3 scripts/diagnose_lineage_commit.py --snapshot post`; then `python3 scripts/diagnose_lineage_commit.py --run <new_shadow_run_id> --bundle air_defense_v3 --doc ddaa9e36-2854-47c3-bc94-ff38d531dafd`
+Expected: records whether the commit break (post-pre delta ≈ 0 vs merge replay) + empty provenance also occur under production config (systemic) or not (narrowed-path-specific).
 
 - [ ] **Step 5: Write findings + commit.** Write `reports/collection/lineage_diagnostic_findings.md` with the three conclusions (commit-break stage; provenance-empty cause + route; production-affected y/n). Revert the temp instrumentation from Step 3 (keep it ONLY if Task 4 will formalize it). Commit the diagnostic script.
 
@@ -336,7 +339,8 @@ class _Ent:
     def __init__(self, n, prov):
         self.identity = _Ident(n); self.properties = {}; self.confidence = 0.9; self.provenance = prov
 class _Edge:
-    def __init__(self, src, dst): self.source_identity = src; self.target_identity = dst
+    # Match real MergedEdgeRecord field names (extraction_merge.py:366-367).
+    def __init__(self, src, dst): self.from_identity = src; self.to_identity = dst
 class _Merged:
     def __init__(self, ents, edges): self.entities = ents; self.edges = edges
 
@@ -382,10 +386,12 @@ def _partition_entities_by_lineage(merged) -> list:
     if rejected:
         rejected_ids = {e.identity for e in rejected}
         merged.entities = keep
+        # MergedEdgeRecord fields are from_identity / to_identity
+        # (extraction_merge.py:366-367) — NOT source_identity/target_identity.
         merged.edges = [
             ed for ed in (getattr(merged, "edges", None) or [])
-            if getattr(ed, "source_identity", None) not in rejected_ids
-            and getattr(ed, "target_identity", None) not in rejected_ids
+            if getattr(ed, "from_identity", None) not in rejected_ids
+            and getattr(ed, "to_identity", None) not in rejected_ids
         ]
         logger.error(
             "LINEAGE_GATE: rejected %d/%d entities lacking resolvable lineage "
@@ -396,19 +402,39 @@ def _partition_entities_by_lineage(merged) -> list:
     return rejected
 ```
 
-Then call it in `derive_ontology_graph_merge` right after `merge_and_resolve(...)` (pipeline.py ~7914) and BEFORE `_build_provenance_envelope` (~7918):
+Wire it into `derive_ontology_graph_merge`. The real ordering is `merge_and_resolve` → `_apply_post_merge_yield_updates` → `_write_pipeline_run_metrics` → `_build_provenance_envelope`. The gate must run **right after merge** (so yield/metrics/envelope/import all operate on filtered entities), but the rejection signal must be written **after** `_write_pipeline_run_metrics` because that function does `run.metrics = {...}` (a full REPLACE, pipeline.py:544 — review finding Medium-3) and would clobber an earlier write:
 
 ```python
         merged = merge_and_resolve(...)
-        _lineage_rejected = _partition_entities_by_lineage(merged)   # STRICT gate
-        # record the hard signal on the run for operator visibility (strict policy)
-        if _lineage_rejected:
-            _record_lineage_rejection(run_id, _lineage_rejected)  # writes a diagnostics/metrics field; see Step 4
+        _lineage_rejected = _partition_entities_by_lineage(merged)   # STRICT gate — BEFORE yield/metrics/envelope
         _apply_post_merge_yield_updates(run_id, merged, manifest)
+        _write_pipeline_run_metrics(run_id, merged, manifest)        # REPLACES run.metrics
+        if _lineage_rejected:
+            _record_lineage_rejection(run_id, _lineage_rejected)     # AFTER metrics; merge-updates run.metrics (Step 4)
+        provenance_envelope = _build_provenance_envelope(...)
         ...
 ```
 
-- [ ] **Step 4: Add the run-level hard signal.** Implement `_record_lineage_rejection(run_id, rejected)` to write a `lineage_rejected_count` + sample identities into the run's `metrics`/diagnostics (reuse the existing `_write_pipeline_run_metrics` pattern). This makes the strict rejection surfaced, not silent. (Exact column/JSON key: follow `_write_pipeline_run_metrics` in pipeline.py.)
+- [ ] **Step 4: Add the run-level hard signal with MERGE semantics.** Implement `_record_lineage_rejection(run_id, rejected)` to MERGE `lineage_rejected_count` + sample identities into the existing `run.metrics` (read-modify-write, NOT replace — `_write_pipeline_run_metrics` already replaced it just before). Pattern:
+
+```python
+def _record_lineage_rejection(run_id, rejected):
+    """Surface the strict lineage rejection on run.metrics (merge, not replace —
+    _write_pipeline_run_metrics ran just before and assigns run.metrics wholesale)."""
+    from app.models.ingest import PipelineRun
+    db = _get_db()
+    try:
+        run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+        metrics = dict(run.metrics or {})              # copy existing
+        metrics["lineage_rejected_count"] = len(rejected)
+        metrics["lineage_rejected_sample"] = [
+            e.identity.identity_values_dict() for e in rejected
+        ][:20]
+        run.metrics = metrics                          # merged write
+        db.commit()
+    finally:
+        db.close()
+```
 
 - [ ] **Step 5: Run — passes.**
 
@@ -503,8 +529,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `scripts/verify_lineage_e2e.py` (read-only checks)
 
 **Acceptance Criteria:**
-- [ ] ArcadeDB entity vertices > 0 for the SA-2 run's types, count consistent with merged-entity count from the diagnostic.
-- [ ] Worker log for the run shows ZERO "dropping provenance row missing required fields" warnings AND zero `LINEAGE_GATE: rejecting` for entities that should have lineage.
+- [ ] A **pre/post snapshot-delta** around the fresh SA-2 run (entity vertices carry no run_id) shows a committed-entity increase consistent with the merge-replay count (~22) — NOT measured by a global absolute count.
+- [ ] Worker log for the run shows ZERO "dropping provenance row missing required fields" warnings AND zero `LINEAGE_GATE: rejected` for entities that should have lineage.
 - [ ] `EXTRACTED_FROM` and/or `MENTIONED_IN` edges > 0 for the run.
 - [ ] For one sample entity field value: trace it to its `element_uid` → TextChunk/ExtractionChunk → Document + page number (printed end-to-end).
 - [ ] Discriminator: a known image/empty doc (e.g. `cw_radar.jpg`) run yields 0 entities legitimately with docling-graph `raw_node_count`=1 (not a silent drop) — confirm the gate did NOT reject populated entities there.
@@ -513,8 +539,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Steps:**
 
-- [ ] **Step 1: Run a fresh SA-2 graph_only extraction** on the fixed build, idle pool. Capture the run_id.
-- [ ] **Step 2: Write `scripts/verify_lineage_e2e.py`** that runs the five acceptance checks against ArcadeDB + postgres + docling-graph logs and prints PASS/FAIL per check plus the concrete field→chunk→document→page trace for one entity.
+- [ ] **Step 1: Snapshot-pre, run, snapshot-post.** `python3 scripts/diagnose_lineage_commit.py --snapshot pre` (record P); run a fresh SA-2 graph_only extraction on the fixed build (idle pool), capture run_id, wait terminal; `--snapshot post` (record Q). The committed-entity delta `Q-P` is the run's contribution.
+- [ ] **Step 2: Write `scripts/verify_lineage_e2e.py`** that runs the acceptance checks against ArcadeDB + postgres + docling-graph logs and prints PASS/FAIL per check plus the concrete field→chunk→document→page trace for one entity. It takes `--pre <P>` so the committed-delta check compares `Q-P` to the merge-replay count, not a global absolute.
 - [ ] **Step 3: Run it.** Run: `python3 scripts/verify_lineage_e2e.py --run <run_id>` → all PASS.
 - [ ] **Step 4: Run the empty-doc discriminator** on `cw_radar.jpg`'s run; confirm legitimate 0 entities + `raw_node_count`=1.
 - [ ] **Step 5: Commit the verifier + update the defect memory** to "resolved, verified."
