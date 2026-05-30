@@ -20,7 +20,7 @@
       "subject": "Task 2: Strict lineage-required commit gate",
       "status": "pending",
       "blockedBy": [20],
-      "description": "Worker _import_graph_phase_nodes: reject entities lacking resolvable lineage (element_uid+page), upsert only lineage-complete, log rejects loudly. tests/unit/test_lineage_commit_gate.py.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_lineage_commit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_lineage_commit_gate.py -v\"}\n```"
+      "description": "Worker: _partition_entities_by_lineage(merged) runs in derive_ontology_graph_merge right after merge_and_resolve, BEFORE _build_provenance_envelope — filters merged.entities to lineage-complete (element_uid+page), prunes merged.edges referencing rejected identities (so domain/structural/audit paths never see rejects), records a hard run-level rejection signal. Strict, never silent. tests/unit/test_lineage_commit_gate.py.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_lineage_commit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_lineage_commit_gate.py -v\"}\n```"
     },
     {
       "id": 23,

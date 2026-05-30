@@ -37,7 +37,7 @@
 - Read (do not edit yet): `app/workers/pipeline.py:1217-1308` (`_import_graph_phase_nodes`), `docker/docling-graph/app/main.py:1095-1140` (chunk_to_self_refs build), `docker/docling-graph/app/provenance.py:84-160` (synthesizer), `docker/docling-graph/repo/.../strategies/many_to_one.py:340-370,561` (route selection + pre-built metadata)
 
 **Acceptance Criteria:**
-- [ ] For an SA-2 graph_only run, the diagnostic reports, per field-group pass: docling-graph response entity count, `merge_and_resolve` output entity count, whether `_import_graph_phase_nodes`/`upsert_nodes_batch_sync` executed and how many RIDs it returned, and the final ArcadeDB entity-vertex count for the run's types.
+- [ ] For an SA-2 graph_only run, the diagnostic reports, per field-group pass: docling-graph response entity count, `merge_and_resolve` output entity count, whether `_import_graph_phase_nodes`/`upsert_nodes_batch_sync` executed and how many RIDs it returned, and — because entity vertices carry no run_id (review finding High-1) — a **run-attributable committed-entity delta** via a pre/post global-count snapshot around a fresh extraction (NOT a global absolute count, which can false-OK when other entities exist).
 - [ ] The diagnostic reports which delta route ran (`extract_delta_from_document` vs `_extract_delta_from_pre_built_chunks`) and whether `doc_processor.last_chunk_metadata` was non-empty at the `main.py` read, with `self_refs`/`page_numbers` counts.
 - [ ] The SAME diagnostic run is repeated under a production-representative config (`air_defense_v3` bundle, `VECTOR_ROUTER_MODE=shadow`) and the commit + provenance results are recorded for comparison.
 - [ ] A short findings note is written to `reports/collection/lineage_diagnostic_findings.md` stating: the exact commit-break stage, the exact provenance-empty cause + route, and whether production config is affected.
@@ -70,7 +70,14 @@ def adb(sql):
     try: return json.loads(out).get("result", [])
     except Exception: return []
 
-def committed_entity_count(run_id):
+def committed_entity_count():
+    """GLOBAL entity-vertex count across all entity types. Entity vertices carry
+    NO run_id/document_id property (verified: RADAR_SYSTEM/MISSILE_SYSTEM schemas
+    have only domain + housekeeping fields), so this count is NOT run-scoped.
+    Review finding High-1: a global count can false-OK a broken run when other
+    entities already exist. Therefore the diagnostic uses a PRE/POST SNAPSHOT
+    delta around a fresh extraction, NOT an absolute count, to attribute commits
+    to the run under test."""
     total = 0
     for t in ENTITY_TYPES:
         r = adb(f"SELECT count(*) AS n FROM `{t}`")
@@ -89,8 +96,9 @@ def merge_replay(run_id, bundle, doc_id):
         f"reh={{n:_rehydrate_pass_result(r,m,o,'{doc_id}',db=db,run_id='{run_id}') for n,r in outs.items()}};"
         "per={n:len(p._cached_entities()) for n,p in reh.items()};"
         f"mg=merge_and_resolve(pass_results=reh,manifest=m,ontology=o,document_id='{doc_id}',pipeline_run_id='{run_id}');"
+        # MergedExtraction has .edges (NOT .relationships) — review finding Low.
         "import json;print('DIAG',json.dumps({'per_pass':per,'merged_entities':len(mg.entities),"
-        "'merged_rels':len(getattr(mg,'relationships',[]) or [])}));db.close()"
+        "'merged_edges':len(getattr(mg,'edges',[]) or [])}));db.close()"
     )
     out = subprocess.run(["docker","exec","eip-mmdpp-worker-graph-1","python","-c",py],
                          capture_output=True, text=True, timeout=300).stdout
@@ -101,18 +109,26 @@ def merge_replay(run_id, bundle, doc_id):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", required=True)
+    ap.add_argument("--run", required=True, help="existing run to replay merge for (offline)")
     ap.add_argument("--bundle", default="air_defense_v3_merged_v1")
     ap.add_argument("--doc", required=True)
+    ap.add_argument("--snapshot", choices=["pre", "post"], default=None,
+                    help="for a FRESH run: capture global entity count before/after to get a run-attributable delta (High-1)")
     a = ap.parse_args()
+    if a.snapshot:
+        # pre/post snapshot mode: prints the global count; caller diffs pre vs post
+        # around a fresh extraction to attribute commits to THIS run (entity
+        # vertices carry no run_id, so absolute counts are not run-scoped).
+        print(f"SNAPSHOT_{a.snapshot.upper()} global_entity_count={committed_entity_count()}")
+        return
     rep = merge_replay(a.run, a.bundle, a.doc)
-    committed = committed_entity_count(a.run)
+    committed = committed_entity_count()
     print(f"run={a.run} bundle={a.bundle}")
     print(f"  per-pass rehydrated entities: {rep.get('per_pass')}")
-    print(f"  merge_and_resolve entities:   {rep.get('merged_entities')}  rels: {rep.get('merged_rels')}")
-    print(f"  ArcadeDB committed entities:  {committed}")
-    print(f"  >>> COMMIT BREAK: merged={rep.get('merged_entities')} but committed={committed}"
-          if (rep.get('merged_entities') or 0) > committed else "  >>> commit OK")
+    print(f"  merge_and_resolve entities:   {rep.get('merged_entities')}  edges: {rep.get('merged_edges')}")
+    print(f"  ArcadeDB GLOBAL entities:     {committed}  (NOT run-scoped — use --snapshot pre/post around a fresh run for run-attributable delta)")
+    print(f"  >>> merge replay yields {rep.get('merged_entities')} entities; "
+          f"if a fresh run's post-pre snapshot delta is < that, COMMIT BREAK is downstream of merge")
 
 if __name__ == "__main__":
     main()
@@ -151,7 +167,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify (via patch 0005, repo clone): `docker/docling-graph/repo/docling_graph/core/extractors/contracts/delta/strategy_ops.py` — ensure `last_chunk_metadata` carries `self_refs` AND `page_numbers` for both `extract_delta_from_text`/`extract_delta_from_document`
-- Modify (via patch 0005, repo clone): `docker/docling-graph/repo/docling_graph/core/extractors/strategies/many_to_one.py:561` — pre-built-chunk metadata must populate `page_numbers` (today `[]`) from `entry["source_refs"]` resolved against the DoclingDocument or carried from worker selected chunks
+- Modify (via patch 0005, repo clone): `docker/docling-graph/repo/docling_graph/core/extractors/strategies/many_to_one.py` — pre-built-chunk metadata at :561 sets `page_numbers: []`; populate it. **Review finding Medium-2 — this route needs explicit plumbing, not just a one-liner:** `_extract_delta_from_pre_built_chunks` (:535) returns `[], document` and does NOT currently use the DoclingDocument for page resolution, and the worker→DG selected-chunk schemas carry `source_refs` but NO `page_numbers`. Two sub-changes required: (1) **schema** — add `page_numbers: list[int]` to `SelectedChunk` (`app/schemas/extraction_routing.py:156`, worker side) and `SelectedChunkInput` (`docker/docling-graph/app/schemas.py:72`, DG side) so the worker can carry per-chunk pages it already has from the ExtractionChunk index; (2) **builder** — in `_extract_delta_from_pre_built_chunks`, read `entry["page_numbers"]` into the chunk metadata (fallback: resolve `entry["source_refs"]` against the passed DoclingDocument's element `prov[].page_no`). Worker side: populate the new `page_numbers` field when building `selected_chunks` (the ExtractionChunk rows already have `page_number`).
+- Modify (tracked, direct): `app/schemas/extraction_routing.py` — add `page_numbers: list[int] = []` to `SelectedChunk` (worker side, ungated forward-compat)
+- Modify (tracked, direct): `docker/docling-graph/app/schemas.py` — add `page_numbers: list[int] = []` to `SelectedChunkInput` (DG receiver side)
+- Modify (tracked, direct): `app/api/v1/extraction_routing.py` — populate `page_numbers` on each `SelectedChunk` from the ExtractionChunk `page_number` when building the chunk-scope response
 - Modify (tracked, direct): `docker/docling-graph/app/provenance.py` — change `synthesize_provenance_from_pass_output` signature to accept a `chunk_to_page_numbers: dict[int, list[int]] | None` (or full chunk-metadata map); emit resolved `page` instead of `None`; align `_resolve_page` + `build_provenance_from_context` to the same page source
 - Modify (tracked, direct): `docker/docling-graph/app/main.py:1095-1140` — build a `chunk_to_page_numbers` map alongside `chunk_to_self_refs` and pass it to the synthesizer call (currently `main.py` ~1702)
 - Create: `tests/unit/test_provenance_page_resolution.py`
@@ -188,12 +207,22 @@ class _ProvStub:
     def __init__(self, **kw): self.__dict__.update(kw)
 
 def test_synthesize_emits_resolved_page_when_map_present():
+    # Fixtures MUST be real pydantic models with is_entity config — _find_model_class
+    # (provenance.py:69) returns only BaseModel subclasses, and synthesis skips models
+    # without model_config['is_entity'] (provenance.py:133). A bare class would be
+    # silently skipped → test would pass for the wrong reason (review finding Medium).
+    from pydantic import BaseModel
+    from typing import Optional, List
     prov = _load()
+
+    class _Rec(BaseModel):
+        model_config = {"is_entity": True, "ontology_name": "RADAR_SYSTEM",
+                        "graph_id_fields": ["system_name"]}
+        system_name: str
+    class _Tpl(BaseModel):
+        radar_systems: List[_Rec] = []
+
     pass_output = {"radar_systems": [{"system_name": "Fan Song"}, {"system_name": "SNR-75"}]}
-    class _Rec:
-        model_config = {"ontology_name": "RADAR_SYSTEM"}
-    class _Tpl:
-        model_fields = {"radar_systems": type("F", (), {"annotation": list[_Rec]})()}
     rows = prov.synthesize_provenance_from_pass_output(
         pass_output=pass_output, template_cls=_Tpl,
         chunk_to_self_refs={0: ["#/texts/12"]},
@@ -244,43 +273,50 @@ Expected: PASS.
 
 - [ ] **Step 5: Thread `chunk_to_page_numbers` in `docker/docling-graph/app/main.py`.** In the chunk_to_self_refs build block (~1107), build a parallel `chunk_to_page_numbers` from `cmeta.get("page_numbers")`, store on context, and pass it to the `synthesize_provenance_from_pass_output(...)` call (~1702). (Verify line numbers against the file at edit time.)
 
-- [ ] **Step 6: Generate patch 0005 for the repo-clone changes** (strategy_ops + many_to_one + document_processor self_refs/page_numbers threading). Diff each touched repo file against its clean upstream base (per the 0003/0004 method), write `docker/docling-graph/patches/0005-lineage-chunk-metadata.patch`, and dry-run it against a fresh clean clone.
+- [ ] **Step 6: Add `page_numbers` to the selected-chunk schemas + populate worker-side** (pre-built route, Medium-2). Add `page_numbers: list[int] = []` to `SelectedChunk` (`app/schemas/extraction_routing.py`) and `SelectedChunkInput` (`docker/docling-graph/app/schemas.py`); populate `page_numbers` from `ExtractionChunk.page_number` when the chunk-scope endpoint builds `selected_chunks` (`app/api/v1/extraction_routing.py`). These ride into patch 0005's `many_to_one.py` change which reads `entry["page_numbers"]`.
+
+- [ ] **Step 7: Generate patch 0005 for the repo-clone changes** (strategy_ops + many_to_one `entry["page_numbers"]` + document_processor self_refs/page_numbers threading). Diff each touched repo file against its clean upstream base (per the 0003/0004 method), write `docker/docling-graph/patches/0005-lineage-chunk-metadata.patch`, dry-run against a fresh clean clone.
 
 Run: `cd /tmp && rm -rf cc && git clone <clone-origin> cc && cd cc && for p in <worktree>/docker/docling-graph/patches/*.patch; do patch -p1 --dry-run < "$p"; done`
 Expected: all patches (0001-0005) apply clean.
 
-- [ ] **Step 7: Commit** (tracked app files + patch + tests).
+- [ ] **Step 8: Commit** (tracked app/schema files + patch + tests).
 
 ```bash
 git add docker/docling-graph/app/provenance.py docker/docling-graph/app/main.py \
+  docker/docling-graph/app/schemas.py app/schemas/extraction_routing.py \
+  app/api/v1/extraction_routing.py \
   docker/docling-graph/patches/0005-lineage-chunk-metadata.patch \
   tests/unit/test_provenance_page_resolution.py
-git commit -m "fix(lineage): populate element_uid + page on both delta routes (Task 1)
+git commit -m "fix(lineage): populate element_uid + page on both delta routes; carry page_numbers through selected-chunk schemas (Task 1)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 2: Strict lineage-required commit gate (C) at the worker import boundary
+### Task 2: Strict lineage-required commit gate (C) — partition the MergedExtraction BEFORE node import
 
-**Goal:** At `_import_graph_phase_nodes`, refuse to upsert any entity whose lineage cannot be resolved (no resolvable `element_uid` + `page`), record the rejected set as a hard failure signal, and upsert only the lineage-complete set — so no entity ever commits without lineage, independent of Task 1.
+**Goal:** Reject any entity lacking resolvable lineage (no provenance row with non-empty `element_uid` AND non-null `page`) so it is NOT committed AND NOT seen by any downstream consumer (domain edges, structural edges, audit serialization). Because `derive_ontology_graph_merge` passes the SAME `merged` object to `_import_graph_phase_nodes`, `_import_graph_phase_domain_edges` (pipeline.py:7938), `_import_graph_phase_structural_edges` (7944), and `_build_provenance_envelope`/`_serialize_for_audit` (which iterates `merged.entities` and would write rejected entities with `rid=None`, pipeline.py:343/354), the gate must filter `merged.entities` itself, NOT just `node_records`.
+
+**Design (review finding High-2):** add a gate helper that partitions `merged.entities` in place at the **top of `derive_ontology_graph_merge`, immediately after `merge_and_resolve` returns and BEFORE `_build_provenance_envelope`** (pipeline.py ~7915). Replace `merged.entities` with the lineage-complete list; collect the rejected list; if any were rejected, record a hard failure signal on the run (the strict policy — surfaced, never silent). All downstream calls then operate on the filtered `merged` automatically. Also prune `merged.edges` whose endpoints reference a rejected entity identity (so domain edges don't dangle).
 
 **Files:**
-- Modify: `app/workers/pipeline.py:1295-1308` (`_import_graph_phase_nodes`)
+- Modify: `app/workers/pipeline.py` — add `_partition_entities_by_lineage(merged)` helper; call it in `derive_ontology_graph_merge` right after `merge_and_resolve` (~7915), before `_build_provenance_envelope` (~7918)
 - Test: `tests/unit/test_lineage_commit_gate.py`
 
 **Acceptance Criteria:**
-- [ ] An entity whose `MergedEntityRecord.provenance` has at least one row with non-empty `element_uid` AND non-null `page` is upserted.
-- [ ] An entity with no such provenance row is NOT in `node_records` (not upserted) and is recorded in a returned/logged `rejected_for_lineage` list (count + identities).
-- [ ] `identity_to_rid` is built only from the upserted (lineage-complete) entities, preserving zip-strict correctness.
-- [ ] The gate logs a loud WARNING/ERROR with the rejected count (never a silent skip).
+- [ ] After the gate, `merged.entities` contains ONLY entities with ≥1 provenance row having non-empty `element_uid` AND non-null `page`.
+- [ ] Rejected entities are removed from `merged.entities` (so domain/structural/audit paths never see them) and collected into a `rejected` list logged at ERROR with count + identities.
+- [ ] `merged.edges` referencing a rejected entity identity are pruned (no dangling edges).
+- [ ] The run is marked with a hard lineage-rejection signal (e.g. metrics/diagnostics field + loud log) when any entity is rejected — strict, never silent.
+- [ ] When all entities have lineage (the normal post-Task-1 case), the gate is a no-op pass-through.
 
 **Verify:** `python3 -m pytest tests/unit/test_lineage_commit_gate.py -v` → PASS.
 
 **Steps:**
 
-- [ ] **Step 1: Write failing test.** A fake `merged` with two entities — one with resolvable provenance, one with empty `element_uid` — asserts only the resolvable one reaches `upsert_nodes_batch_sync` and the other is rejected.
+- [ ] **Step 1: Write failing test.** Build a fake `MergedExtraction`-like object with two entities (one lineage-complete, one not) + an edge between them; assert the gate keeps only the lineage-complete entity, prunes the dangling edge, and records the rejection. Fixtures match the real contracts: `identity` exposes `entity_type`, `as_upsert_identity_dict()`, `identity_values_dict()` (used by `_build_node_record` pipeline.py:1283 and the logger); `provenance` is a list of rows with `.element_uid`/`.page`.
 
 ```python
 # tests/unit/test_lineage_commit_gate.py
@@ -289,42 +325,43 @@ pytestmark = pytest.mark.unit
 from app.workers import pipeline
 
 class _Prov:
-    def __init__(self, element_uid, page): self.element_uid=element_uid; self.page=page
+    def __init__(self, element_uid, page): self.element_uid = element_uid; self.page = page
 class _Ident:
-    def __init__(self, n): self._n=n
+    def __init__(self, n): self._n = n; self.entity_type = "RADAR_SYSTEM"
     def identity_values_dict(self): return {"system_name": self._n}
+    def as_upsert_identity_dict(self): return {"system_name": self._n}
+    def __hash__(self): return hash(self._n)
+    def __eq__(self, o): return isinstance(o, _Ident) and o._n == self._n
 class _Ent:
-    def __init__(self, n, prov): self.identity=_Ident(n); self.properties={}; self.confidence=0.9; self.provenance=prov
+    def __init__(self, n, prov):
+        self.identity = _Ident(n); self.properties = {}; self.confidence = 0.9; self.provenance = prov
+class _Edge:
+    def __init__(self, src, dst): self.source_identity = src; self.target_identity = dst
 class _Merged:
-    def __init__(self, ents): self.entities=ents
+    def __init__(self, ents, edges): self.entities = ents; self.edges = edges
 
-def test_gate_rejects_entity_without_lineage(monkeypatch):
-    captured = {}
-    class _Store:
-        def upsert_nodes_batch_sync(self, records, provenance):
-            captured["records"] = records
-            return [f"#1:{i}" for i in range(len(records))]
-    monkeypatch.setattr(pipeline, "get_graph_store", lambda: _Store())
-    merged = _Merged([
-        _Ent("Fan Song", [_Prov("#/texts/12", 3)]),     # resolvable
-        _Ent("Ghost",    [_Prov("", None)]),             # no lineage
-    ])
-    class _Tracker:
-        def mark(self): pass
-    result = pipeline._import_graph_phase_nodes(merged, ontology=None,
-        document_id="doc", tracker=_Tracker(), provenance={})
-    names = {r.identity_values.get("system_name") if hasattr(r,'identity_values') else None
-             for r in captured["records"]}
-    # only the resolvable entity upserts
-    assert len(captured["records"]) == 1
+def test_gate_filters_merged_and_prunes_edges():
+    ok = _Ent("Fan Song", [_Prov("#/texts/12", 3)])      # lineage-complete
+    bad = _Ent("Ghost", [_Prov("", None)])               # no lineage
+    merged = _Merged([ok, bad], [_Edge(ok.identity, bad.identity)])  # edge to rejected
+    rejected = pipeline._partition_entities_by_lineage(merged)
+    assert [e.identity._n for e in merged.entities] == ["Fan Song"]   # only lineage-ok kept
+    assert len(rejected) == 1 and rejected[0].identity._n == "Ghost"
+    assert merged.edges == []                                          # dangling edge pruned
+
+def test_gate_noop_when_all_have_lineage():
+    a = _Ent("A", [_Prov("#/texts/1", 1)]); b = _Ent("B", [_Prov("#/texts/2", 2)])
+    merged = _Merged([a, b], [_Edge(a.identity, b.identity)])
+    rejected = pipeline._partition_entities_by_lineage(merged)
+    assert rejected == [] and len(merged.entities) == 2 and len(merged.edges) == 1
 ```
 
-- [ ] **Step 2: Run — fails** (current code upserts both).
+- [ ] **Step 2: Run — fails** (`_partition_entities_by_lineage` not defined).
 
 Run: `python3 -m pytest tests/unit/test_lineage_commit_gate.py -v`
-Expected: FAIL — 2 records upserted, expected 1.
+Expected: FAIL — `AttributeError: module 'app.workers.pipeline' has no attribute '_partition_entities_by_lineage'`.
 
-- [ ] **Step 3: Implement the gate in `_import_graph_phase_nodes`** (pipeline.py:1295).
+- [ ] **Step 3: Implement the gate helper** in `app/workers/pipeline.py`.
 
 ```python
 def _has_resolvable_lineage(e) -> bool:
@@ -333,34 +370,56 @@ def _has_resolvable_lineage(e) -> bool:
         for p in (getattr(e, "provenance", None) or [])
     )
 
-lineage_ok = [e for e in merged.entities if _has_resolvable_lineage(e)]
-rejected = [e for e in merged.entities if not _has_resolvable_lineage(e)]
-if rejected:
-    logger.error(
-        "LINEAGE_GATE: rejecting %d/%d entities lacking resolvable lineage "
-        "(element_uid+page); identities=%r",
-        len(rejected), len(merged.entities),
-        [e.identity.identity_values_dict() for e in rejected][:20],
-    )
-
-node_records = [_build_node_record(e) for e in lineage_ok]
-tracker.mark()
-graph_store = get_graph_store()
-node_rids = graph_store.upsert_nodes_batch_sync(node_records, provenance)
-identity_to_rid = dict(zip((e.identity for e in lineage_ok), node_rids, strict=True))
-return identity_to_rid
+def _partition_entities_by_lineage(merged) -> list:
+    """STRICT lineage gate (spec Component 2C). Mutates `merged` in place to keep
+    only lineage-complete entities; prunes edges referencing rejected identities;
+    returns the rejected entity list. Runs BEFORE provenance envelope / node
+    import so NO downstream consumer (domain edges, structural edges, audit
+    serialization) ever sees a lineage-less entity."""
+    keep, rejected = [], []
+    for e in merged.entities:
+        (keep if _has_resolvable_lineage(e) else rejected).append(e)
+    if rejected:
+        rejected_ids = {e.identity for e in rejected}
+        merged.entities = keep
+        merged.edges = [
+            ed for ed in (getattr(merged, "edges", None) or [])
+            if getattr(ed, "source_identity", None) not in rejected_ids
+            and getattr(ed, "target_identity", None) not in rejected_ids
+        ]
+        logger.error(
+            "LINEAGE_GATE: rejected %d/%d entities lacking resolvable lineage "
+            "(element_uid+page) — NOT committed; identities=%r",
+            len(rejected), len(keep) + len(rejected),
+            [e.identity.identity_values_dict() for e in rejected][:20],
+        )
+    return rejected
 ```
 
-- [ ] **Step 4: Run — passes.**
+Then call it in `derive_ontology_graph_merge` right after `merge_and_resolve(...)` (pipeline.py ~7914) and BEFORE `_build_provenance_envelope` (~7918):
+
+```python
+        merged = merge_and_resolve(...)
+        _lineage_rejected = _partition_entities_by_lineage(merged)   # STRICT gate
+        # record the hard signal on the run for operator visibility (strict policy)
+        if _lineage_rejected:
+            _record_lineage_rejection(run_id, _lineage_rejected)  # writes a diagnostics/metrics field; see Step 4
+        _apply_post_merge_yield_updates(run_id, merged, manifest)
+        ...
+```
+
+- [ ] **Step 4: Add the run-level hard signal.** Implement `_record_lineage_rejection(run_id, rejected)` to write a `lineage_rejected_count` + sample identities into the run's `metrics`/diagnostics (reuse the existing `_write_pipeline_run_metrics` pattern). This makes the strict rejection surfaced, not silent. (Exact column/JSON key: follow `_write_pipeline_run_metrics` in pipeline.py.)
+
+- [ ] **Step 5: Run — passes.**
 
 Run: `python3 -m pytest tests/unit/test_lineage_commit_gate.py -v`
-Expected: PASS.
+Expected: PASS (both tests).
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 6: Commit.**
 
 ```bash
 git add app/workers/pipeline.py tests/unit/test_lineage_commit_gate.py
-git commit -m "feat(lineage): strict commit gate — reject entities without resolvable lineage (Task 2)
+git commit -m "feat(lineage): strict gate — partition MergedExtraction before import; prune dangling edges (Task 2)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
