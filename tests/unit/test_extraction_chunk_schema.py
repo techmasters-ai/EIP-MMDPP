@@ -23,7 +23,7 @@ _EXPECTED_FIELDS = [
     ("embedding", "ARRAY_OF_FLOATS"),
     ("page_number", "INTEGER"),
     ("modality", "STRING"),
-    ("created_at", "TIMESTAMP"),
+    ("created_at", "DATETIME"),
     ("chunk_index", "INTEGER"),
     ("source_refs", "LIST"),
     ("token_count", "INTEGER"),
@@ -87,7 +87,7 @@ def test_extraction_chunk_embedding_dim_matches_textchunk():
 
 
 def test_extraction_chunk_has_created_at():
-    """ExtractionChunk must have created_at TIMESTAMP — load-bearing for janitor orphan cleanup (rev 8 M5)."""
+    """ExtractionChunk must have created_at DATETIME — load-bearing for janitor orphan cleanup (rev 8 M5)."""
     from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
 
     fields = dict(_STRUCTURAL_VERTEX_TYPES.get("ExtractionChunk", []))
@@ -96,7 +96,45 @@ def test_extraction_chunk_has_created_at():
         "This field is load-bearing for janitor age-sweep (rev 8 M5): "
         "janitor queries ArcadeDB for chunks WHERE created_at < NOW() - INTERVAL '24 hours'."
     )
-    assert fields["created_at"] == "TIMESTAMP", (
-        f"ExtractionChunk.created_at must be TIMESTAMP (for sysdate() default + interval arithmetic), "
-        f"got {fields['created_at']!r}"
+    # Must be DATETIME, NOT TIMESTAMP: ArcadeDB's com.arcadedb.schema.Type enum has
+    # no TIMESTAMP member, so a TIMESTAMP declaration fails the CREATE PROPERTY DDL
+    # at runtime ("No enum constant com.arcadedb.schema.Type.TIMESTAMP") and the
+    # dependent created_at index never gets built. sysdate() returns a DATETIME, and
+    # every other timestamp column in this schema (entity/edge created_at) uses DATETIME.
+    assert fields["created_at"] == "DATETIME", (
+        f"ExtractionChunk.created_at must be DATETIME (sysdate() return type; matches "
+        f"_COMMON_ENTITY_PROPS/_COMMON_EDGE_PROPS), got {fields['created_at']!r}"
+    )
+
+
+def test_all_structural_vertex_types_use_valid_arcadedb_types():
+    """Every declared property type must be a real ArcadeDB ``Type`` enum member.
+
+    Regression guard for the TIMESTAMP bug: a unit test that only checks the Python
+    dict can lock in a type string that ArcadeDB rejects at runtime. ArcadeDB passes
+    the type string straight into ``CREATE PROPERTY ... <TYPE>``, so any value outside
+    the enum fails the live schema sync (and silently — sync swallows the error and
+    continues). This test validates the dict against the actual enum set so an invalid
+    type fails CI instead of only at container boot.
+    """
+    from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
+
+    # com.arcadedb.schema.Type enum members (scalars + the array specializations used here).
+    valid_arcadedb_types = {
+        "BOOLEAN", "INTEGER", "SHORT", "LONG", "FLOAT", "DOUBLE", "DECIMAL",
+        "STRING", "DATE", "DATETIME", "BINARY", "BYTE", "LIST", "MAP",
+        "EMBEDDED", "LINK",
+        "ARRAY_OF_SHORTS", "ARRAY_OF_INTEGERS", "ARRAY_OF_LONGS",
+        "ARRAY_OF_FLOATS", "ARRAY_OF_DOUBLES",
+    }
+
+    offenders: list[str] = []
+    for vtype, props in _STRUCTURAL_VERTEX_TYPES.items():
+        for prop_name, prop_type in props:
+            if prop_type not in valid_arcadedb_types:
+                offenders.append(f"{vtype}.{prop_name} = {prop_type!r}")
+
+    assert not offenders, (
+        "Invalid ArcadeDB property type(s) declared (would fail CREATE PROPERTY at "
+        "schema-sync time):\n  " + "\n  ".join(offenders)
     )

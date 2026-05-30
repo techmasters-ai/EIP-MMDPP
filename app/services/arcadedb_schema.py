@@ -45,7 +45,7 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("embedding", "ARRAY_OF_FLOATS"),  # dim=1024, cosine HNSW
         ("page_number", "INTEGER"),
         ("modality", "STRING"),          # text | table | picture_caption
-        ("created_at", "TIMESTAMP"),     # DEFAULT NOW(); janitor sweep key (rev 8 M5)
+        ("created_at", "DATETIME"),      # set via sysdate(); janitor sweep key (rev 8 M5)
         # --- Phase 1 Task 1 (merged-chunk routing) -------------------
         # Defaults applied APPLICATION-SIDE via read_chunk_* accessors
         # in extraction_chunk_index.py; NO ArcadeDB DEFAULT clause.
