@@ -62,13 +62,17 @@ class TestBasicShape:
 
 
 class TestBlanking:
-    def test_short_chunk_text_orig_become_empty(self):
+    def test_short_chunk_text_is_retained_when_short_reject_disabled(self):
+        # The Layer-1 short-reject rule (Rule 1) is disabled in the live filter
+        # (skip_short_reject=True — experiment commits a324c61/ad3a111). Short
+        # chunks like a lone "™" are therefore NO LONGER blanked; they pass
+        # through unchanged and blanked_short stays 0.
         from app.services.scoped_docling_document import filter_docling_document
         doc = _make_doc([_make_text(0, "™")])
         filtered, diag = filter_docling_document(doc)
-        assert filtered["texts"][0]["text"] == ""
-        assert filtered["texts"][0]["orig"] == ""
-        assert diag.blanked_short == 1
+        assert filtered["texts"][0]["text"] == "™"
+        assert filtered["texts"][0]["orig"] == "™"
+        assert diag.blanked_short == 0
 
     def test_short_chunk_clears_hyperlink_when_present(self):
         from app.services.scoped_docling_document import filter_docling_document
@@ -261,16 +265,20 @@ class TestHeadingLabelProtection:
         assert diag.protected_labels == 2
 
     def test_page_header_label_is_NOT_protected(self):
-        """page_header is webpage-export chrome (date stamps, breadcrumbs)
-        and must NOT be in the protected set — it should still be blanked
-        when short. Only true heading labels are protected."""
+        """page_header is webpage-export chrome (date stamps, breadcrumbs) and
+        must NOT be in the protected heading set (protected_labels stays 0).
+
+        Note: with the short-reject rule disabled in the live filter
+        (skip_short_reject=True — experiment a324c61/ad3a111), a short
+        page_header date stamp is no longer blanked either; it is retained with
+        blanked_short=0. The invariant this test guards is that page_header is
+        not granted heading-protection, NOT that short text gets blanked."""
         from app.services.scoped_docling_document import filter_docling_document
         elem = _make_text(0, "10/6/25, 8:33 PM", label="page_header")
         doc = _make_doc([elem])
         filtered, diag = filter_docling_document(doc)
-        assert filtered["texts"][0]["text"] == ""  # blanked
-        assert diag.blanked_short == 1
-        assert diag.protected_labels == 0
+        assert diag.protected_labels == 0  # page_header is NOT a protected heading
+        assert diag.blanked_short == 0      # short-reject disabled → not blanked
 
 
 class TestDefensiveEdgeCases:

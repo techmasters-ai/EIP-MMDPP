@@ -80,7 +80,7 @@ class TestRerankerConfig:
         s = Settings(_env_file=None, postgres_password="test")
         assert s.docling_graph_base_url == "http://docling-graph:8002"
         assert s.docling_graph_concurrency == 2
-        assert s.docling_graph_timeout == 1800  # 30 min per LLM call — Celery soft-limits already cap the full extraction run
+        assert s.docling_graph_timeout == 72000  # long ceiling per extract-pass; gemma4 passes can run very long under load (set by a08bf5b)
 
     def test_ollama_settings_present(self):
         """Ollama settings should be present."""
