@@ -31,15 +31,31 @@ API = "http://localhost:8005"
 PER_DOC_TIMEOUT_MIN = 300
 TERMINAL = ("COMPLETE", "FAILED", "ERROR", "CANCELLED", "PARTIAL_COMPLETE")
 
-# smallest/safest → riskiest (30MB stress case last)
+# ALL 21 distinct notebooks/ docs, smallest → largest (30MB stress case last).
+# Full-ingest every doc on the collection source so the whole corpus is parsed/
+# chunked/extracted by CURRENT code (apples-to-apples) — re-ingesting the ones
+# previously ingested on SA-2_Sources/baseline_subset under fresh copies here.
 DOCS = [
-    "radar2_waveform1.pdf",                                  # already in-flight (6369f186)
-    "chinese_research_paper.pdf",
+    "Fan_Song_Radar.jpeg",
+    "0005_wildweasels.org_SA-2_and_SR-71_17_Apr_2020.pdf.txt",
+    "radar2_waveform1.pdf",                                  # may already be in-flight (6369f186)
+    "cw_radar.jpg",
+    "Microsoft Word - lf99-4297_final-combineddoc.doc - 20080014230.pdf",
     "Radar Basics.pdf",
-    "radar_textbook_chapter7.pdf",
+    "chinese_handwritten_notes.pdf",
+    "SNR-75 - Wikipedia.pdf",
+    "chinese_handwritten_notes_2.pdf",
     "Handwritten_Text.pdf",
-    "S-75 Dvina _ Military Wiki _ Fandom.pdf",
+    "V-75 SA-2 GUIDELINE.pdf",
+    "radar_textbook_chapter7.pdf",
+    "Images_Demo_Doc.pdf",
     "EWIRDB_Production.pdf",                                  # multi-system — key case
+    "SA-2_and_SR-71_17_Apr_2020.pdf",
+    "chinese_research_paper.pdf",
+    "S-75 Dvina _ Military Wiki _ Fandom.pdf",
+    "S-75 Dvina.pdf",
+    "SA-2 Surface-to-Air Missile _ National Museum of the United States Air Force™ _ Display.pdf",
+    "SA-2 Guideline _ Зенитный Ракетный Комплекс С-75 Двина_Десна_Волхов.pdf",
     "Engagement and Fire Control Radars (S-Band, X-band).pdf",  # 30MB stress case
 ]
 
