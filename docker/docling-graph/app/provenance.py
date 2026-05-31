@@ -122,24 +122,30 @@ def synthesize_provenance_from_pass_output(
     if not isinstance(pass_output, dict):
         return []
 
+    # Pick the source chunk id ONCE so element_uid and page are guaranteed
+    # co-sourced from the same chunk. Prefer chunk 0; else the first available
+    # self_refs key. element_uid + page are then both indexed by this single
+    # cid — never two independent `get(0) or next(iter(...))` fallbacks that
+    # could resolve to DIFFERENT chunks.
     if chunk_to_self_refs:
-        first_refs = chunk_to_self_refs.get(0) or next(
-            iter(chunk_to_self_refs.values()), None
-        )
+        cid = 0 if 0 in chunk_to_self_refs else next(iter(chunk_to_self_refs), None)
+    else:
+        cid = None
+
+    if cid is not None and chunk_to_self_refs:
+        first_refs = chunk_to_self_refs.get(cid)
         first_element_uid = first_refs[0] if first_refs else ""
     else:
         first_element_uid = ""
 
-    # Resolve page from the SAME chunk index as element_uid (chunk 0, or the
-    # first available). Reads the parallel page map main.py builds from
-    # last_chunk_metadata.page_numbers — the same source _resolve_page uses on
-    # the primary path, so the two never diverge. Stays None when no map is
-    # supplied (genuinely page-less source — never fabricated).
+    # Resolve page from the SAME chunk id as element_uid (cid above). Reads the
+    # parallel page map main.py builds from last_chunk_metadata.page_numbers,
+    # which ultimately traces to the same last_chunk_metadata that yields
+    # chunk_to_self_refs — so element_uid and page never diverge. Stays None
+    # when no map is supplied (genuinely page-less source — never fabricated).
     first_page: int | None = None
-    if chunk_to_page_numbers:
-        pages = chunk_to_page_numbers.get(0) or next(
-            iter(chunk_to_page_numbers.values()), None
-        )
+    if cid is not None and chunk_to_page_numbers:
+        pages = chunk_to_page_numbers.get(cid)
         if pages:
             first = pages[0]
             if isinstance(first, int):
@@ -173,7 +179,11 @@ def synthesize_provenance_from_pass_output(
                     identity_values=identity_values,
                     element_uid=first_element_uid,
                     page=first_page,
-                    chunk_index=0 if chunk_to_self_refs else None,
+                    # Populate page_numbers too (the primary path sets both);
+                    # mirror the single resolved page so consumers reading
+                    # either field agree.
+                    page_numbers=[first_page] if first_page is not None else [],
+                    chunk_index=cid,
                 )
             )
     return out

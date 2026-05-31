@@ -1,5 +1,5 @@
 diff --git a/docling_graph/core/extractors/strategies/many_to_one.py b/docling_graph/core/extractors/strategies/many_to_one.py
-index 85c0d63..b9ccef3 100644
+index 85c0d63..694bc22 100644
 --- a/docling_graph/core/extractors/strategies/many_to_one.py
 +++ b/docling_graph/core/extractors/strategies/many_to_one.py
 @@ -354,6 +354,7 @@ class ManyToOneStrategy(BaseExtractor):
@@ -10,7 +10,7 @@ index 85c0d63..b9ccef3 100644
                      )
                  else:
                      model, extraction_time = extract_delta_from_document(
-@@ -532,12 +533,42 @@ class ManyToOneStrategy(BaseExtractor):
+@@ -532,12 +533,44 @@ class ManyToOneStrategy(BaseExtractor):
                  )
              return [], document
  
@@ -20,22 +20,24 @@ index 85c0d63..b9ccef3 100644
 +    ) -> list[int]:
 +        """Resolve page numbers for a chunk's ``source_refs`` against the
 +        DoclingDocument (fallback when the caller didn't supply
-+        ``page_numbers``). Looks up each self_ref via ``document.lookup`` (or
-+        the ref-to-item map) and reads ``item.prov[].page_no``. Returns a
++        ``page_numbers``). Materializes each self_ref via
++        ``RefItem(cref=ref).resolve(document)`` — ``DoclingDocument`` has no
++        ``lookup`` method in the pinned docling-core, so resolution goes
++        through ``RefItem.resolve`` — then reads ``item.prov[].page_no``
++        (mirrors ``document_processor._evidence_units_for_chunk``). Returns a
 +        sorted unique list; empty when nothing resolves (genuinely page-less
 +        — never fabricated)."""
 +        if document is None or not self_refs:
 +            return []
++        from docling_core.types.doc.document import RefItem
++
 +        pages: set[int] = set()
-+        lookup = getattr(document, "lookup", None)
 +        for ref in self_refs:
-+            item = None
-+            if callable(lookup):
-+                try:
-+                    item = lookup(ref)
-+                except Exception:
-+                    item = None
-+            if item is None:
++            if not isinstance(ref, str) or not ref:
++                continue
++            try:
++                item = RefItem(cref=ref).resolve(document)
++            except Exception:
 +                continue
 +            for prov in getattr(item, "prov", None) or []:
 +                page_no = getattr(prov, "page_no", None)
@@ -53,7 +55,7 @@ index 85c0d63..b9ccef3 100644
      ) -> Tuple[BaseModel | None, float]:
          """Run delta extraction against caller-supplied chunks.
  
-@@ -551,7 +582,14 @@ class ManyToOneStrategy(BaseExtractor):
+@@ -551,7 +584,14 @@ class ManyToOneStrategy(BaseExtractor):
          ``chunk_id`` / ``self_refs`` / ``evidence_ids`` / ``token_count``
          per row.
  
@@ -69,7 +71,7 @@ index 85c0d63..b9ccef3 100644
          """
          from ..contracts.delta.strategy_ops import _emit_chunk_created_traces
  
-@@ -561,11 +599,18 @@ class ManyToOneStrategy(BaseExtractor):
+@@ -561,11 +601,18 @@ class ManyToOneStrategy(BaseExtractor):
          for entry in pre:
              text = entry["text"]
              self_refs = list(entry.get("source_refs") or [])

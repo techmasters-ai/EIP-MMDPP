@@ -106,3 +106,77 @@ def test_resolve_page_reads_same_source_as_build_context():
     prov = _load()
     node = {"provenance": {"page_numbers": [7, 9]}}
     assert prov._resolve_page(node) == 7
+
+
+def test_synthesize_element_uid_and_page_co_sourced_from_same_chunk():
+    # Review fix: element_uid and page must come from the SAME chunk id. With
+    # chunk 0 ABSENT from both maps, the chosen chunk is the first available key
+    # (here 4) — element_uid, page, chunk_index, and page_numbers must all
+    # reflect chunk 4, never a mix from different chunks.
+    from typing import List
+
+    from pydantic import BaseModel
+
+    prov = _load()
+
+    class _Rec(BaseModel):
+        model_config = {
+            "is_entity": True,
+            "ontology_name": "RADAR_SYSTEM",
+            "graph_id_fields": ["system_name"],
+        }
+        system_name: str
+
+    class _Tpl(BaseModel):
+        radar_systems: List[_Rec] = []
+
+    rows = prov.synthesize_provenance_from_pass_output(
+        pass_output={"radar_systems": [{"system_name": "Fan Song"}]},
+        template_cls=_Tpl,
+        chunk_to_self_refs={4: ["#/texts/40"]},   # chunk 0 absent
+        chunk_to_page_numbers={4: [8]},           # same key 4
+        provenance_cls=_ProvStub,
+    )
+    assert rows
+    r = rows[0]
+    assert r.element_uid == "#/texts/40", "element_uid must come from chunk 4"
+    assert r.page == 8, "page must come from the SAME chunk (4), not a different one"
+    assert r.chunk_index == 4, "chunk_index must report the actually-chosen chunk"
+    assert r.page_numbers == [8], "page_numbers must mirror the single resolved page"
+
+
+def test_synthesize_sets_page_numbers_when_page_resolves():
+    # Review fix: synthesized rows populate page_numbers (was always []).
+    from typing import List
+
+    from pydantic import BaseModel
+
+    prov = _load()
+
+    class _Rec(BaseModel):
+        model_config = {
+            "is_entity": True,
+            "ontology_name": "RADAR_SYSTEM",
+            "graph_id_fields": ["system_name"],
+        }
+        system_name: str
+
+    class _Tpl(BaseModel):
+        radar_systems: List[_Rec] = []
+
+    rows = prov.synthesize_provenance_from_pass_output(
+        pass_output={"radar_systems": [{"system_name": "Fan Song"}]},
+        template_cls=_Tpl,
+        chunk_to_self_refs={0: ["#/texts/12"]},
+        chunk_to_page_numbers={0: [3]},
+        provenance_cls=_ProvStub,
+    )
+    assert rows[0].page_numbers == [3]
+    # And empty (never [None]) when no page resolves:
+    rows2 = prov.synthesize_provenance_from_pass_output(
+        pass_output={"radar_systems": [{"system_name": "Fan Song"}]},
+        template_cls=_Tpl,
+        chunk_to_self_refs={0: ["#/texts/12"]},
+        provenance_cls=_ProvStub,
+    )
+    assert rows2[0].page_numbers == []
