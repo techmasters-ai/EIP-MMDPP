@@ -64,3 +64,13 @@ def test_gate_noop_when_all_have_lineage():
     merged = _Merged([a, b], [_Edge(a.identity, b.identity)])
     rejected = pipeline._partition_entities_by_lineage(merged)
     assert rejected == [] and len(merged.entities) == 2 and len(merged.edges) == 1
+
+
+def test_gate_keeps_entity_with_page_zero():
+    # page 0 is a real page — must NOT be rejected (only element_uid=='' or
+    # page is None fail the gate, per _has_resolvable_lineage).
+    e = _Ent("PageZero", [_Prov("#/texts/0", 0)])
+    merged = _Merged([e], [])
+    rejected = pipeline._partition_entities_by_lineage(merged)
+    assert rejected == []
+    assert [x.identity._n for x in merged.entities] == ["PageZero"]

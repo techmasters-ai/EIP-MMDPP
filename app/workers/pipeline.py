@@ -509,10 +509,10 @@ def _partition_entities_by_lineage(merged) -> list:
 
 def _record_lineage_rejection(run_id, rejected) -> None:
     """Surface the strict lineage rejection on ``run.metrics`` (MERGE, not
-    replace — ``_write_pipeline_run_metrics`` runs just before and assigns
-    ``run.metrics`` wholesale at pipeline.py:544, so a read-modify-write is
-    required to avoid clobbering the quality-signal blob). Hard signal: the
-    run is marked, never silent, when any entity is rejected."""
+    replace — ``_write_pipeline_run_metrics`` runs just before and reassigns
+    ``run.metrics`` wholesale, so a read-modify-write is required here to avoid
+    clobbering the quality-signal blob). Hard signal: the run is marked, never
+    silent, when any entity is rejected."""
     from app.models.ingest import PipelineRun
 
     with get_sync_session() as session:
