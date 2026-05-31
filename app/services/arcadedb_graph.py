@@ -57,6 +57,32 @@ class UpsertMissingRIDError(RuntimeError):
     """
 
 
+class UpsertNotDurableError(RuntimeError):
+    """Raised when ``upsert_nodes_batch_sync`` returns ``@rid`` values for
+    every record yet a post-upsert re-query shows fewer rows are actually
+    committed/queryable than were written.
+
+    This converts the SILENT zero-commit documented in the Task 0 lineage
+    diagnostic (reports/collection/lineage_diagnostic_findings.md) into a
+    loud failure. In that incident the SA-2 merge upserted 22 entities,
+    ``upsert_nodes_batch_sync`` returned 22 RIDs (so the RID-presence sanity
+    check — ``UpsertMissingRIDError`` — passed), the merge phase was marked
+    ``result='succeeded'``, and yet 0 of the 22 entities were queryable in
+    ArcadeDB afterward. RID presence is therefore NECESSARY BUT NOT
+    SUFFICIENT: a returned RID does not guarantee a durably committed,
+    re-queryable row. The durability re-query that raises this error is the
+    safety net that guarantees a zero/partial-commit can never again report
+    success — it raises here so the caller's existing rollback/FAILED path
+    (``derive_ontology_graph_merge``) fires instead of marking the merge
+    succeeded.
+
+    Distinct from ``UpsertMissingRIDError`` (blank @rid in the response) and
+    the entry-validation ``ValueError`` (malformed identity). Those fire
+    BEFORE this check; this one fires only when RIDs look valid but the rows
+    don't survive a read-back.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2241,9 +2267,53 @@ class ArcadeDBGraphStore:
                 f"Missing: {missing_detail}"
             )
 
+        # --- Durability assertion: every returned RID must be queryable ---
+        # Task 3 (lineage_diagnostic_findings.md). RID presence above is
+        # necessary but NOT sufficient: the SA-2 silent zero-commit returned
+        # valid RIDs while persisting 0 rows. Re-read the just-written RIDs
+        # in a SINGLE batch query (one round-trip, not per-entity) and assert
+        # the committed count matches what we wrote. If the read-back is
+        # short, the write did not durably commit — raise so the caller's
+        # rollback/FAILED path fires instead of marking the merge succeeded.
+        self._assert_nodes_durable_sync(rids)
+
         if provenance:
             self._create_provenance_edges_batch_sync(rids, provenance)
         return rids
+
+    def _assert_nodes_durable_sync(self, rids: list[str]) -> None:
+        """Re-query just-upserted RIDs and assert all are committed/queryable.
+
+        ``rids`` are the (non-blank, already RID-checked) RIDs returned by the
+        upsert sqlscript. We issue one ``SELECT count(*) FROM [<rid>, ...]``
+        over the literal RID list — a single round-trip for the whole batch —
+        and raise :class:`UpsertNotDurableError` if fewer rows come back than
+        we wrote. ``SELECT FROM [#rid, #rid]`` (record-id targets) returns
+        only the records that actually exist, so a non-durable / rolled-back
+        write surfaces as a short count even though the upsert returned RIDs.
+        """
+        if not rids:
+            return
+        # RIDs come straight from ArcadeDB's own response (e.g. "#10:0"); they
+        # are not user input, so embedding them in the FROM target is safe and
+        # avoids the per-class WHERE-by-identity loop the cost constraint
+        # forbids. Validate the shape defensively before interpolation.
+        safe_rids = [r for r in rids if isinstance(r, str) and r.startswith("#")]
+        if not safe_rids:
+            return
+        rid_list = ", ".join(safe_rids)
+        sql = f"SELECT count(*) AS count FROM [{rid_list}]"
+        rows = self._client.query_sync(self._database, "sql", sql)
+        committed = _count(rows)
+        if committed < len(safe_rids):
+            raise UpsertNotDurableError(
+                f"upsert_nodes_batch_sync: durability re-query found "
+                f"{committed}/{len(safe_rids)} upserted node(s) actually "
+                f"committed/queryable in ArcadeDB. Returned RIDs were "
+                f"{safe_rids}. A returned @rid did NOT result in a durable "
+                f"row — refusing to report success on a silent zero/partial "
+                f"commit (see lineage_diagnostic_findings.md, Task 3)."
+            )
 
     def _create_provenance_edges_batch_sync(
         self,

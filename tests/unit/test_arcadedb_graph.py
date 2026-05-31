@@ -29,7 +29,15 @@ def _make_client(
     client.command = AsyncMock(return_value=command_result or [{"@rid": "#1:0"}])
     client.query = AsyncMock(return_value=query_result or [])
     client.command_sync = MagicMock(return_value=command_sync_result or [{"@rid": "#1:0"}])
-    client.query_sync = MagicMock(return_value=query_sync_result or [])
+    # Default query_sync answers the upsert durability re-query (Task 3:
+    # SELECT count(*) FROM [<rid>...]) with a count high enough to satisfy
+    # any small happy-path batch, so tests focused on upsert SQL shape don't
+    # have to prime it. Tests that specifically exercise the durability
+    # assertion build their own client with an explicit (short) count.
+    client.query_sync = MagicMock(
+        return_value=query_sync_result if query_sync_result is not None
+        else [{"count": 1_000_000}]
+    )
     client.close_sync = MagicMock()
     return client
 
