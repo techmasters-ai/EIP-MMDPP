@@ -16,24 +16,44 @@ These are unit tests: the ArcadeDB client is mocked, no live DB. The live
 proof of the end-to-end conversion (succeeded → FAILED) is Task 5.
 """
 
+import re
+
 from unittest.mock import MagicMock
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
+_RID_RE = re.compile(r"#\d+:\d+")
 
-def _make_client(command_sync_result=None, query_sync_result=None):
+
+def _make_client(command_sync_result=None, durable_rids=None):
     """Mock ArcadeDBClient with configurable sync return values.
 
-    ``command_sync`` drives the upsert sqlscript result (the returned RIDs);
-    ``query_sync`` drives the durability re-query (the committed count).
+    ``command_sync`` drives the upsert sqlscript result (the returned RIDs).
+
+    ``durable_rids`` drives the per-type durability re-query. The corrected
+    assertion issues ``SELECT @rid FROM <Type> WHERE @rid IN [...]`` (one per
+    vertex type) and counts the RIDs that come back — NOT a ``count(*)`` over a
+    literal list, which against real ArcadeDB counts list entries and silently
+    masks a non-durable RID. So the mock returns, for each query, the @rid rows
+    for whichever of ``durable_rids`` are named in that query's RID-IN list.
+    ``durable_rids=None`` means every RID mentioned is treated as durable.
     """
     client = MagicMock()
     client.command_sync = MagicMock(
         return_value=command_sync_result or [{"@rid": "#1:0"}],
     )
-    client.query_sync = MagicMock(return_value=query_sync_result or [])
+
+    def _query_sync(_db, _lang, sql, _params=None):
+        rids_in_query = _RID_RE.findall(sql)
+        if durable_rids is None:
+            present = rids_in_query
+        else:
+            present = [r for r in rids_in_query if r in durable_rids]
+        return [{"rid": r} for r in present]
+
+    client.query_sync = MagicMock(side_effect=_query_sync)
     client.close_sync = MagicMock()
     return client
 
@@ -73,7 +93,7 @@ class TestDurabilityAssertionFailsLoudly:
 
         client = _make_client(
             command_sync_result=[{"@rid": "#10:0"}, {"@rid": "#10:1"}],
-            query_sync_result=[{"count": 0}],  # 0 of 2 actually queryable
+            durable_rids=set(),  # 0 of 2 actually queryable
         )
         store = _graph(client)
         records = [_node_record(name="A"), _node_record(name="B")]
@@ -82,10 +102,12 @@ class TestDurabilityAssertionFailsLoudly:
             store.upsert_nodes_batch_sync(records)
 
         # Error message must name the gap (2 written, 0 durable) so the
-        # operator can act, and must have run the re-query exactly once.
+        # operator can act. Both records share one vertex type, so the per-type
+        # re-query runs once; but a non-durable type retries up to 3× to ride
+        # out async-flush lag, so allow the bounded retry budget.
         msg = str(exc.value)
         assert "0" in msg and "2" in msg
-        assert client.query_sync.call_count == 1
+        assert 1 <= client.query_sync.call_count <= 3
 
     def test_partial_commit_raises(self):
         """N RIDs returned, only M<N queryable -> still a data-loss event."""
@@ -95,7 +117,7 @@ class TestDurabilityAssertionFailsLoudly:
             command_sync_result=[
                 {"@rid": "#10:0"}, {"@rid": "#10:1"}, {"@rid": "#10:2"},
             ],
-            query_sync_result=[{"count": 2}],  # 2 of 3 committed
+            durable_rids={"#10:0", "#10:1"},  # 2 of 3 committed; #10:2 missing
         )
         store = _graph(client)
         records = [
@@ -104,18 +126,22 @@ class TestDurabilityAssertionFailsLoudly:
             _node_record(name="C"),
         ]
 
-        with pytest.raises(UpsertNotDurableError):
+        with pytest.raises(UpsertNotDurableError) as exc:
             store.upsert_nodes_batch_sync(records)
 
-    def test_durability_check_is_a_single_batch_query(self):
-        """Cost guard: the re-query is ONE query for the whole batch, not
-        one per entity (the constraint forbids a per-entity re-query loop).
+        # Fixed query can name WHICH rid was non-durable.
+        assert "#10:2" in str(exc.value)
+
+    def test_durability_check_is_one_query_per_type_not_per_entity(self):
+        """Cost guard: the re-query is ONE query PER VERTEX TYPE for the whole
+        batch, not one per entity (the constraint forbids a per-entity re-query
+        loop). A single-type batch → exactly one query naming all its RIDs.
         """
         client = _make_client(
             command_sync_result=[
                 {"@rid": "#10:0"}, {"@rid": "#10:1"}, {"@rid": "#10:2"},
             ],
-            query_sync_result=[{"count": 3}],
+            durable_rids={"#10:0", "#10:1", "#10:2"},  # all durable
         )
         store = _graph(client)
         records = [
@@ -126,14 +152,75 @@ class TestDurabilityAssertionFailsLoudly:
 
         store.upsert_nodes_batch_sync(records)
 
-        # Exactly one durability re-query for the 3-record batch.
+        # One vertex type (RADAR_SYSTEM) → exactly one durability re-query.
         assert client.query_sync.call_count == 1
-        # And it queries the actual written RIDs (batch-by-RID), not a
-        # per-record identity loop.
+        # It queries by vertex type with @rid IN [...], not count(*) over a
+        # literal RID list (which would count list entries, not rows), and
+        # names every written RID.
         rid_query = client.query_sync.call_args.args[2]
+        assert "RADAR_SYSTEM" in rid_query
+        assert "@rid in" in rid_query.lower()
+        assert "count(*)" not in rid_query.lower()
         assert "#10:0" in rid_query
         assert "#10:1" in rid_query
         assert "#10:2" in rid_query
+
+    def test_multi_type_batch_groups_rids_by_type(self):
+        """A batch spanning multiple vertex types must group RIDs by type and
+        sum per-type existence counts. A single ``FROM <Type>`` would
+        under-count the other types → false UpsertNotDurableError. One query
+        per type; all RIDs durable → passes.
+        """
+        client = _make_client(
+            command_sync_result=[
+                {"@rid": "#37:0"},  # RADAR_SYSTEM
+                {"@rid": "#40:0"},  # MISSILE_SYSTEM
+                {"@rid": "#37:1"},  # RADAR_SYSTEM
+            ],
+            durable_rids={"#37:0", "#40:0", "#37:1"},
+        )
+        store = _graph(client)
+        records = [
+            _node_record(name="A", entity_type="RADAR_SYSTEM"),
+            _node_record(name="M", entity_type="MISSILE_SYSTEM"),
+            _node_record(name="B", entity_type="RADAR_SYSTEM"),
+        ]
+
+        result = store.upsert_nodes_batch_sync(records)
+        assert result == ["#37:0", "#40:0", "#37:1"]
+
+        # Two distinct vertex types → two per-type re-queries (not three
+        # per-entity, not one global list).
+        assert client.query_sync.call_count == 2
+        queried_types = {
+            re.search(r"FROM (\w+) WHERE", call.args[2]).group(1)
+            for call in client.query_sync.call_args_list
+        }
+        assert queried_types == {"RADAR_SYSTEM", "MISSILE_SYSTEM"}
+
+    def test_multi_type_batch_one_type_non_durable_raises(self):
+        """When ONE type's rows didn't commit, the per-type sum is short and
+        the assertion must still raise — proving the grouping doesn't mask a
+        partial commit hidden inside a multi-type batch.
+        """
+        from app.services.arcadedb_graph import UpsertNotDurableError
+
+        client = _make_client(
+            command_sync_result=[
+                {"@rid": "#37:0"},  # RADAR_SYSTEM  (durable)
+                {"@rid": "#40:0"},  # MISSILE_SYSTEM (NOT durable)
+            ],
+            durable_rids={"#37:0"},
+        )
+        store = _graph(client)
+        records = [
+            _node_record(name="A", entity_type="RADAR_SYSTEM"),
+            _node_record(name="M", entity_type="MISSILE_SYSTEM"),
+        ]
+
+        with pytest.raises(UpsertNotDurableError) as exc:
+            store.upsert_nodes_batch_sync(records)
+        assert "#40:0" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +231,7 @@ class TestDurabilityAssertionHappyPath:
     def test_all_committed_passes_and_returns_rids(self):
         client = _make_client(
             command_sync_result=[{"@rid": "#10:0"}, {"@rid": "#10:1"}],
-            query_sync_result=[{"count": 2}],  # both durable
+            durable_rids={"#10:0", "#10:1"},  # both durable
         )
         store = _graph(client)
         records = [_node_record(name="A"), _node_record(name="B")]

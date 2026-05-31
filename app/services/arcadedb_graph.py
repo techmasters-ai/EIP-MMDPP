@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 _READY_MAX_RETRIES = 5
 _READY_BACKOFF_BASE = 0.5  # seconds
 
+# Durability re-query retry (Task 3). The node-durability assertion reads back
+# just-upserted RIDs over a SEPARATE HTTP session; ArcadeDB's
+# asyncOperationsQueueSize=2048 (docker-compose.yml) lets that read race ahead
+# of the async flush, so a short count can be transient. Mirror the
+# batch_create_entity_chunk_edges_sync read-after-write retry: a few attempts
+# with linear backoff before treating a short count as a real durability fail.
+_DURABILITY_MAX_ATTEMPTS = 3
+_DURABILITY_BACKOFF_BASE = 0.2  # seconds
+
 # Local mirror — kept consistent with app.services.query_profiles via
 # the Task 15 sync contract test. section_properties profiles dispatch
 # off this set when traversing related systems.
@@ -100,6 +109,18 @@ def _count(result: list[dict[str, Any]]) -> int:
     if result and isinstance(result[0], dict):
         return int(result[0].get("count", 0))
     return 0
+
+
+def _truncate_rid_list(rids: list[str], sample: int = 10) -> str:
+    """Render a RID list for error messages, capped to a small sample.
+
+    A large upsert batch otherwise dumps multi-KB of RIDs into the exception
+    text. Show the first ``sample`` and a ``+N more`` tail.
+    """
+    if len(rids) <= sample:
+        return str(rids)
+    head = rids[:sample]
+    return f"{head} ...+{len(rids) - sample} more"
 
 
 def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
@@ -2271,49 +2292,126 @@ class ArcadeDBGraphStore:
         # Task 3 (lineage_diagnostic_findings.md). RID presence above is
         # necessary but NOT sufficient: the SA-2 silent zero-commit returned
         # valid RIDs while persisting 0 rows. Re-read the just-written RIDs
-        # in a SINGLE batch query (one round-trip, not per-entity) and assert
-        # the committed count matches what we wrote. If the read-back is
-        # short, the write did not durably commit — raise so the caller's
-        # rollback/FAILED path fires instead of marking the merge succeeded.
-        self._assert_nodes_durable_sync(rids)
+        # with a per-vertex-type existence query and assert the committed
+        # count matches what we wrote. If the read-back is short, the write
+        # did not durably commit — raise so the caller's rollback/FAILED path
+        # fires instead of marking the merge succeeded. ``records`` is passed
+        # so each RID can be grouped by its vertex type (rids[i] ↔ records[i],
+        # _extract_rids pads positionally).
+        self._assert_nodes_durable_sync(rids, records)
 
         if provenance:
             self._create_provenance_edges_batch_sync(rids, provenance)
         return rids
 
-    def _assert_nodes_durable_sync(self, rids: list[str]) -> None:
+    def _assert_nodes_durable_sync(
+        self,
+        rids: list[str],
+        records: list[NodeRecord],
+    ) -> None:
         """Re-query just-upserted RIDs and assert all are committed/queryable.
 
         ``rids`` are the (non-blank, already RID-checked) RIDs returned by the
-        upsert sqlscript. We issue one ``SELECT count(*) FROM [<rid>, ...]``
-        over the literal RID list — a single round-trip for the whole batch —
-        and raise :class:`UpsertNotDurableError` if fewer rows come back than
-        we wrote. ``SELECT FROM [#rid, #rid]`` (record-id targets) returns
-        only the records that actually exist, so a non-durable / rolled-back
-        write surfaces as a short count even though the upsert returned RIDs.
+        upsert sqlscript; ``records`` is the parallel input list — ``rids[i]``
+        corresponds to ``records[i]`` because ``_extract_rids`` pads
+        positionally. We re-read each RID with a **type-scoped existence
+        query** and raise :class:`UpsertNotDurableError` if fewer rows are
+        actually present than we wrote.
+
+        Why type-scoped and not ``SELECT count(*) FROM [<rid>, ...]``:
+        proven against live ArcadeDB 26.5.1, ``count(*) FROM [#37:0,
+        #37:999999]`` returns **2** — it counts LIST ENTRIES, not existing
+        rows, so a non-durable RID never produces a short count and the
+        assertion was a no-op against the exact silent zero-commit it was
+        built to catch. ``SELECT count(*) FROM <Type> WHERE @rid IN [...]``
+        correctly returns only the rows that exist (verified: real+fake → 1).
+
+        Because a batch can span multiple vertex types (RADAR_SYSTEM,
+        MISSILE_SYSTEM, ...), a single ``FROM <Type>`` would under-count the
+        rest → false-fail. We group RIDs by their vertex type (routed through
+        ``_safe_type_name`` so reserved words like ``TABLE`` → ``TABLE_REF``
+        resolve to the class actually upserted) and issue one query per type,
+        summing the existing rows. Bounded by #types (~9), not per-entity.
+
+        Each per-type read is wrapped in the same read-after-write retry the
+        ``batch_create_entity_chunk_edges_sync`` edge loop uses: ArcadeDB's
+        ``asyncOperationsQueueSize=2048`` (docker-compose.yml) lets a separate
+        HTTP read race ahead of the async flush of a just-written row, so a
+        short count can be transient. We retry a few times with backoff before
+        treating a short count as a real durability failure — without this the
+        check could spuriously roll back a *good* merge under load.
         """
         if not rids:
             return
         # RIDs come straight from ArcadeDB's own response (e.g. "#10:0"); they
-        # are not user input, so embedding them in the FROM target is safe and
-        # avoids the per-class WHERE-by-identity loop the cost constraint
-        # forbids. Validate the shape defensively before interpolation.
-        safe_rids = [r for r in rids if isinstance(r, str) and r.startswith("#")]
+        # are not user input, so embedding them in the @rid IN list is safe.
+        # Validate the shape defensively before interpolation. Keep the parallel
+        # record so we can route each RID to its vertex type.
+        type_to_rids: dict[str, list[str]] = {}
+        safe_rids: list[str] = []
+        for rid, rec in zip(rids, records):
+            if not (isinstance(rid, str) and rid.startswith("#")):
+                continue
+            safe_rids.append(rid)
+            vtype = _safe_type_name(rec.entity_type)
+            type_to_rids.setdefault(vtype, []).append(rid)
         if not safe_rids:
             return
-        rid_list = ", ".join(safe_rids)
-        sql = f"SELECT count(*) AS count FROM [{rid_list}]"
-        rows = self._client.query_sync(self._database, "sql", sql)
-        committed = _count(rows)
-        if committed < len(safe_rids):
+
+        expected = set(safe_rids)
+        committed_rids: set[str] = set()
+        for vtype, rids_for_type in type_to_rids.items():
+            committed_rids.update(
+                self._query_committed_rids_with_retry(vtype, rids_for_type)
+            )
+
+        missing = [r for r in safe_rids if r not in committed_rids]
+        if missing:
             raise UpsertNotDurableError(
                 f"upsert_nodes_batch_sync: durability re-query found "
-                f"{committed}/{len(safe_rids)} upserted node(s) actually "
-                f"committed/queryable in ArcadeDB. Returned RIDs were "
-                f"{safe_rids}. A returned @rid did NOT result in a durable "
-                f"row — refusing to report success on a silent zero/partial "
-                f"commit (see lineage_diagnostic_findings.md, Task 3)."
+                f"{len(committed_rids)}/{len(safe_rids)} upserted node(s) "
+                f"actually committed/queryable in ArcadeDB. "
+                f"Missing (not durable): {_truncate_rid_list(missing)}. "
+                f"Returned RIDs were {_truncate_rid_list(safe_rids)}. A "
+                f"returned @rid did NOT result in a durable row — refusing to "
+                f"report success on a silent zero/partial commit (see "
+                f"lineage_diagnostic_findings.md, Task 3)."
             )
+
+    def _query_committed_rids_with_retry(
+        self,
+        vtype: str,
+        rids_for_type: list[str],
+    ) -> set[str]:
+        """Return the subset of ``rids_for_type`` that exist as ``vtype`` rows.
+
+        Issues ``SELECT @rid FROM <vtype> WHERE @rid IN [...]`` and returns the
+        @rids that came back. Retries on a SHORT result (fewer rows than asked
+        for) to ride out the async-flush read-after-write lag documented for
+        ``batch_create_entity_chunk_edges_sync`` — the same separate-HTTP
+        read-of-just-written-RIDs pattern. Returns whatever was found on the
+        last attempt; the caller decides whether the total is short.
+        """
+        rid_list = ", ".join(rids_for_type)
+        sql = f"SELECT @rid AS rid FROM {vtype} WHERE @rid IN [{rid_list}]"
+        found: set[str] = set()
+        for attempt in range(_DURABILITY_MAX_ATTEMPTS):
+            rows = self._client.query_sync(self._database, "sql", sql)
+            found = {
+                str(row.get("rid") or row.get("@rid"))
+                for row in rows
+                if isinstance(row, dict) and (row.get("rid") or row.get("@rid"))
+            }
+            if len(found) >= len(rids_for_type):
+                break
+            if attempt + 1 < _DURABILITY_MAX_ATTEMPTS:
+                logger.warning(
+                    "_assert_nodes_durable_sync: re-query found %d/%d %s "
+                    "rows on attempt %d — retrying (async-flush lag?)",
+                    len(found), len(rids_for_type), vtype, attempt + 1,
+                )
+                time.sleep(_DURABILITY_BACKOFF_BASE * (attempt + 1))
+        return found
 
     def _create_provenance_edges_batch_sync(
         self,

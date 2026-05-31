@@ -7,11 +7,15 @@ no real ArcadeDB server required.
 
 from __future__ import annotations
 
+import re
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+_RID_RE = re.compile(r"#\d+:\d+")
 
 
 # ---------------------------------------------------------------------------
@@ -30,14 +34,20 @@ def _make_client(
     client.query = AsyncMock(return_value=query_result or [])
     client.command_sync = MagicMock(return_value=command_sync_result or [{"@rid": "#1:0"}])
     # Default query_sync answers the upsert durability re-query (Task 3:
-    # SELECT count(*) FROM [<rid>...]) with a count high enough to satisfy
-    # any small happy-path batch, so tests focused on upsert SQL shape don't
-    # have to prime it. Tests that specifically exercise the durability
-    # assertion build their own client with an explicit (short) count.
-    client.query_sync = MagicMock(
-        return_value=query_sync_result if query_sync_result is not None
-        else [{"count": 1_000_000}]
-    )
+    # per-type ``SELECT @rid FROM <Type> WHERE @rid IN [<rid>...]``) by echoing
+    # back every RID named in the query as a durable row — so tests focused on
+    # upsert SQL shape pass the durability assertion without priming it. (The
+    # old ``count(*) FROM [list]`` shape counted list entries, not rows, and is
+    # exactly the bug Task 3 fixed.) Tests that specifically exercise the
+    # durability assertion build their own client with an explicit result.
+    if query_sync_result is not None:
+        client.query_sync = MagicMock(return_value=query_sync_result)
+    else:
+        client.query_sync = MagicMock(
+            side_effect=lambda _db, _lang, sql, _params=None: [
+                {"rid": r} for r in _RID_RE.findall(sql)
+            ]
+        )
     client.close_sync = MagicMock()
     return client
 
