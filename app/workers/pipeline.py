@@ -466,6 +466,72 @@ def _classify_extraction_quality(
     return "anomaly"
 
 
+def _has_resolvable_lineage(e) -> bool:
+    """STRICT lineage predicate (spec Component 2C). True iff the entity has
+    at least one provenance row carrying BOTH a non-empty ``element_uid`` AND a
+    non-null ``page`` — the minimum required to resolve a commit back to its
+    Docling anchor. ``page == 0`` is a real page and passes; only ``""``/None
+    element_uid or ``page is None`` fail the gate."""
+    return any(
+        getattr(p, "element_uid", "") and getattr(p, "page", None) is not None
+        for p in (getattr(e, "provenance", None) or [])
+    )
+
+
+def _partition_entities_by_lineage(merged) -> list:
+    """STRICT lineage gate (spec Component 2C). Mutates ``merged`` in place to
+    keep only lineage-complete entities; prunes edges referencing rejected
+    identities; returns the rejected entity list. Runs BEFORE the provenance
+    envelope / node import so NO downstream consumer (domain edges, structural
+    edges, audit serialization) ever sees a lineage-less entity. No-op
+    pass-through when every entity has resolvable lineage."""
+    keep, rejected = [], []
+    for e in merged.entities:
+        (keep if _has_resolvable_lineage(e) else rejected).append(e)
+    if rejected:
+        rejected_ids = {e.identity for e in rejected}
+        merged.entities = keep
+        # MergedEdgeRecord fields are from_identity / to_identity
+        # (extraction_merge.py:366-367) — NOT source_identity/target_identity.
+        merged.edges = [
+            ed for ed in (getattr(merged, "edges", None) or [])
+            if getattr(ed, "from_identity", None) not in rejected_ids
+            and getattr(ed, "to_identity", None) not in rejected_ids
+        ]
+        logger.error(
+            "LINEAGE_GATE: rejected %d/%d entities lacking resolvable lineage "
+            "(element_uid+page) — NOT committed; identities=%r",
+            len(rejected), len(keep) + len(rejected),
+            [e.identity.identity_values_dict() for e in rejected][:20],
+        )
+    return rejected
+
+
+def _record_lineage_rejection(run_id, rejected) -> None:
+    """Surface the strict lineage rejection on ``run.metrics`` (MERGE, not
+    replace — ``_write_pipeline_run_metrics`` runs just before and assigns
+    ``run.metrics`` wholesale at pipeline.py:544, so a read-modify-write is
+    required to avoid clobbering the quality-signal blob). Hard signal: the
+    run is marked, never silent, when any entity is rejected."""
+    from app.models.ingest import PipelineRun
+
+    with get_sync_session() as session:
+        run = session.get(PipelineRun, run_id)
+        if run is None:
+            logger.error(
+                "LINEAGE_GATE: PipelineRun %s not found — cannot record "
+                "lineage rejection signal", run_id,
+            )
+            return
+        metrics = dict(run.metrics or {})              # copy existing (merge)
+        metrics["lineage_rejected_count"] = len(rejected)
+        metrics["lineage_rejected_sample"] = [
+            e.identity.identity_values_dict() for e in rejected
+        ][:20]
+        run.metrics = metrics                          # merged write
+        session.commit()
+
+
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
     """Populates PipelineRun.metrics with the quality-signal blob.
 
@@ -7912,8 +7978,19 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             pass_results=rehydrated, manifest=manifest, ontology=ontology,
             document_id=document_id, pipeline_run_id=run_id,
         )
+        # STRICT lineage gate (Task 2 / spec Component 2C): drop any entity
+        # lacking a resolvable Docling anchor (element_uid + page) and prune
+        # edges that referenced it. Runs RIGHT AFTER merge so yield updates,
+        # metrics, the provenance envelope, and all node/edge import phases
+        # operate on the filtered `merged` — never committing a lineage-less
+        # entity nor leaking it into audit serialization.
+        _lineage_rejected = _partition_entities_by_lineage(merged)
         _apply_post_merge_yield_updates(run_id, merged, manifest)
         _write_pipeline_run_metrics(run_id, merged, manifest)
+        if _lineage_rejected:
+            # AFTER metrics: _write_pipeline_run_metrics REPLACES run.metrics
+            # wholesale, so the rejection signal must be merged in afterward.
+            _record_lineage_rejection(run_id, _lineage_rejected)
 
         provenance_envelope = _build_provenance_envelope(
             document_id, run_id, merged.entities, db,
