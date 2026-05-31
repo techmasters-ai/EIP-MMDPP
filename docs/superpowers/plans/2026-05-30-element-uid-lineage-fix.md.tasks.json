@@ -32,14 +32,14 @@
     {
       "id": 24,
       "subject": "Task 4: Deploy fix build + remove temp instrumentation",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [21, 22, 23],
       "description": "Rebuild docling-graph (patches 0001-0005 apply), recreate docling-graph + restart worker-graph from worktree, idle pool; remove Task-0 temp logging.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\"], \"verifyCommand\": \"docker compose -p eip-mmdpp build docling-graph 2>&1 | grep -E 'Applying patch|Built'\"}\n```"
     },
     {
       "id": 25,
       "subject": "Task 5: End-to-end lineage verification gate",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [24],
       "userGate": true,
       "description": "Prove on a fresh SA-2 graph_only run: entity vertices>0 consistent with merged count; zero provenance-drop + zero spurious gate rejects; EXTRACTED_FROM/MENTIONED_IN>0; one field value traced to chunk+document+page; empty-doc (cw_radar.jpg) yields 0 legitimately. scripts/verify_lineage_e2e.py. USER-ORDERED GATE.\n\n```json:metadata\n{\"files\": [\"scripts/verify_lineage_e2e.py\"], \"verifyCommand\": \"python3 scripts/verify_lineage_e2e.py --run <fixed_sa2_run_id>\", \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"entities-committed\", \"vertices>0\"], [\"field-traced\", \"page\"]]}\n```"
