@@ -899,6 +899,7 @@ def run_extraction_pass(
         ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
         ctx._chunk_to_self_refs = None  # no doc, nothing to map
         ctx._chunk_to_evidence_units = {}  # no doc, nothing to map
+        ctx._chunk_to_page_numbers = {}  # no doc, nothing to map
         ctx._delta_trace = {
             "empty_source": True,
             "reason": "docling_document_has_no_extractable_content",
@@ -1106,20 +1107,31 @@ def run_extraction_pass(
 
         chunk_to_self_refs: dict[int, list[str]] = {}
         chunk_to_evidence_units: dict[int, list[dict]] = {}
+        # Parallel page map: chunk_index → [page_no, ...]. Built from the SAME
+        # last_chunk_metadata rows as chunk_to_self_refs so element_uid and
+        # page always resolve from one source (no drift). Threaded into the
+        # provenance synthesizer so synthesized rows carry a real page.
+        chunk_to_page_numbers: dict[int, list[int]] = {}
         for cmeta in chunk_metadata:
             cid = cmeta.get("chunk_id")
             if cid is None:
                 continue
             refs = cmeta.get("self_refs") or []
             units = cmeta.get("evidence_units") or []
+            pages = cmeta.get("page_numbers") or []
             chunk_to_self_refs[int(cid)] = [r for r in refs if isinstance(r, str)]
             chunk_to_evidence_units[int(cid)] = list(units)
+            chunk_to_page_numbers[int(cid)] = [p for p in pages if isinstance(p, int)]
 
         # FALLBACK: trace events (debug-only, but cross-check / diagnostic).
         if not chunk_to_self_refs:
             trace_data = getattr(context, "trace_data", None)
             trace_events = getattr(trace_data, "events", None) or []
-            chunk_to_self_refs, chunk_to_evidence_units = _chunk_maps_from_trace(trace_events)
+            (
+                chunk_to_self_refs,
+                chunk_to_evidence_units,
+                chunk_to_page_numbers,
+            ) = _chunk_maps_from_trace(trace_events)
             if chunk_to_self_refs:
                 logger.info(
                     "provenance source: trace fallback (debug mode). "
@@ -1135,6 +1147,7 @@ def run_extraction_pass(
         try:
             context._chunk_to_self_refs = chunk_to_self_refs
             context._chunk_to_evidence_units = chunk_to_evidence_units
+            context._chunk_to_page_numbers = chunk_to_page_numbers
         except AttributeError:
             pass
 
@@ -1296,15 +1309,18 @@ def _trace_event_payload(evt):
     return None, None
 
 
-def _chunk_maps_from_trace(trace_events) -> tuple[dict[int, list[str]], dict[int, list[dict]]]:
-    """Build (chunk_to_self_refs, chunk_to_evidence_units) from chunk_created
-    trace events in a single pass.
+def _chunk_maps_from_trace(
+    trace_events,
+) -> tuple[dict[int, list[str]], dict[int, list[dict]], dict[int, list[int]]]:
+    """Build (chunk_to_self_refs, chunk_to_evidence_units, chunk_to_page_numbers)
+    from chunk_created trace events in a single pass.
 
     Authoritative provenance source — uses the EXACT chunks the LLM saw.
-    Replaces re-chunking. Both maps share the same iteration / filtering
+    Replaces re-chunking. All three maps share the same iteration / filtering
     so they cannot drift out of sync."""
     refs_map: dict[int, list[str]] = {}
     units_map: dict[int, list[dict]] = {}
+    pages_map: dict[int, list[int]] = {}
     for evt in trace_events or []:
         name, payload = _trace_event_payload(evt)
         if name != "chunk_created" or not isinstance(payload, dict):
@@ -1319,7 +1335,10 @@ def _chunk_maps_from_trace(trace_events) -> tuple[dict[int, list[str]], dict[int
         units = payload.get("evidence_units")
         if isinstance(units, list):
             units_map[cid_int] = list(units)
-    return refs_map, units_map
+        pages = payload.get("page_numbers")
+        if isinstance(pages, list):
+            pages_map[cid_int] = [p for p in pages if isinstance(p, int)]
+    return refs_map, units_map, pages_map
 
 
 def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
@@ -1704,6 +1723,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 template_cls,
                 chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
                 provenance_cls=ExtractionProvenance,
+                chunk_to_page_numbers=getattr(context, "_chunk_to_page_numbers", None),
             )
             if provenance_rows:
                 logger.info(

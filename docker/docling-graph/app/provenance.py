@@ -86,6 +86,7 @@ def synthesize_provenance_from_pass_output(
     template_cls: type[BaseModel],
     chunk_to_self_refs: dict[int, list[str]] | None,
     provenance_cls: type,
+    chunk_to_page_numbers: dict[int, list[int]] | None = None,
 ) -> list[Any]:
     """Emit one ExtractionProvenance row per entity in ``pass_output``.
 
@@ -109,7 +110,11 @@ def synthesize_provenance_from_pass_output(
     * ``identity_values`` — copied from identity_fields of the item
     * ``element_uid`` — first self_ref from chunk 0 (via
       chunk_to_self_refs) if available, else empty
-    * ``page`` / ``chunk_index`` — None / 0
+    * ``page`` — first page of chunk 0 (via ``chunk_to_page_numbers``,
+      the parallel page map built by ``main.py`` from the SAME
+      ``last_chunk_metadata`` that yields ``chunk_to_self_refs``), or
+      ``None`` when no page map is supplied (genuinely page-less source)
+    * ``chunk_index`` — 0 when self_refs exist, else None
 
     Coarse but deterministic. Enough to seed MENTIONED_IN /
     EXTRACTED_FROM edges so the entity reaches chunk provenance.
@@ -124,6 +129,21 @@ def synthesize_provenance_from_pass_output(
         first_element_uid = first_refs[0] if first_refs else ""
     else:
         first_element_uid = ""
+
+    # Resolve page from the SAME chunk index as element_uid (chunk 0, or the
+    # first available). Reads the parallel page map main.py builds from
+    # last_chunk_metadata.page_numbers — the same source _resolve_page uses on
+    # the primary path, so the two never diverge. Stays None when no map is
+    # supplied (genuinely page-less source — never fabricated).
+    first_page: int | None = None
+    if chunk_to_page_numbers:
+        pages = chunk_to_page_numbers.get(0) or next(
+            iter(chunk_to_page_numbers.values()), None
+        )
+        if pages:
+            first = pages[0]
+            if isinstance(first, int):
+                first_page = first
 
     out: list[Any] = []
     for field_name, field_info in template_cls.model_fields.items():
@@ -152,7 +172,7 @@ def synthesize_provenance_from_pass_output(
                     ontology_name=ontology_name,
                     identity_values=identity_values,
                     element_uid=first_element_uid,
-                    page=None,
+                    page=first_page,
                     chunk_index=0 if chunk_to_self_refs else None,
                 )
             )

@@ -182,6 +182,16 @@ class SelectedChunk(BaseModel):
     source_refs: list[str] = Field(
         description="Element self_refs covered by this merged chunk."
     )
+    page_numbers: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Source page number(s) covered by this merged chunk, carried "
+            "from ``ExtractionChunk.page_number``. Empty when the source row "
+            "has no page (e.g. a text-only input). docling-graph reads this "
+            "into the pre-built-chunk provenance metadata so synthesized "
+            "entity provenance resolves a real page (data-lineage requirement)."
+        ),
+    )
     token_count: int = Field(
         description="``tokenizer.count_tokens(text)`` for this chunk."
     )

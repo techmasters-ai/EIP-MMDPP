@@ -1263,6 +1263,13 @@ async def chunk_scope(
                 except (TypeError, ValueError):
                     tok_count = 0
 
+            # Carry the source page for data lineage so docling-graph can emit
+            # a real page on the pre-built-chunk provenance path (single
+            # int per ExtractionChunk row → list[int] on the wire). Empty
+            # when the row genuinely has no page — never fabricated.
+            pg = chunk_row.get("page_number")
+            page_numbers_for_chunk = [pg] if isinstance(pg, int) else []
+
             # Belt-and-suspenders guard: skip rows where chunk_index=-1 AND
             # source_refs is empty AND content_text is blank.  The (removed)
             # C4 keyword-only-bucket pattern that originally created these rows
@@ -1288,6 +1295,7 @@ async def chunk_scope(
                     chunk_key=f"chunk_{chunk_idx}",
                     text=content,
                     source_refs=[str(r) for r in refs_for_chunk if isinstance(r, str)],
+                    page_numbers=page_numbers_for_chunk,
                     token_count=tok_count,
                 )
             )

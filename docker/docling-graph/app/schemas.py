@@ -110,6 +110,17 @@ class SelectedChunkInput(BaseModel):
             "``evidence_units`` resolves back through these refs."
         ),
     )
+    page_numbers: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Source page number(s) covered by this merged chunk, supplied "
+            "by the worker from ``ExtractionChunk.page_number``. Read into "
+            "the pre-built-chunk metadata so synthesized provenance carries "
+            "a real page instead of None. Empty when the source row has no "
+            "page (e.g. text-only input). Falls back to resolving "
+            "``source_refs`` against the DoclingDocument when empty."
+        ),
+    )
     token_count: int = Field(
         default=0,
         ge=0,
