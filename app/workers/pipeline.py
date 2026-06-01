@@ -1820,6 +1820,7 @@ def _build_lineage_resolver_maps(db, document_id):
     chunk_id resolution) and the domain-edge phase (relationship
     source_chunk_ids). No graph mutation here — pure read.
     """
+    from sqlalchemy import select
     from app.models.ingest import DocumentElement
     from app.models.retrieval import TextChunk, ImageChunk
 

@@ -233,3 +233,128 @@ def test_relationship_record_no_self_refs_omits_props():
     )
     assert len(records) == 1
     assert "source_chunk_ids" not in records[0].properties
+
+
+# ---------------------------------------------------------------------------
+# (c) _build_lineage_resolver_maps — exercises the REAL function body
+#     (the select(...) calls + artifact_id -> element_uid -> chunk_id join).
+#     Regression guard: this function previously called select() WITHOUT a
+#     local import, so EVERY production merge raised NameError before any
+#     entity/edge was committed. The other tests above passed PRE-BUILT maps,
+#     so they never touched this body. These two tests would fail (NameError)
+#     without the `from sqlalchemy import select` fix.
+# ---------------------------------------------------------------------------
+import uuid as _uuid
+
+import pytest
+
+
+class _StubScalarResult:
+    """Mimics the SQLAlchemy ``.scalars()`` proxy: ``.all()`` -> rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _StubExecuteResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _StubScalarResult(self._rows)
+
+
+class _StubDB:
+    """Stub Session whose ``.execute(stmt).scalars().all()`` returns the next
+    queued result set. ``_build_lineage_resolver_maps`` issues exactly three
+    execute() calls in order: DocumentElement, TextChunk, ImageChunk."""
+
+    def __init__(self, result_sets):
+        self._queue = list(result_sets)
+        self.statements = []
+
+    def execute(self, statement):
+        # Force evaluation of the statement — this is where a bare select(...)
+        # (no import) would already have blown up with NameError at call time,
+        # but capturing it here also proves the select() expression was built.
+        self.statements.append(statement)
+        return _StubExecuteResult(self._queue.pop(0))
+
+
+class _Elem:
+    def __init__(self, artifact_id, element_uid, element_order=0):
+        self.artifact_id = artifact_id
+        self.element_uid = element_uid
+        self.element_order = element_order
+
+
+class _Chunk:
+    def __init__(self, id, artifact_id=None, page_number=None):
+        self.id = id
+        self.artifact_id = artifact_id
+        self.page_number = page_number
+
+
+def test_build_lineage_resolver_maps_joins_artifact_to_chunk(monkeypatch):
+    """Exercise the REAL ``_build_lineage_resolver_maps`` body with a mock db.
+
+    Would raise ``NameError: name 'select' is not defined`` without the local
+    ``from sqlalchemy import select`` import — i.e. this test is the regression
+    guard the pre-built-map tests above could never provide. Asserts the
+    artifact_id -> element_uid -> chunk_id join + the chunk page map.
+    """
+    # identity_map comes from the persisted docling json; isolate from any DB.
+    monkeypatch.setattr(
+        pipeline_mod, "_load_identity_map", lambda doc_id: {"#/texts/3": "euid-A"}
+    )
+
+    elements = [
+        _Elem(artifact_id="art-1", element_uid="euid-A", element_order=0),
+        _Elem(artifact_id="art-2", element_uid="euid-B", element_order=1),
+        # rows with no artifact_id / element_uid must be skipped, not crash.
+        _Elem(artifact_id=None, element_uid="euid-C", element_order=2),
+    ]
+    text_chunks = [
+        _Chunk(id="chunk-1", artifact_id="art-1", page_number=5),
+        _Chunk(id="chunk-2", artifact_id="art-2", page_number=None),
+    ]
+    image_chunks = [
+        _Chunk(id="img-1", artifact_id="art-1", page_number=7),
+    ]
+    db = _StubDB([elements, text_chunks, image_chunks])
+
+    identity_map, element_uid_chunk_map, chunk_page_map = (
+        pipeline_mod._build_lineage_resolver_maps(db, _uuid.uuid4())
+    )
+
+    # all three select(...) statements were built + executed (proves no NameError).
+    assert len(db.statements) == 3
+    # identity_map threaded through from the patched loader.
+    assert identity_map == {"#/texts/3": "euid-A"}
+    # artifact_id -> element_uid -> chunk_id join, across text + image chunks.
+    assert element_uid_chunk_map["euid-A"] == ["chunk-1", "img-1"]
+    assert element_uid_chunk_map["euid-B"] == ["chunk-2"]
+    # element with no element_uid/artifact contributes nothing.
+    assert "euid-C" not in element_uid_chunk_map
+    # page map back-fill (None pages omitted).
+    assert chunk_page_map["chunk-1"] == 5
+    assert chunk_page_map["img-1"] == 7
+    assert "chunk-2" not in chunk_page_map
+
+
+def test_build_lineage_resolver_maps_empty_db_no_nameerror(monkeypatch):
+    """Smoke guard: empty result sets must yield three empty-ish maps WITHOUT
+    raising NameError (the minimal repro of the missing-import bug)."""
+    monkeypatch.setattr(pipeline_mod, "_load_identity_map", lambda doc_id: {})
+    db = _StubDB([[], [], []])
+
+    identity_map, element_uid_chunk_map, chunk_page_map = (
+        pipeline_mod._build_lineage_resolver_maps(db, _uuid.uuid4())
+    )
+
+    assert identity_map == {}
+    assert element_uid_chunk_map == {}
+    assert chunk_page_map == {}
