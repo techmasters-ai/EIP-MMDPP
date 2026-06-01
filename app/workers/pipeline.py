@@ -9357,7 +9357,10 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             # overlap. Without a fallback, those mentions produce zero
             # EXTRACTED_FROM edges and the entity becomes unreachable
             # from Document via the chunk traversal. Fan out across all
-            # TextChunks of this document as a coarse-but-valid anchor.
+            # TextChunks of this document as a coarse-but-valid anchor —
+            # but only when identity_map translation also misses (see
+            # _resolve_mention_chunks / Part C below); fan-out is the
+            # last resort, no longer the unconditional fallback.
             all_text_chunk_ids = [str(tc.id) for tc in text_chunks]
 
             # Part C: bridge the synthesizer's Docling self_ref namespace

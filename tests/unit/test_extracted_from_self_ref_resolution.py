@@ -28,3 +28,13 @@ def test_concrete_element_uid_resolves_directly_no_regression():
     )
     assert resolved == ["chunkA"]
     assert coarse is False
+
+
+def test_unknown_concrete_element_uid_returns_empty_not_coarse():
+    # A non-"#/" element_uid absent from the map must NOT fan out to all chunks
+    # (only unresolved "#/" self_refs do); it returns ([], False).
+    resolved, coarse = _resolve_mention_chunks(
+        "p9-9-text-zzzz", {"p1-2-text-abcd": ["chunkA"]}, {}, ["chunkA", "chunkB"],
+    )
+    assert resolved == []
+    assert coarse is False
