@@ -257,9 +257,18 @@ batch). Verified empirically: real gemma4 nodes carry distinct per-node
 evidence_ids (#/texts/59, #/texts/61, ...) while self_refs is batch-wide.
 """
 import importlib.util
+import sys
 from pathlib import Path
 
-_PROV = Path(__file__).resolve().parent.parent / "app" / "provenance.py"
+# provenance.py does `from app._numeric_evidence import ...` at module load, so
+# the docling-graph SERVICE dir must be on sys.path BEFORE exec_module — else
+# `app` resolves to the repo-root worker package (no _numeric_evidence) and the
+# import errors at collection. Prepend the service root (docker/docling-graph).
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent  # docker/docling-graph
+if str(_SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SERVICE_ROOT))
+
+_PROV = _SERVICE_ROOT / "app" / "provenance.py"
 _spec = importlib.util.spec_from_file_location("dg_provenance_under_test", _PROV)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
@@ -295,6 +304,14 @@ def test_direct_element_uid_still_wins():
 def test_chunk_indexes_fallback_unchanged():
     node = {"provenance": {"chunk_indexes": [0]}}
     assert _resolve_element_uid(node, {0: ["#/texts/7"]}) == "#/texts/7"
+
+
+def test_evidence_id_choice_is_deterministic_regardless_of_order():
+    # Same set, different emission order -> same element_uid (smallest "#/").
+    a = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/42", "#/texts/9"]}}
+    b = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/9", "#/texts/42"]}}
+    assert _resolve_element_uid(a, None) == _resolve_element_uid(b, None) == "#/texts/42"
+    # ("#/texts/42" < "#/texts/9" lexicographically; the point is order-independence.)
 ```
 
 - [ ] **Step 2: Run the test to verify it FAILS.**
@@ -312,12 +329,18 @@ Expected: `test_prefers_per_node_evidence_id_over_batch_self_refs` FAILS (curren
     # Prefer the per-node evidence_ids self_ref: the IR normalizer narrows
     # evidence_ids PER NODE (ir_normalizer._attach_evidence_to_prov) but copies
     # self_refs BATCH-WIDE onto every node, so self_refs[0] is identical across a
-    # batch (coarse) while evidence_ids[0] is this entity's actual source element.
+    # batch (coarse) while evidence_ids is this entity's actual source element(s).
+    # Pick the lexicographically-SMALLEST "#/" evidence_id (NOT [0]) so the
+    # resolved element_uid is deterministic regardless of LLM-emitted order —
+    # element_uid is part of the merge dedup key (extraction_merge.py:1396), so a
+    # run-stable choice keeps lineage reproducible across runs.
     evidence_ids = prov.get("evidence_ids")
     if isinstance(evidence_ids, list):
-        for eid in evidence_ids:
-            if isinstance(eid, str) and eid.startswith("#/"):
-                return eid
+        selfref_evidence = sorted(
+            eid for eid in evidence_ids if isinstance(eid, str) and eid.startswith("#/")
+        )
+        if selfref_evidence:
+            return selfref_evidence[0]
 
     self_refs = prov.get("self_refs")
     if isinstance(self_refs, list) and self_refs:
@@ -343,14 +366,22 @@ Expected: `test_prefers_per_node_evidence_id_over_batch_self_refs` FAILS (curren
 Run: `python3 -m pytest docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py -v`
 Expected: all 5 pass.
 
-- [ ] **Step 5: Run any existing provenance tests to confirm no regression.**
+- [ ] **Step 5: INVERT the existing contradicting test, then run the provenance suite.**
 
-Run: `ls docker/docling-graph/tests/ | grep -i provenance` then run each found module via `python3 -m pytest docker/docling-graph/tests/<that_file>.py -v`. Expected: pass (no behavior other than the evidence-before-self_refs reorder changed).
+  `docker/docling-graph/tests/test_provenance_from_context.py:208` has `test_resolve_element_uid_prefers_provenance_self_refs` which asserts the OLD order (self_refs beats evidence_ids: node with `self_refs=["#/texts/99"]` + `evidence_ids=["#/texts/0"]` → `element_uid=="#/texts/99"`). The reorder intentionally reverses this, so this test MUST be inverted (not left to "pass"). Edit it:
+  - Rename `test_resolve_element_uid_prefers_provenance_self_refs` → `test_resolve_element_uid_prefers_evidence_ids_over_self_refs`.
+  - Update the docstring to "per-node evidence_ids (#/) beats batch-wide self_refs".
+  - Flip the assertion: `assert prov[0].element_uid == "#/texts/0"` (the evidence_id, not the self_ref).
+
+  Then confirm the OTHER existing provenance tests still pass unchanged — `test_resolve_element_uid_falls_back_to_evidence_ids` (line 226) and `test_resolve_element_uid_skips_non_selfref_evidence` (line 244) are unaffected by the reorder (no self_refs present / non-`#/` evidence).
+
+Run: `python3 -m pytest docker/docling-graph/tests/test_provenance_from_context.py -v` (needs the dg conftest sys.path swap — run from repo root so the `dg_provenance` fixture resolves).
+Expected: all pass, including the inverted assertion.
 
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add docker/docling-graph/app/provenance.py docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py
+git add docker/docling-graph/app/provenance.py docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py docker/docling-graph/tests/test_provenance_from_context.py
 git commit -m "fix(lineage): prefer per-node evidence_ids over batch self_refs (Part B)
 
 _resolve_element_uid returned the batch-wide self_refs[0] (identical for every
@@ -476,7 +507,27 @@ def _resolve_mention_chunks(
                     if eid:
                         mentioned_entity_ids.add(eid)
 ```
-  Implement `_load_identity_map(document_id) -> dict[str,str]` using the existing derived-JSON fetch; read `["_enrichments"]["identity_map"]`; return `{}` on any miss/exception (never raise).
+  Implement `_load_identity_map` by REUSING the existing `_build_docling_document_json(document_id)` helper (pipeline.py:1749 — it fetches + parses the derived `docling_document.json`, including `_enrichments`). Do NOT write a new MinIO fetch:
+
+```python
+def _load_identity_map(document_id: str) -> dict[str, str]:
+    """self_ref -> element_uid map persisted at ingest in
+    docling_document.json _enrichments.identity_map (pipeline.py:4836-4841).
+    Returns {} on any miss/parse error — never raises (degrades to flagged
+    coarse fan-out in _resolve_mention_chunks)."""
+    try:
+        doc_json = _build_docling_document_json(document_id)
+        if isinstance(doc_json, dict):
+            enr = doc_json.get("_enrichments") or {}
+            im = enr.get("identity_map") or {}
+            if isinstance(im, dict):
+                return {k: v for k, v in im.items() if isinstance(k, str) and isinstance(v, str)}
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("derive_structure_links: identity_map load failed for %s: %s",
+                       document_id, exc)
+    return {}
+```
+  (Confirm in Step 1 that `_build_docling_document_json` returns the full parsed dict with `_enrichments`; if it strips enrichments, fall back to the raw download helper it uses internally and parse `_enrichments.identity_map` from that.)
 
 - [ ] **Step 5: Run the test to verify it PASSES.**
 
@@ -584,10 +635,11 @@ grep -n "relationship_provenance\|ExtractionRelationshipProvenance" app/services
 
 **Acceptance Criteria:**
 - [ ] **Deploy precondition (captured):** docling-graph rebuilt with Tasks 1+2 (`docker compose -p eip-mmdpp build docling-graph` shows `Applying patch` for 0002, no failure) and recreated; worker-1 AND worker-graph-1 restarted for Task 3; `StartedAt` advanced on all three; live container has `last_chunk_metadata = chunk_metadata` in stages.py AND the reordered evidence_ids check in provenance.py; gemma4 pool idle (~0.24s probe). Also: the persisted `docling_document.json._enrichments.identity_map` for the SA-2 doc is NON-EMPTY (else Part C degrades to fan-out — abort and require a full reingest).
-- [ ] **Verifier #1 — run-scoped EXTRACTED_FROM:** accept `--run`; count `EXTRACTED_FROM` filtered by `WHERE pipeline_run_id = :run` (the edge carries `pipeline_run_id`, arcadedb_graph.py:808/2641). PASS requires run-scoped count > 0. This is the hard discriminator.
-- [ ] **Verifier #2 — drop the false-FAIL entity-count delta** (idempotent upsert → 0 on re-run); keep an absolute `entities ≥ merged_baseline` recall sanity check, not as the lineage proof.
-- [ ] **Verifier #3 — per-entity precision (run-scoped):** for entities with run-scoped `EXTRACTED_FROM`, assert the MAX per-entity distinct target-chunk count is small (≤ 5 chunks, NOT a median/percent — a max bounds the worst case). Report the full distribution.
-- [ ] **Verifier #4 — EXTRACTED_FROM-only trace + run-windowed signals:** the field-trace check traverses `out('EXTRACTED_FROM')` ONLY (drop MENTIONED_IN from both the trace and the edge-existence check); the provenance-drop / gate-rejection warning counts are taken from the run's Postgres window (run started_at→finished_at), not a fixed `--since 3h`.
+- [ ] **Verifier #1 — run-scoped EXTRACTED_FROM:** accept `--run`; count `EXTRACTED_FROM` filtered by `WHERE pipeline_run_id = :run`. The edge carries `pipeline_run_id` (set in `batch_create_entity_chunk_edges_sync`, arcadedb_graph.py:2639-2641, applied in the `CREATE EDGE EXTRACTED_FROM` at ~2650/2663; `derive_structure_links` forwards run_id, pipeline.py:9409-9412, self-healing None at 8961-8962). PASS requires run-scoped count > 0. This is the hard discriminator. (NOTE: `:808` is HAS_PROVENANCE, a different edge — do not verify against it.)
+- [ ] **Verifier #2 — drop the false-FAIL entity-count delta** (idempotent upsert → 0 on re-run); keep an absolute `entities ≥ merged_baseline` recall sanity check (entity vertices carry no run_id/document_id, so this is intentionally GLOBAL — document that in the verifier).
+- [ ] **Verifier #3 — fan-out-width precision (run-scoped), NOT an absolute cap:** an absolute MAX (e.g. ≤5) FALSE-FAILS legitimately high-frequency entities — SNR-75 genuinely spans 26 chunks of 102 (verified), which is real spread, not coarse fan-out. Instead: compute per-entity DISTINCT run-scoped target-chunk counts and assert NO entity links to ≥ 80% of the document's text-chunk count (the coarse all-chunks fan-out signature — fan-out hits ~100%). Report the full distribution + the count of `is_coarse` WARN events from Task 3. ArcadeDB has no `count(DISTINCT @in)` (parse error) — fetch edge rows and dedup in Python: `SELECT @out AS e, @in AS c FROM EXTRACTED_FROM WHERE pipeline_run_id = '<run>'`, then build `{entity_rid: set(chunk_rid)}` and take per-entity `len(set)`.
+- [ ] **Verifier #4 — EXTRACTED_FROM-only, EDGE-ANCHORED trace + run-windowed signals:** the field-trace must be edge-anchored (vertex `out()` cannot filter by edge property): `SELECT @out.system_name AS name, @in.chunk_id AS chunk_id, @in.page_number AS page, @in.document_id AS doc FROM EXTRACTED_FROM WHERE pipeline_run_id = '<run>' LIMIT 5`; drop MENTIONED_IN from both the trace and the edge-existence check. Provenance-drop / gate-rejection warning counts come from the run's Postgres window: read `started_at`/`finished_at` from `ingest.pipeline_runs` (via the `pg()` helper) and pass them as `docker logs --since <started_at> --until <finished_at>` (both accept RFC3339).
+- [ ] **Verifier #5 — page agrees with the resolved chunk:** Part B decouples element_uid from page (`_resolve_page` reads batch-wide `page_numbers[0]` = min of batch pages). For the traced entity, assert the provenance `page` equals the `page_number` of the chunk its `EXTRACTED_FROM` edge actually points to (edge-anchored `@in.page_number`), so a precise element_uid is not paired with a wrong page.
 - [ ] **Fresh SA-2 graph_only run** on the deployed fix: run-scoped `EXTRACTED_FROM` > 0; 0 provenance-drop warnings in the run window; provenance rows with non-empty `element_uid` > 0; precision MAX ≤ 5; `/v1/graph/query` SNR-75 returns `sources[]` with non-null `document_id`+`page_number`.
 - [ ] `python3 scripts/verify_lineage_e2e.py --run <run_id>` → "ALL CHECKS PASS".
 
@@ -634,10 +686,24 @@ RUN=<pipeline_run_id>
 ADB() { curl -s -u root:eip_arcadedb_secret -X POST http://localhost:2480/api/v1/command/eip_knowledge_graph -H "Content-Type: application/json" -d "{\"language\":\"sql\",\"command\":\"$1\"}"; }
 echo -n "EXTRACTED_FROM run-scoped: "; ADB "SELECT count(*) AS c FROM EXTRACTED_FROM WHERE pipeline_run_id='$RUN'" | python3 -c "import sys,json;print(json.load(sys.stdin)['result'][0]['c'])"
 python3 scripts/verify_lineage_e2e.py --run "$RUN"
+# fan-out-width precision: distinct chunks per entity (client-side dedup; no count(DISTINCT) in ArcadeDB)
+DOCC=$(ADB "SELECT count(*) AS c FROM TextChunk WHERE document_id='ddaa9e36-2854-47c3-bc94-ff38d531dafd'" | python3 -c "import sys,json;print(json.load(sys.stdin)['result'][0]['c'])")
+ADB "SELECT @out AS e, @in AS c FROM EXTRACTED_FROM WHERE pipeline_run_id='$RUN'" | python3 -c "
+import sys,json
+rows=json.load(sys.stdin).get('result',[])
+from collections import defaultdict
+m=defaultdict(set)
+for r in rows: m[r.get('e')].add(r.get('c'))
+docc=int('$DOCC' or 0)
+counts=sorted((len(v) for v in m.values()), reverse=True)
+worst=counts[0] if counts else 0
+print(f'entities={len(m)} doc_chunks={docc} per-entity distinct-chunk counts (top): {counts[:8]}')
+print(f'WORST fan-out: {worst}/{docc} = {100*worst/docc:.0f}%  -> {\"COARSE FAN-OUT\" if docc and worst>=0.8*docc else \"OK (not all-chunks)\"}')
+"
 curl -s -X POST "http://localhost:8005/v1/graph/query" -H "Content-Type: application/json" \
   -d '{"query":"SNR-75","top_k":1,"hop_count":1}' | python3 -c "import sys,json;r=json.load(sys.stdin);print(json.dumps(r[0].get('sources'),indent=2) if r else 'NO RESULT')"
 ```
-  Expected: run-scoped EXTRACTED_FROM > 0; verifier "ALL CHECKS PASS"; `sources[]` carries document_id+page; per-entity max target count ≤ 5 (precise).
+  Expected: run-scoped EXTRACTED_FROM > 0; verifier "ALL CHECKS PASS"; `sources[]` carries document_id+page; NO entity at ≥80% fan-out (e.g. SNR-75 at ~26/102 ≈ 25% is fine; an entity at ~100/102 ≈ 98% signals coarse).
 
 - [ ] **Step 6: Record outcome in memory** (`project_extracted_from_root_cause.md`): fix verified; run-scoped EXTRACTED_FROM count; precision distribution (per-entity target counts, max); which provenance path was live (build_provenance_from_context vs synthesize); any residual coarse cases.
 
