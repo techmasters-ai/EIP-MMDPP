@@ -143,6 +143,11 @@ _COMMON_EDGE_PROPS = [
     ("extraction_confidence", "DOUBLE"),
     ("created_at", "DATETIME"),
     ("updated_at", "DATETIME"),
+    # Task 5: per-edge source-chunk lineage resolved in the merge phase from
+    # the relationship's positional self_refs (no fan-out, no RID round-trip).
+    ("source_chunk_ids", "LIST"),
+    ("source_pages", "LIST"),
+    ("source_self_refs", "LIST"),
 ]
 
 # Common properties on structural edge types

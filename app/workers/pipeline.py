@@ -1288,7 +1288,7 @@ def _build_provenance_envelope(
     )
 
 
-def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance):
+def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance, db=None):
     """Spec §5.6 phase 2 — node upsert.
 
     Builds the full NodeRecord list in pure Python FIRST so that any
@@ -1297,9 +1297,27 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
     correctly skips.  tracker.mark() is called AFTER the list is built
     and IMMEDIATELY before the first graph_store mutation.
 
+    Task 5: when ``db`` is supplied, the self_ref -> chunk resolver maps are
+    built ONCE (before the per-entity record comprehension) and used to resolve
+    a RESOLVED chunk_id onto every ``_field_evidence`` row — falling back to the
+    entity's resolved chunk-set, never None when the entity has lineage, never
+    all-document. ``db=None`` (legacy / test callers) skips field resolution.
+
     Task 4.4.
     """
     from app.services.graph_store import NodeRecord
+
+    # Task 5: build the resolver maps ONCE per call (not per-entity) and resolve
+    # each entity's _field_evidence rows' chunk_id in place BEFORE serialization.
+    if db is not None:
+        identity_map, element_uid_chunk_map, chunk_page_map = _build_lineage_resolver_maps(
+            db, document_id,
+        )
+        for e in merged.entities:
+            if getattr(e, "field_evidence", None):
+                _resolve_field_evidence_chunk_ids(
+                    e, element_uid_chunk_map, identity_map, chunk_page_map,
+                )
 
     # Build all records in pure Python first. If this raises, tracker
     # stays False and the rollback gate correctly skips.
@@ -1436,6 +1454,8 @@ def _import_graph_phase_domain_edges(
     merged, ontology, tracker, provenance,
     relationship_provenance_rows=None,
     entity_provenance_rows=None,
+    db=None,
+    document_id=None,
 ) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
@@ -1463,66 +1483,31 @@ def _import_graph_phase_domain_edges(
     match also try this fallback, so behavior degrades gracefully rather
     than silently dropping provenance.
 
+    Task 5: when ``db`` is supplied, each rel's positional self_refs are
+    resolved (once-built resolver maps, no fan-out) and written onto
+    ``record.properties`` as ``source_chunk_ids`` / ``source_pages`` /
+    ``source_self_refs``. The upsert injects record.properties on both
+    create+update branches — no SQL change.
+
     Task 4.4.
     """
-    from app.services.graph_store import RelationshipRecord
-
-    # Build instance_id → LogicalIdentity map from entity provenance rows.
-    id_to_identity = _instance_to_identity_map(entity_provenance_rows)
-
-    # Sentinel used as the "from_identity" slot in the fallback bucket key.
-    _FALLBACK = "__rel_type_fallback__"
-
-    # Build provenance buckets keyed by composite (from_identity, rel_type,
-    # to_identity) where resolvable, or (_FALLBACK, rel_type) otherwise.
-    provenance_by_triple: dict[tuple, dict] = {}
-
-    for row in (relationship_provenance_rows or []):
-        rt = getattr(row, "relationship_type", None)
-        if not rt:
-            continue
-        src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
-        tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
-        src_identity = id_to_identity.get(src_id_str)
-        tgt_identity = id_to_identity.get(tgt_id_str)
-
-        if src_identity is not None and tgt_identity is not None:
-            key: tuple = (src_identity, rt, tgt_identity)
-        else:
-            key = (_FALLBACK, rt)
-
-        bucket = provenance_by_triple.setdefault(key, {
-            "evidence_ids": [],
-            "self_refs": [],
-            "page_numbers": [],
-        })
-        bucket["evidence_ids"] = sorted(set(
-            bucket["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
-        ))
-        bucket["self_refs"] = sorted(set(
-            bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
-        ))
-        bucket["page_numbers"] = sorted(set(
-            bucket["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
-        ))
-
-    rel_records = []
-    for e in merged.edges:
-        triple_key = (e.from_identity, e.rel_type, e.to_identity)
-        fallback_key = (_FALLBACK, e.rel_type)
-        rel_prov = (
-            provenance_by_triple.get(triple_key)
-            or provenance_by_triple.get(fallback_key)
+    # Task 5: resolver maps for relationship source-chunk lineage. Empty maps
+    # when db is None (legacy/test callers) — rel records still build, just
+    # without source_chunk_ids props (never fabricated).
+    if db is not None:
+        identity_map, element_uid_chunk_map, _chunk_page_map = _build_lineage_resolver_maps(
+            db, document_id,
         )
-        rel_records.append(RelationshipRecord(
-            from_type=e.from_identity.entity_type,
-            from_identity=e.from_identity.as_upsert_identity_dict(),
-            to_type=e.to_identity.entity_type,
-            to_identity=e.to_identity.as_upsert_identity_dict(),
-            rel_type=e.rel_type,
-            extraction_confidence=e.confidence,
-            provenance=rel_prov or None,
-        ))
+    else:
+        identity_map, element_uid_chunk_map = {}, {}
+
+    rel_records = _build_relationship_records(
+        edges=merged.edges,
+        relationship_provenance_rows=relationship_provenance_rows,
+        entity_provenance_rows=entity_provenance_rows,
+        element_uid_chunk_map=element_uid_chunk_map,
+        identity_map=identity_map,
+    )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
     graph_store = get_graph_store()
@@ -1815,6 +1800,219 @@ def _resolve_mention_chunks(
     # emits no edge. Never fan out across the whole document/artifact.
     is_coarse = (not resolved) and bool(self_refs)
     return resolved, is_coarse
+
+
+def _build_lineage_resolver_maps(db, document_id):
+    """Build the (identity_map, element_uid_chunk_map, chunk_page_map) needed
+    to resolve self_refs -> concrete chunk ids IN THE MERGE PHASE.
+
+    Replicates the element_uid_chunk_map build in ``derive_structure_links``
+    (query DocumentElement + TextChunk + ImageChunk via the supplied ``db``
+    session, map element_uid -> [chunk_id] via the shared artifact_id), plus a
+    chunk_id -> page map so resolved fields/edges can back-fill a page number.
+
+    ``identity_map`` bridges Docling self_refs (``#/texts/N``) to
+    DocumentElement.element_uid (loaded from the persisted docling_document.json
+    ``_enrichments.identity_map``; {} on any miss — degrades to the precise/empty
+    chunk-set, never all-document).
+
+    Built ONCE per merge and threaded into BOTH the node phase (field
+    chunk_id resolution) and the domain-edge phase (relationship
+    source_chunk_ids). No graph mutation here — pure read.
+    """
+    from app.models.ingest import DocumentElement
+    from app.models.retrieval import TextChunk, ImageChunk
+
+    doc_uuid = uuid.UUID(str(document_id))
+    elements = db.execute(
+        select(DocumentElement)
+        .where(DocumentElement.document_id == doc_uuid)
+        .order_by(DocumentElement.element_order)
+    ).scalars().all()
+    text_chunks = db.execute(
+        select(TextChunk).where(TextChunk.document_id == doc_uuid)
+    ).scalars().all()
+    image_chunks = db.execute(
+        select(ImageChunk).where(ImageChunk.document_id == doc_uuid)
+    ).scalars().all()
+
+    artifact_id_to_element_uid: dict[str, str] = {}
+    for elem in elements:
+        if elem.artifact_id and elem.element_uid:
+            artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
+
+    element_uid_chunk_map: dict[str, list[str]] = {}
+    chunk_page_map: dict[str, int] = {}
+    for tc in text_chunks:
+        if tc.page_number is not None:
+            chunk_page_map[str(tc.id)] = tc.page_number
+        if tc.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
+    for ic in image_chunks:
+        if ic.page_number is not None:
+            chunk_page_map[str(ic.id)] = ic.page_number
+        if ic.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
+
+    identity_map = _load_identity_map(document_id)
+    return identity_map, element_uid_chunk_map, chunk_page_map
+
+
+def _entity_resolved_chunk_set(entity, element_uid_chunk_map, identity_map):
+    """Resolve the UNION of an entity's provenance self_refs to concrete chunk
+    ids (precise, no fan-out). Used as the field-level fallback chunk-set when a
+    field's OWN self_ref doesn't resolve."""
+    entity_self_refs: list[str] = []
+    seen: set[str] = set()
+    for prov_row in getattr(entity, "provenance", None) or []:
+        for ref in getattr(prov_row, "self_refs", None) or []:
+            if ref not in seen:
+                seen.add(ref)
+                entity_self_refs.append(ref)
+    resolved, _ = _resolve_mention_chunks(
+        entity_self_refs, element_uid_chunk_map, identity_map,
+    )
+    return resolved
+
+
+def _resolve_field_evidence_chunk_ids(
+    entity, element_uid_chunk_map, identity_map, chunk_page_map=None,
+):
+    """Resolve a RESOLVED chunk_id onto every ``_field_evidence`` row of an
+    entity (mutates rows in place).
+
+    Per spec / Task 5 acceptance:
+      * a field whose own ``self_refs`` resolve to chunk C gets chunk_id == C;
+      * a field whose own self_refs DON'T resolve falls back to the ENTITY's
+        resolved chunk-set (never None when the entity has resolvable lineage);
+      * never all-document, never fabricated — if neither resolves, chunk_id
+        stays None.
+
+    Also back-fills ``page`` from chunk_page_map when the row has no page and a
+    chunk resolved.
+    """
+    chunk_page_map = chunk_page_map or {}
+    field_evidence = getattr(entity, "field_evidence", None)
+    if not field_evidence:
+        return
+
+    entity_chunks = _entity_resolved_chunk_set(
+        entity, element_uid_chunk_map, identity_map,
+    )
+
+    for rows in field_evidence.values():
+        for row in rows:
+            self_refs = getattr(row, "self_refs", None) or []
+            if not self_refs and getattr(row, "element_uid", None):
+                self_refs = [row.element_uid]
+            resolved, _ = _resolve_mention_chunks(
+                self_refs, element_uid_chunk_map, identity_map,
+            )
+            if not resolved:
+                # Fall back to the entity's resolved chunk-set (precise, never
+                # all-document). Stays None when the entity also doesn't resolve.
+                resolved = entity_chunks
+            if resolved:
+                row.chunk_id = resolved[0]
+                if getattr(row, "page", None) is None:
+                    pg = chunk_page_map.get(resolved[0])
+                    if pg is not None:
+                        row.page = pg
+
+
+def _build_relationship_records(
+    edges,
+    relationship_provenance_rows,
+    entity_provenance_rows,
+    element_uid_chunk_map,
+    identity_map,
+):
+    """Build the RelationshipRecord list, attaching per-edge provenance AND
+    resolved source-chunk lineage onto ``record.properties``.
+
+    Pure (no graph mutation, no DB) so it is directly unit-testable. The
+    relationship's positional self_refs (from ``ExtractionRelationshipProvenance``,
+    bucketed by composite key) are resolved to concrete chunk ids via the same
+    ``_resolve_mention_chunks`` resolver, then written as:
+      * ``source_chunk_ids``  — resolved concrete chunk ids (precise, no fan-out)
+      * ``source_pages``      — the rel provenance page_numbers
+      * ``source_self_refs``  — the rel's self_refs
+    A rel with no resolvable self_refs gets NO source_chunk_ids property (never
+    fabricated). The upsert injects record.properties on both create+update
+    branches (arcadedb_graph.py), so no SQL change is needed.
+    """
+    from app.services.graph_store import RelationshipRecord
+
+    id_to_identity = _instance_to_identity_map(entity_provenance_rows)
+    _FALLBACK = "__rel_type_fallback__"
+
+    provenance_by_triple: dict[tuple, dict] = {}
+    for row in (relationship_provenance_rows or []):
+        rt = getattr(row, "relationship_type", None)
+        if not rt:
+            continue
+        src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
+        tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
+        src_identity = id_to_identity.get(src_id_str)
+        tgt_identity = id_to_identity.get(tgt_id_str)
+
+        if src_identity is not None and tgt_identity is not None:
+            key: tuple = (src_identity, rt, tgt_identity)
+        else:
+            key = (_FALLBACK, rt)
+
+        bucket = provenance_by_triple.setdefault(key, {
+            "evidence_ids": [],
+            "self_refs": [],
+            "page_numbers": [],
+        })
+        bucket["evidence_ids"] = sorted(set(
+            bucket["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
+        ))
+        bucket["self_refs"] = sorted(set(
+            bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
+        ))
+        bucket["page_numbers"] = sorted(set(
+            bucket["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
+        ))
+
+    rel_records = []
+    for e in edges:
+        triple_key = (e.from_identity, e.rel_type, e.to_identity)
+        fallback_key = (_FALLBACK, e.rel_type)
+        rel_prov = (
+            provenance_by_triple.get(triple_key)
+            or provenance_by_triple.get(fallback_key)
+        )
+
+        props: dict[str, Any] = {}
+        if rel_prov:
+            rel_self_refs = rel_prov.get("self_refs") or []
+            resolved_chunks, _ = _resolve_mention_chunks(
+                rel_self_refs, element_uid_chunk_map, identity_map,
+            )
+            if resolved_chunks:
+                props["source_chunk_ids"] = resolved_chunks
+                props["source_self_refs"] = list(rel_self_refs)
+                pages = rel_prov.get("page_numbers") or []
+                if pages:
+                    props["source_pages"] = list(pages)
+
+        rel_records.append(RelationshipRecord(
+            from_type=e.from_identity.entity_type,
+            from_identity=e.from_identity.as_upsert_identity_dict(),
+            to_type=e.to_identity.entity_type,
+            to_identity=e.to_identity.as_upsert_identity_dict(),
+            rel_type=e.rel_type,
+            properties=props,
+            extraction_confidence=e.confidence,
+            provenance=rel_prov or None,
+        ))
+    return rel_records
 
 
 def _load_identity_map(document_id: str) -> dict[str, str]:
@@ -8107,7 +8305,7 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             document_id, run_id, merged.entities, db,
         )
         identity_to_rid = _import_graph_phase_nodes(
-            merged, ontology, document_id, tracker, provenance_envelope,
+            merged, ontology, document_id, tracker, provenance_envelope, db=db,
         )
         # Collect relationship + entity provenance from all rehydrated pass results.
         # entity_provenance_rows is used by _import_graph_phase_domain_edges to build
@@ -8127,6 +8325,7 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             merged, ontology, tracker, provenance_envelope,
             relationship_provenance_rows=all_rel_provenance,
             entity_provenance_rows=all_entity_provenance,
+            db=db, document_id=document_id,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(
