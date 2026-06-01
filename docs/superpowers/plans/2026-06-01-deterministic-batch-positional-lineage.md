@@ -230,50 +230,58 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Service schema + provenance builders carry the lists (TDD)
+## Task 2: KEYSTONE — delta-sourced entity + field provenance builder (TDD)
 
-**Goal:** The docling-graph `/extract-pass` response carries `self_refs`/`chunk_indexes`/`cited_refs` lists on entity provenance, field provenance is sourced positionally, and `_resolve_element_uid` no longer prefers the single cited self_ref.
+**Goal:** Add `build_entity_provenance_from_delta_graph` that reads `context._delta_merged_graph["nodes"]` (where Task 1's positional stamp lands) and emits per-entity `ExtractionProvenance` AND per-field `ExtractionFieldProvenance` with positional `self_refs`/`chunk_indexes`/`page_numbers`/`cited_refs`; wire it into `main.py` BEFORE `build_provenance_from_context`/synth. Add the list fields to the schemas and demote `_resolve_element_uid`.
+
+**WHY (verified blocker):** the existing `build_provenance_from_context` (provenance.py:352) reads `context.knowledge_graph`, which the Pydantic→graph converter STRIPS of provenance (graph_converter.py:214-254) — so in production it returns `[]` and main.py:1721 falls to `synthesize_provenance_from_pass_output` (chunk-0, scalar, coarse). Task 1's stamp lands on `_delta_merged_graph`, which NO entity builder reads (only the relationship builder does, provenance.py:564). Without this new builder, the entire positional stamp is dead for entities + fields and the gate would falsely pass at K=1. This mirrors the working `build_relationship_provenance_from_delta_trace`.
 
 **Files:**
-- Modify: `docker/docling-graph/app/schemas.py` (`ExtractionProvenance` ~304, `ExtractionFieldProvenance`)
-- Modify: `docker/docling-graph/app/provenance.py` (`_resolve_element_uid` ~205 demote; new `_resolve_self_refs`; `build_provenance_from_context` ~342 + `synthesize_provenance_from_pass_output` ~84 emit lists; `build_auto_field_evidence` ~481 positional)
-- Create: `docker/docling-graph/tests/test_provenance_lists.py`
+- Modify: `docker/docling-graph/app/schemas.py` (`ExtractionProvenance` ~304, `ExtractionFieldProvenance` — add list fields)
+- Modify: `docker/docling-graph/app/provenance.py` (NEW `build_entity_provenance_from_delta_graph`; `_resolve_element_uid` ~205 demote; the now-vestigial `build_provenance_from_context`/`synthesize_provenance_from_pass_output` stay as fallbacks but are no longer the precise path)
+- Modify: `docker/docling-graph/app/main.py` (~1700-1730 — call the new builder FIRST; fall back to the existing two only when it yields `[]`)
+- Create: `docker/docling-graph/tests/test_entity_provenance_from_delta.py`
 - Modify: `scripts/run_tests.sh`
+- Modify: `docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py` (INVERT — see AC)
 
 **Acceptance Criteria:**
-- [ ] `ExtractionProvenance` gains `self_refs: list[str] = []`, `chunk_indexes: list[int] = []`, `cited_refs: list[str] = []` (additive, defaulted). `element_uid` stays (= `self_refs[0]` when present, for back-compat).
-- [ ] New `_resolve_self_refs(node_data, chunk_to_self_refs) -> list[str]` returns the node's positional batch self_refs (from `provenance.self_refs`, else `chunk_indexes`→`chunk_to_self_refs`, else `[]`).
-- [ ] `_resolve_element_uid` is demoted: drop Strategy 3 (the "prefer numerically-smallest cited #/ self_ref" block); it now returns `self_refs[0]` for back-compat (direct → nested element_uid → `self_refs[0]` → chunk_indexes). The cited-evidence preference is GONE.
-- [ ] `build_provenance_from_context` AND `synthesize_provenance_from_pass_output` populate `self_refs`/`chunk_indexes`/`page_numbers`/`cited_refs` on each emitted `ExtractionProvenance` (lists, not just scalar element_uid).
-- [ ] `build_auto_field_evidence` (or its replacement) sources each field's anchor from the node's positional batch `self_refs`/`chunk_indexes`, NOT value-text-match over chunks. `ExtractionFieldProvenance` carries `self_refs`/`chunk_indexes` lists.
-- [ ] Unit test: a node whose provenance has `self_refs=["#/texts/3","#/texts/4"]`, `cited_refs=["#/texts/3"]` → emitted `ExtractionProvenance.self_refs == ["#/texts/3","#/texts/4"]`, `.cited_refs==["#/texts/3"]`, `.element_uid=="#/texts/3"`; field provenance for a property carries the same positional self_refs.
+- [ ] `ExtractionProvenance` gains `self_refs: list[str] = []`, `chunk_indexes: list[int] = []`, `cited_refs: list[str] = []` (additive, defaulted). `element_uid` stays (= `self_refs[0]` when present, for back-compat). `ExtractionFieldProvenance` gains `self_refs`/`chunk_indexes` lists.
+- [ ] NEW `build_entity_provenance_from_delta_graph(context, template_cls, provenance_cls, field_provenance_cls, chunk_to_self_refs)` walks `context._delta_merged_graph["nodes"]` (mirror `build_relationship_provenance_from_delta_trace`'s node walk, provenance.py:585-640): for each entity-typed node, map its `path`/`node_type` → `ontology_name` + `graph_id_fields` via the delta catalog (`DeltaNodeSpec.node_type`=model `__name__`, catalog.py:231; spec keyed by `path`), and emit one `ExtractionProvenance` carrying the node's `provenance.self_refs`/`chunk_indexes`/`page_numbers`/`cited_refs` (positional) + `element_uid=self_refs[0]`. Emit `ExtractionFieldProvenance` per `node.provenance.property_evidence` field carrying the node's positional `self_refs`/`chunk_indexes` (per-field narrowing via `cited_refs` is a documented K-set follow-on, not required here).
+- [ ] `main.py` calls `build_entity_provenance_from_delta_graph` FIRST; only if it returns `[]` does it fall to `build_provenance_from_context` then `synthesize_provenance_from_pass_output` (preserves behavior for non-delta paths). Log which builder produced the rows.
+- [ ] `_resolve_element_uid` demoted: drop Strategy 3 (the "numerically-smallest cited #/ self_ref" block, provenance.py:239-249); it returns `self_refs[0]` (direct → nested element_uid → `self_refs[0]` → chunk_indexes). Cited-evidence preference GONE.
+- [ ] INVERT the now-contradicting wired tests in `docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py` (asserts Strategy 3 picks the cited self_ref over `self_refs[0]`) — rewrite to assert `_resolve_element_uid` returns `self_refs[0]` regardless of cited evidence. (This file is in `run_tests.sh` and will otherwise turn the suite red.)
+- [ ] Unit test (`test_entity_provenance_from_delta.py`): a `context._delta_merged_graph` with two entity nodes — node A `provenance.self_refs=["#/texts/3","#/texts/4"]`, `cited_refs=["#/texts/3"]`, one `property_evidence` field; assert `build_entity_provenance_from_delta_graph` emits an `ExtractionProvenance` with `self_refs==["#/texts/3","#/texts/4"]`, `cited_refs==["#/texts/3"]`, `element_uid=="#/texts/3"`, mapped `ontology_name`, AND a matching `ExtractionFieldProvenance` carrying the positional self_refs.
 
-**Verify:** `python3 -m pytest docker/docling-graph/tests/test_provenance_lists.py -v` → passed
+**Verify:** `python3 -m pytest docker/docling-graph/tests/test_entity_provenance_from_delta.py docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py -v` → passed
 
 **Steps:**
 
-- [ ] **Step 1: Read the current builders + field-evidence path** to ground the edits:
-
+- [ ] **Step 1: Read the source + mirror pattern.** Run:
 ```bash
-sed -n '84,205p' docker/docling-graph/app/provenance.py    # synthesize + _resolve_element_uid
-sed -n '342,540p' docker/docling-graph/app/provenance.py    # build_provenance_from_context + build_auto_field_evidence
+sed -n '564,650p' docker/docling-graph/app/provenance.py    # relationship builder (the node-walk to mirror)
+sed -n '84,205p' docker/docling-graph/app/provenance.py      # synth + _resolve_element_uid
+sed -n '1170,1195p;1700,1730p' docker/docling-graph/app/main.py   # _delta_merged_graph load + builder call site
+sed -n '185,235p' docker/docling-graph/repo/docling_graph/core/extractors/contracts/delta/catalog.py  # DeltaNodeSpec path/node_type/id_fields → ontology bridge
 grep -n "class ExtractionFieldProvenance\|class ExtractionProvenance" docker/docling-graph/app/schemas.py
 ```
+Determine how to obtain the delta catalog (or `template_cls.model_config` ontology_name + graph_id_fields per path) inside the builder — the relationship builder keys nodes by `(path, ids)`; the entity builder additionally needs path→ontology_name (read it from the catalog spec or by walking `template_cls`).
 
-- [ ] **Step 2: Write the failing test** — `docker/docling-graph/tests/test_provenance_lists.py`. Use the existing `dg_app_module`/`dg_schemas` conftest fixtures (they load docling-graph `app/` under a path swap). Build a fake `context.knowledge_graph` node (or call the builder with a delta-node dict) carrying `provenance={self_refs:[...], chunk_indexes:[...], cited_refs:[...], page_numbers:[...]}`, assert the emitted `ExtractionProvenance` carries all lists + `element_uid==self_refs[0]`. Assert `_resolve_self_refs` returns the full list and `_resolve_element_uid` returns `self_refs[0]` (NOT a cited-evidence pick). Run → FAIL (fields/function don't exist).
+- [ ] **Step 2: Write the failing test** — `docker/docling-graph/tests/test_entity_provenance_from_delta.py` using the `dg_app_module`/`dg_schemas` fixtures. Build a fake `context` with `_delta_merged_graph={"nodes":[...]}` per the AC; call `build_entity_provenance_from_delta_graph`; assert the emitted `ExtractionProvenance` + `ExtractionFieldProvenance` carry the positional lists + mapped ontology_name. Run → FAIL (function doesn't exist).
 
-- [ ] **Step 3: Implement.** In `schemas.py`, add the three list fields to `ExtractionProvenance` + `ExtractionFieldProvenance` (defaulted, additive). In `provenance.py`: add `_resolve_self_refs`; remove `_resolve_element_uid` Strategy 3 (the evidence_ids min-pick block, lines ~239-249) so it falls straight to `self_refs[0]`; have both builders set the list fields; rewrite `build_auto_field_evidence` to read `node.provenance.property_evidence` + node positional `self_refs`/`chunk_indexes` instead of value-text-match. Run test → PASS.
+- [ ] **Step 3: Implement.** Add the schema list fields; add `_resolve_self_refs` helper if useful; implement `build_entity_provenance_from_delta_graph` (mirror the relationship node-walk, emit entity + field rows positionally); wire it first in main.py with fallback; demote `_resolve_element_uid`; INVERT the contradicting tests. Run both test files → PASS.
 
-- [ ] **Step 4: Wire test into run_tests.sh + commit.**
+- [ ] **Step 4: Wire new test into run_tests.sh + commit.**
 
 ```bash
-git add docker/docling-graph/app/schemas.py docker/docling-graph/app/provenance.py docker/docling-graph/tests/test_provenance_lists.py scripts/run_tests.sh
-git commit -m "fix(lineage): service provenance carries self_refs/chunk_indexes/cited_refs lists; demote _resolve_element_uid
+git add docker/docling-graph/app/schemas.py docker/docling-graph/app/provenance.py docker/docling-graph/app/main.py docker/docling-graph/tests/test_entity_provenance_from_delta.py docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py scripts/run_tests.sh
+git commit -m "fix(lineage): KEYSTONE — source entity+field provenance from _delta_merged_graph
 
-ExtractionProvenance + ExtractionFieldProvenance gain positional lists.
-_resolve_element_uid no longer prefers the single cited self_ref (Part B
-demoted); cited refs are diagnostics. Field evidence sourced positionally,
-not by value text-match.
+build_provenance_from_context reads knowledge_graph (provenance-stripped) -> []
+in prod -> coarse chunk-0 synth. New build_entity_provenance_from_delta_graph
+reads _delta_merged_graph nodes (where the positional stamp lands; mirrors the
+relationship builder), emits per-entity + per-field ExtractionProvenance with
+positional self_refs/chunk_indexes. Wired before synth. element_uid demoted to
+self_refs[0]; contradicting Strategy-3 test inverted.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -331,26 +339,26 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Acceptance Criteria:**
 - [ ] `_resolve_mention_chunks` signature gains `batch_chunk_ids: list[str]` (the mention's batch chunk-set, resolved upstream from its `self_refs`/`chunk_indexes`). New order: (1) resolve EACH self_ref via `element_uid_chunk_map`/`identity_map` → union of concrete chunks; (2) on any unresolved self_ref, fall back to `batch_chunk_ids` (NOT `all_text_chunk_ids`); (3) only if `batch_chunk_ids` is also empty, return `([], is_coarse=True)` and the caller WARNs — the all-document fan-out is REMOVED.
-- [ ] The mention loop (pipeline.py ~9323) resolves the mention's `self_refs` LIST (not one scalar) and derives `batch_chunk_ids` from the mention's `chunk_indexes` via the chunk-index→chunk map.
-- [ ] The legacy `content_metadata` fan-out (~9416-9436) either (a) routes through the same `_resolve_mention_chunks` batch-set path, or (b) is confirmed inert for the delta pipeline and gated off with a comment + WARN if it ever fires. Decide via Step 1; do not leave an all-document fan-out anywhere.
-- [ ] `identity_map`↔`#/texts/N` gap: verify the `identity_map` keys ARE `#/texts/N` self_refs (Step 1); if ingest stored a different namespace, add the bridge so resolution hits. If they already match, document that and add a test asserting a real `#/texts/N` resolves.
+- [ ] The mention loop (pipeline.py ~9323) resolves the mention's `self_refs` LIST (not one scalar). **`batch_chunk_ids` is derived from the mention's `self_refs` via `identity_map`→`element_uid`→`element_uid_chunk_map` — NOT from `chunk_indexes`.** (VERIFIED constraint: the normalizer's `chunk_indexes` are extraction-batch-chunker ordinals, a DIFFERENT index space than `TextChunk.chunk_index` (retrieval chunker — "independent boundaries", pipeline.py:5817); using chunk_indexes would attribute to the wrong chunks. self_ref→element_uid→chunk is the only namespace-safe path.) For positional lineage, `batch_chunk_ids` = the union of chunks for ALL of the mention's self_refs (the batch's chunk-set); a single self_ref's miss falls back to this set, not all-document.
+- [ ] BOTH remaining coarse fan-out sites are eliminated: (1) the legacy `content_metadata` block (~9416-9436), and (2) the entity-level artifact fan-out at **pipeline.py:9396-9404** (`if entity_ids_needing_fallback or not mentioned_entity_ids:` fans each entity across its artifact's chunks — LIVE, fires whenever a node is un-mentioned). Each either routes through the batch-set resolver or is gated off with a WARN. Do not leave ANY all-document/all-artifact fan-out.
+- [ ] `identity_map`↔`#/texts/N`: verify `identity_map` keys ARE `#/texts/N` self_refs (Step 1; both `identity_map` and normalizer self_refs derive from the same Docling `doc_item.self_ref`, so they likely already match — confirm and add a test asserting a real `#/texts/N` resolves; do NOT spend effort on a bridge unless Step 1 proves a mismatch).
 - [ ] Unit tests: (a) two self_refs both resolve → union of their two chunks (precise, is_coarse=False); (b) one self_ref unresolved → falls back to `batch_chunk_ids` (the batch's chunks), NOT all-document; (c) batch_chunk_ids empty + unresolved → `([], True)` with WARN; (d) concrete `{page}-{order}-...` element_uid still resolves directly (no regression).
 
 **Verify:** `python3 -m pytest tests/unit/test_extracted_from_self_ref_resolution.py -v` → all pass
 
 **Steps:**
 
-- [ ] **Step 1: Investigate the namespace + legacy fan-out.** Run:
+- [ ] **Step 1: Investigate the namespace + BOTH fan-out sites.** Run:
 ```bash
 grep -n "identity_map\[" app/workers/pipeline.py | head
 sed -n '4870,4890p' app/workers/pipeline.py     # where identity_map keys are built (self_ref source)
-sed -n '9396,9440p' app/workers/pipeline.py     # legacy content_metadata fan-out
+sed -n '9390,9440p' app/workers/pipeline.py     # entity-artifact fan-out (9396-9404) + legacy content_metadata (9416-9436)
 ```
-Confirm whether `identity_map` keys are `#/texts/N` (if not, the gap is real → add bridge) and whether the legacy block has a live writer (reviewer found only readers — likely inert; confirm).
+Confirm `identity_map` keys are `#/texts/N` (likely yes — same Docling self_ref source). Confirm BOTH fan-out sites and whether each has a live writer.
 
-- [ ] **Step 2: Write/extend the failing tests** in `tests/unit/test_extracted_from_self_ref_resolution.py` per the four acceptance cases above (new `batch_chunk_ids` param; union resolution; batch-set fallback; no all-document). Run → FAIL (signature lacks `batch_chunk_ids`; fallback still all-document).
+- [ ] **Step 2: Write/extend the failing tests** in `tests/unit/test_extracted_from_self_ref_resolution.py` per the four acceptance cases (new `batch_chunk_ids` param; union over self_refs; batch-set fallback; no all-document; concrete-uid regression). Run → FAIL (signature lacks `batch_chunk_ids`; fallback still all-document).
 
-- [ ] **Step 3: Implement** the new `_resolve_mention_chunks` signature + body (union over self_refs; batch-set fallback; remove `all_text_chunk_ids` fan-out), update the mention loop to pass `batch_chunk_ids` derived from the mention's `chunk_indexes`, and route/gate the legacy block per Step 1. Run → PASS.
+- [ ] **Step 3: Implement** the new `_resolve_mention_chunks` signature + body (union over the mention's self_refs; batch-set fallback; remove `all_text_chunk_ids` fan-out). In the mention loop, build `batch_chunk_ids` = union of chunks resolved from ALL the mention's self_refs (via identity_map→element_uid→element_uid_chunk_map), NOT from chunk_indexes. Route/gate BOTH fan-out sites (9396-9404 AND 9416-9436) through the batch-set path or gate them off with a WARN. Run → PASS.
 
 - [ ] **Step 4: Commit.**
 
@@ -372,26 +380,25 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Goal:** Field evidence rows get a RESOLVED `chunk_id`+`page` (not `None`), and committed relationship edges carry `source_chunk_ids`/`source_pages`/`source_self_refs` properties resolved from the relationship's positional self_refs.
 
 **Files:**
-- Modify: `app/workers/pipeline.py` (`FieldEvidenceRow` chunk_id resolution ~3855/where `_field_evidence` is built; capture rel-upsert RIDs ~1521; resolve + pass rel source-chunk refs)
-- Modify: `app/services/arcadedb_graph.py` (`upsert_relationships_batch_sync` ~2448 — write source-chunk props), `app/services/arcadedb_schema.py` (~335 — register the rel-edge properties)
+- Modify: `app/workers/pipeline.py` (`FieldEvidenceRow` chunk_id resolution ~3855/where `_field_evidence` is built; resolve + put rel source-chunk refs into `RelationshipRecord.properties` ~1510)
+- Modify: `app/services/arcadedb_schema.py` (~140 `_COMMON_EDGE_PROPS` — register the rel-edge properties as LIST). `upsert_relationships_batch_sync` already injects `record.properties` into both create + update branches (arcadedb_graph.py:276-284,312-335) — NO upsert SQL change needed.
 - Create: `tests/unit/test_field_and_rel_lineage.py`
 
 **Acceptance Criteria:**
-- [ ] Field: each `FieldEvidenceRow.chunk_id` is RESOLVED from its `self_refs`/`chunk_indexes` via the same resolver as Task 4 (no longer hardcoded `None`); `page` set from the resolved chunk. A field whose self_ref resolves to chunk C has `chunk_id == C`.
-- [ ] Relationship: `RelationshipRecord`/upsert carries the rel's positional `self_refs`/`chunk_indexes`; the worker resolves them to chunk ids and the committed edge has `source_chunk_ids: list`, `source_pages: list`, `source_self_refs: list` properties.
-- [ ] `arcadedb_schema.py` registers `source_chunk_ids`/`source_pages`/`source_self_refs` as properties on the ontology relationship edge types (Phase 2 rel-edge DDL ~335). Edge delete behavior unchanged (properties die with the edge).
-- [ ] The relationship-upsert return RIDs (arcadedb_graph.py:2452) are captured at the call site (pipeline.py:1521), not discarded (needed to attach/verify the props).
-- [ ] Unit tests: (a) field self_ref `#/texts/3` → `FieldEvidenceRow.chunk_id == <chunk for #/texts/3>`, page set; (b) a relationship with positional `self_refs=["#/texts/3"]` produces an edge whose `source_chunk_ids` contains that chunk.
+- [ ] Field: each `FieldEvidenceRow.chunk_id` is RESOLVED from its `self_refs` via the same self_ref→chunk resolver as Task 4 (no longer hardcoded `None`); `page` set from the resolved chunk. A field whose self_ref resolves to chunk C has `chunk_id == C`.
+- [ ] Relationship: the worker resolves the rel's positional `self_refs` (already carried on `RelationshipRecord.provenance` from Task 1 via the delta path — VERIFIED present pre-existing) to chunk ids and puts `source_chunk_ids`/`source_pages`/`source_self_refs` into each `RelationshipRecord.properties` dict — which the upsert writes on the edge in both create + update (re-ingest) branches. NO RID round-trip / second-pass attach.
+- [ ] `arcadedb_schema.py` registers `source_chunk_ids`/`source_pages`/`source_self_refs` as LIST properties in `_COMMON_EDGE_PROPS` (~140; it already uses LIST props, so this is additive). ArcadeDB is non-strict so reads work even pre-registration, but register for typed reads. Edge delete unchanged.
+- [ ] Unit tests: (a) field self_ref `#/texts/3` → `FieldEvidenceRow.chunk_id == <chunk for #/texts/3>`, page set; (b) a `RelationshipRecord` with positional `self_refs=["#/texts/3"]` resolves so `record.properties["source_chunk_ids"]` contains that chunk (assert on the record the upsert receives — no live DB needed).
 
 **Verify:** `python3 -m pytest tests/unit/test_field_and_rel_lineage.py -v` → all pass
 
 **Steps:**
 
-- [ ] **Step 1: Read** the field-evidence build (`app/workers/pipeline.py` ~3848-3866, where `FieldEvidenceRow(chunk_id=None,...)` is constructed and where `_field_evidence` is later resolved/written ~1303), the rel upsert call (pipeline.py:1510-1521), `upsert_relationships_batch_sync` (arcadedb_graph.py:2448-2520), and the rel-edge DDL (arcadedb_schema.py ~329-340).
+- [ ] **Step 1: Read** the field-evidence build (`app/workers/pipeline.py` ~3848-3866, where `FieldEvidenceRow(chunk_id=None,...)` is constructed and where `_field_evidence` is later resolved/written ~1303), the rel record build + upsert call (pipeline.py:1505-1521), how `record.properties` is injected into the upsert SQL (arcadedb_graph.py:276-284,312-335), and `_COMMON_EDGE_PROPS` (arcadedb_schema.py:140).
 
-- [ ] **Step 2: Write the failing tests** — `tests/unit/test_field_and_rel_lineage.py` per cases (a)/(b). Run → FAIL (chunk_id None; no source_chunk_ids prop).
+- [ ] **Step 2: Write the failing tests** — `tests/unit/test_field_and_rel_lineage.py` per cases (a)/(b). Run → FAIL (chunk_id None; no source_chunk_ids in record.properties).
 
-- [ ] **Step 3: Implement.** Resolve field `chunk_id`/`page` from `self_refs`/`chunk_indexes` where `_field_evidence` is finalized (reuse Task 4's resolution). For relationships: thread positional self_refs into `RelationshipRecord`, resolve to chunk ids in the worker, pass `source_chunk_ids`/`source_pages`/`source_self_refs` into `upsert_relationships_batch_sync`, write them as edge props in the upsert SQL; register the props in `arcadedb_schema.py`; capture the upsert RIDs at the call site. Run → PASS.
+- [ ] **Step 3: Implement.** Resolve field `chunk_id`/`page` from `self_refs` where `_field_evidence` is finalized (reuse Task 4's self_ref→chunk resolver). For relationships: resolve the rel's positional `self_refs` to chunk ids in the worker and set `record.properties["source_chunk_ids"]`/`["source_pages"]`/`["source_self_refs"]` (the upsert already writes record.properties on both branches — no SQL change). Register the three LIST props in `_COMMON_EDGE_PROPS`. Run → PASS.
 
 - [ ] **Step 4: Commit.**
 
