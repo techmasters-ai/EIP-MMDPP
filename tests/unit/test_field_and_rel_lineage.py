@@ -345,6 +345,83 @@ def test_build_lineage_resolver_maps_joins_artifact_to_chunk(monkeypatch):
     assert "chunk-2" not in chunk_page_map
 
 
+# ---------------------------------------------------------------------------
+# (d) _build_element_uid_chunk_map — the shared helper that BOTH the merge
+#     phase (_build_lineage_resolver_maps) and derive_structure_links
+#     (EXTRACTED_FROM) now call. Direct coverage so the byte-identical map
+#     semantics can't drift between the two call sites.
+# ---------------------------------------------------------------------------
+def test_build_element_uid_chunk_map_joins_text_and_image_chunks():
+    """artifact_id -> element_uid -> chunk_id join across BOTH text + image
+    chunks; rows missing artifact_id/element_uid contribute nothing; no
+    page logic in the map (that lives in _build_lineage_resolver_maps)."""
+    elements = [
+        _Elem(artifact_id="art-1", element_uid="euid-A"),
+        _Elem(artifact_id="art-2", element_uid="euid-B"),
+        # no artifact_id -> skipped, no crash.
+        _Elem(artifact_id=None, element_uid="euid-C"),
+        # no element_uid -> skipped.
+        _Elem(artifact_id="art-3", element_uid=None),
+    ]
+    text_chunks = [
+        _Chunk(id="chunk-1", artifact_id="art-1", page_number=5),
+        _Chunk(id="chunk-2", artifact_id="art-2"),
+        # artifact with no element mapping -> dropped.
+        _Chunk(id="chunk-orphan", artifact_id="art-unknown"),
+        # chunk with no artifact_id -> dropped.
+        _Chunk(id="chunk-none", artifact_id=None),
+    ]
+    image_chunks = [
+        _Chunk(id="img-1", artifact_id="art-1", page_number=7),
+    ]
+
+    result = pipeline_mod._build_element_uid_chunk_map(
+        elements, text_chunks, image_chunks,
+    )
+
+    # text + image chunks for the same element collapse onto one element_uid,
+    # text chunk first (insertion order preserved).
+    assert result == {
+        "euid-A": ["chunk-1", "img-1"],
+        "euid-B": ["chunk-2"],
+    }
+    assert "euid-C" not in result
+    assert "art-unknown" not in result
+
+
+def test_build_element_uid_chunk_map_empty_inputs():
+    """Empty inputs -> empty map, no crash."""
+    assert pipeline_mod._build_element_uid_chunk_map([], [], []) == {}
+
+
+def test_build_element_uid_chunk_map_matches_lineage_resolver(monkeypatch):
+    """The shared helper must produce the SAME element_uid_chunk_map that
+    _build_lineage_resolver_maps returns from the identical row sets — the
+    whole point of the refactor (no divergence between the two call sites)."""
+    monkeypatch.setattr(pipeline_mod, "_load_identity_map", lambda doc_id: {})
+
+    elements = [
+        _Elem(artifact_id="art-1", element_uid="euid-A", element_order=0),
+        _Elem(artifact_id="art-2", element_uid="euid-B", element_order=1),
+    ]
+    text_chunks = [
+        _Chunk(id="chunk-1", artifact_id="art-1", page_number=5),
+        _Chunk(id="chunk-2", artifact_id="art-2", page_number=None),
+    ]
+    image_chunks = [
+        _Chunk(id="img-1", artifact_id="art-1", page_number=7),
+    ]
+
+    direct = pipeline_mod._build_element_uid_chunk_map(
+        elements, text_chunks, image_chunks,
+    )
+    db = _StubDB([elements, text_chunks, image_chunks])
+    _, via_resolver, _ = pipeline_mod._build_lineage_resolver_maps(
+        db, _uuid.uuid4(),
+    )
+    assert direct == via_resolver
+
+
 def test_build_lineage_resolver_maps_empty_db_no_nameerror(monkeypatch):
     """Smoke guard: empty result sets must yield three empty-ish maps WITHOUT
     raising NameError (the minimal repro of the missing-import bug)."""

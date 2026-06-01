@@ -1802,6 +1802,38 @@ def _resolve_mention_chunks(
     return resolved, is_coarse
 
 
+def _build_element_uid_chunk_map(elements, text_chunks, image_chunks) -> dict[str, list[str]]:
+    """Build the element_uid -> [chunk_id] map shared by the merge phase
+    (field/relationship lineage) and ``derive_structure_links`` (EXTRACTED_FROM).
+
+    Bridges DocumentElement rows to their chunk(s) via the shared
+    ``artifact_id``. Includes BOTH text_chunks AND image_chunks so entities
+    grounded in images/schematics get linked to the corresponding ImageChunk.
+
+    Takes the already-loaded row lists (no db query here) and returns the map.
+    Field/rel lineage and EXTRACTED_FROM lineage MUST keep identical map
+    semantics; centralizing the build here prevents the two call sites from
+    silently diverging on a future edit (new chunk type, changed key).
+    """
+    artifact_id_to_element_uid: dict[str, str] = {}
+    for elem in elements:
+        if elem.artifact_id and elem.element_uid:
+            artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
+
+    element_uid_chunk_map: dict[str, list[str]] = {}
+    for tc in text_chunks:
+        if tc.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
+    for ic in image_chunks:
+        if ic.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
+    return element_uid_chunk_map
+
+
 def _build_lineage_resolver_maps(db, document_id):
     """Build the (identity_map, element_uid_chunk_map, chunk_page_map) needed
     to resolve self_refs -> concrete chunk ids IN THE MERGE PHASE.
@@ -1837,27 +1869,17 @@ def _build_lineage_resolver_maps(db, document_id):
         select(ImageChunk).where(ImageChunk.document_id == doc_uuid)
     ).scalars().all()
 
-    artifact_id_to_element_uid: dict[str, str] = {}
-    for elem in elements:
-        if elem.artifact_id and elem.element_uid:
-            artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
+    element_uid_chunk_map = _build_element_uid_chunk_map(
+        elements, text_chunks, image_chunks,
+    )
 
-    element_uid_chunk_map: dict[str, list[str]] = {}
     chunk_page_map: dict[str, int] = {}
     for tc in text_chunks:
         if tc.page_number is not None:
             chunk_page_map[str(tc.id)] = tc.page_number
-        if tc.artifact_id:
-            euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
-            if euid:
-                element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
     for ic in image_chunks:
         if ic.page_number is not None:
             chunk_page_map[str(ic.id)] = ic.page_number
-        if ic.artifact_id:
-            euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
-            if euid:
-                element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
 
     identity_map = _load_identity_map(document_id)
     return identity_map, element_uid_chunk_map, chunk_page_map
@@ -9564,21 +9586,11 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # Build element_uid → chunk_ids map (via artifact_id).
         # Include BOTH text_chunks AND image_chunks so entities grounded
         # in images/schematics get linked to the corresponding ImageChunk.
-        element_uid_chunk_map: dict[str, list[str]] = {}
-        artifact_id_to_element_uid: dict[str, str] = {}
-        for elem in elements:
-            if elem.artifact_id and elem.element_uid:
-                artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
-        for tc in text_chunks:
-            if tc.artifact_id:
-                euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
-                if euid:
-                    element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
-        for ic in image_chunks:
-            if ic.artifact_id:
-                euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
-                if euid:
-                    element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
+        # Shared with the merge phase via _build_element_uid_chunk_map so the
+        # field/rel lineage and EXTRACTED_FROM lineage stay byte-identical.
+        element_uid_chunk_map = _build_element_uid_chunk_map(
+            elements, text_chunks, image_chunks,
+        )
 
         # Try graph_json mentions path first (new pipeline)
         from app.models.ingest import DocumentGraphExtraction
