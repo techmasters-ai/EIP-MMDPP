@@ -142,7 +142,7 @@ run_dg_lineage() {
   divider
   info "Running docling-graph lineage tests (host-safe subset)..."
   cd "${PROJECT_ROOT}"
-  # NOTE: name the two files explicitly. The full docker/docling-graph/tests
+  # NOTE: name the test files explicitly. The full docker/docling-graph/tests
   # directory is container-only (~360 tests that ERROR on the host via an
   # `app` namespace collision), so it must NOT be collected as a directory.
   # The repo clone on PYTHONPATH lets the patched-library imports resolve.
