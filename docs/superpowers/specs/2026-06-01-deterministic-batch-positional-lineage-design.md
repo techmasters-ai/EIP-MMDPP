@@ -44,12 +44,52 @@ f"b{batch_index}:n{node_idx}"` already records the batch. One positional-stamp c
 - **Relationship** → `rel.provenance` stamped identically at line ~895 (same positional source). Closes the
   previously "scoped-out" relationship gap with the same one-line priority inversion — not separate machinery.
 
-Optional sub-batch narrowing: if a later refinement wants it, keep the LLM `valid` list as a **separate
-advisory field** (e.g. `cited_refs`) that never overwrites the positional truth. Not required for this design.
+**LLM citations are demoted to diagnostics, not precision.** Per the review recommendation, Part B
+("prefer per-node `evidence_ids`", commits `c77d174`/`acf24cd`) is **simplified out of the load-bearing path**:
+`_resolve_element_uid` no longer prefers the single cited self_ref. The LLM's cited refs are preserved ONLY as an
+advisory `cited_refs` field on provenance (diagnostic — lets us later measure citation quality / build optional
+narrowing), and never drive chunk resolution.
 
-**Consequence for already-shipped work:** Part B ("prefer per-node `evidence_ids`", commits `c77d174`/`acf24cd`)
-is no longer the precision mechanism. Leave it as a harmless within-batch hint OR simplify it out during
-implementation — decided at plan time; not load-bearing either way.
+## 2.5 Wire contract (end-to-end provenance payloads)
+
+The positional lineage is a **list** of chunk anchors per item (the batch's chunk-set), so every hop must carry
+lists, not the single scalar `element_uid`/`chunk_index` the current path collapses to. This section is the
+authoritative contract the plan implements; each hop is verified against current code.
+
+**Entity provenance** (service `ExtractionProvenance`, schemas.py:304 — already has `evidence_ids`/`page_numbers`
+lists; ADD `self_refs`/`chunk_indexes` lists + `cited_refs` diagnostic):
+| field | meaning | source |
+|---|---|---|
+| `self_refs: list[str]` | batch's chunk self_refs (`#/texts/N`) — AUTHORITATIVE | `batch_self_refs` (ir_normalizer.py:611) |
+| `chunk_indexes: list[int]` | batch's chunk indices | `chunk_indexes` (ir_normalizer.py:587) |
+| `page_numbers: list[int]` | batch's chunk pages | `page_numbers` (ir_normalizer.py:610) |
+| `cited_refs: list[str]` | LLM-cited self_refs — DIAGNOSTIC only | `valid` (ir_normalizer.py:55) |
+| `element_uid: str` | kept for back-comp = `self_refs[0]` | derived |
+
+- Worker `ExtractionProvenance` (extraction_merge.py:~175) gains the same `self_refs`/`chunk_indexes`/`cited_refs`
+  lists; `_parse_pass_response` populates them from the response.
+- `mentions[]` (pipeline.py:362-371) — currently forwards scalar `element_uid`/`chunk_index`/`page`; ADD
+  `self_refs`/`chunk_indexes`/`page_numbers` lists so the batch-set survives the audit-blob boundary (this is the
+  exact point the list is dropped today).
+- `_resolve_mention_chunks` (pipeline.py:1771) — gains a `batch_chunk_self_refs`/`batch_chunk_indexes` parameter;
+  resolves each self_ref→chunk; on miss, attributes to the batch chunk-set (Section 3a); NEVER all-document.
+
+**Field provenance** (service `ExtractionFieldProvenance`, provenance.py — currently built by
+`build_auto_field_evidence` via value-text-match over chunks, provenance.py:481): REPLACE the text-match source
+with **positional** batch lineage from `node.provenance.property_evidence`. Carry through worker `FieldEvidenceRow`
+(extraction_merge.py / pipeline.py:3855), which gains `self_refs: list[str]` + `chunk_indexes: list[int]` and gets
+`chunk_id` RESOLVED (no longer hardcoded `None`, pipeline.py:3856). Per-field anchor = the batch chunk-set of the
+batch that emitted that property.
+
+**Relationship provenance** (service rel `provenance`, ir_normalizer.py:~895; worker `RelationshipRecord.provenance`,
+pipeline.py:1510): same positional `self_refs`/`chunk_indexes`/`page_numbers` lists. **Representation decision
+(chosen): resolved chunk refs as edge PROPERTIES** — not a new edge/vertex type. `upsert_relationships_batch_sync`
+already returns edge RIDs (arcadedb_graph.py:2452) but the caller discards them (pipeline.py:1521); CAPTURE them and
+write `source_chunk_ids: list`, `source_pages: list`, `source_self_refs: list` as edge properties (resolved in the
+worker via the same self_ref→chunk map). Mirrors how entity provenance already rides as properties; lineage dies
+with the edge on delete (no extra cascade). Query surface: read the edge's `source_chunk_ids`/`source_pages` (a
+property filter, not a graph traversal — accepted tradeoff). Register the new edge properties in arcadedb_schema.py
+(Phase 2 rel-edge property DDL, ~line 335).
 
 ## 3. Worker resolution + a home for field/relationship lineage
 
@@ -65,16 +105,18 @@ confirm-or-fix — reviewer found it likely inert for the delta path but it must
 reconciled so resolution actually hits. Because lineage is positional, a resolver miss never drops an
 entity — it lands on the batch's chunk(s), which always exist (recall safe by construction).
 
-### 3b. A home for field & relationship lineage (new structure)
-- **Field:** resolve each `property_evidence` self_ref → chunk; store resolved `chunk_id`+`page` on the entity's
-  `_field_evidence` (today `FieldEvidenceRow.chunk_id` is hardcoded `None`, pipeline.py:3856, never resolved).
-  Surface via the entity's existing provenance API.
-- **Relationship:** resolve `rel.provenance` self_refs → chunk and emit a relationship→chunk lineage edge
-  (mirroring `EXTRACTED_FROM`), so a relationship traces to its source chunk like an entity does — instead of
-  the current JSON-string-property-on-edge with no chunk link (arcadedb_graph.py:280-283).
+### 3b. A home for field & relationship lineage (per §2.5 wire contract)
+- **Field:** resolve each `property_evidence` self_ref → chunk via the same resolver; store resolved
+  `chunk_id`+`page`+`self_refs`+`chunk_indexes` on the entity's `_field_evidence` (today `FieldEvidenceRow.chunk_id`
+  is hardcoded `None`, pipeline.py:3856, never resolved). Surface via the entity's existing provenance API.
+- **Relationship:** resolve `rel.provenance` self_refs → chunk and write `source_chunk_ids`/`source_pages`/
+  `source_self_refs` as **properties on the domain edge** (capture the upsert RID discarded at pipeline.py:1521;
+  register props in arcadedb_schema.py). NOT a new edge/vertex type — see §2.5 representation decision. A
+  relationship then traces to its source chunk(s) via its edge properties, replacing the opaque JSON-string
+  provenance property with no chunk link (arcadedb_graph.py:280-283).
 
-This is mechanical (reuse the one resolver) and is what makes "every entity, field, AND relationship" literally
-true rather than entity-only.
+This is mechanical (reuse the one resolver across all three) and is what makes "every entity, field, AND
+relationship" literally true rather than entity-only.
 
 ## 4. Precision guarantee & the multi-chunk-batch boundary
 
@@ -107,8 +149,17 @@ Harden `scripts/verify_lineage_e2e.py` to prove the real requirement across all 
   is within the entity's batch chunk-set.
 - **Relationship precision (new):** committed relationships have a relationship→chunk lineage edge resolving to
   chunk+page within the source nodes' batch chunk-set.
-- **Recall (both-constraints):** committed entity/field/rel counts hold vs extracted counts — nothing dropped.
-  Positional lineage makes this hold by construction; the gate proves it.
+- **Recall (both-constraints), per-target baseline:** define the baseline per target so valid rejection isn't
+  misread as lineage loss —
+  - *Entity:* committed entity vertices (run-scoped) == merged-entity count from the run's audit blob (the
+    LLM-extracted set that survived the lineage gate). NOT the global vertex count (idempotent upsert makes a
+    global delta meaningless — see [[project_precise_lineage_validation]]).
+  - *Field:* `_field_evidence` rows with a resolved `chunk_id` == count of extracted property-evidence entries
+    for committed entities (every extracted field keeps its lineage; none silently drop to `chunk_id=None`).
+  - *Relationship:* committed edges == relationships that PASSED validation (`_enforce_relationship_triple`,
+    arcadedb_graph.py:2489) — i.e. baseline is post-validation accepted rels, so a triple correctly rejected by
+    schema validation does NOT count as lineage recall loss. Report rejected-rel count separately.
+  Positional lineage makes per-target recall hold by construction; the gate proves it against these baselines.
 - **Run-scoping & honesty:** all counts filtered by `pipeline_run_id` (not global); trace uses `EXTRACTED_FROM`
   specifically (NOT `MENTIONED_IN`, which pre-satisfies it); warnings scoped to the run window; fail-closed on
   no-evidence (missing log / empty result FAILS, never silently passes).
@@ -122,15 +173,25 @@ entity-only.
 ## 6. Components / file structure
 
 - `docker/docling-graph/repo/.../delta/ir_normalizer.py` (~586-613, 783-806, ~895) — **library patch**: stamp
-  authoritative positional batch lineage on node.provenance, property_evidence, and rel.provenance; stop the
-  `valid or batch_pool` overwrite. Ships as a new docling-graph patch (gitignored repo; patch in the build stack,
-  Dockerfile loop already hardened `--fuzz=0 || exit 1`).
-- `app/workers/pipeline.py` — resolver: fail to batch chunk-set not all-document (both fan-out sites); close the
-  `identity_map`↔`#/texts/N` namespace gap; resolve+store field `chunk_id`+`page`; emit relationship→chunk edge.
-- `app/services/arcadedb_graph.py` / graph schema — relationship→chunk lineage edge type (mirror `EXTRACTED_FROM`).
-- `scripts/verify_lineage_e2e.py` — the all-three-targets + recall gate (Section 5).
-- Tests: docling-graph normalizer unit test (positional stamp, all three, batch>1 K-set); worker resolver unit
-  test (resolve→chunk, miss→batch-set not all-doc, namespace bridge); field + relationship lineage unit tests.
+  authoritative positional batch `self_refs`/`chunk_indexes`/`page_numbers` on node.provenance, property_evidence,
+  and rel.provenance; stop the `valid or batch_pool` overwrite; add `cited_refs` diagnostic. Ships as a new
+  docling-graph patch (gitignored repo; patch in the build stack, Dockerfile loop already hardened `--fuzz=0 || exit 1`).
+- `docker/docling-graph/app/schemas.py` (~304) — `ExtractionProvenance` += `self_refs`/`chunk_indexes`/`cited_refs`;
+  `ExtractionFieldProvenance` += positional lists. `docker/docling-graph/app/provenance.py` — `_resolve_element_uid`
+  no longer prefers single cited self_ref (Part B demotion, ~239); `build_auto_field_evidence` (~481) sourced from
+  positional batch lineage, not value text-match.
+- `app/services/extraction_merge.py` — worker `ExtractionProvenance` + `FieldEvidenceRow` += positional lists.
+- `app/workers/pipeline.py` — `_parse_pass_response` populate lists; `mentions[]` (362) forward lists;
+  `_resolve_mention_chunks` (1771) gains batch chunk-set param, fail-to-batch-set not all-document (BOTH fan-out
+  sites incl. legacy 9416-9436); close `identity_map`↔`#/texts/N` namespace gap; resolve+store field
+  `chunk_id`/`page`; capture rel-upsert RIDs (1521) + write `source_chunk_ids`/`source_pages`/`source_self_refs`
+  edge props.
+- `app/services/arcadedb_graph.py` (~2448 upsert path) + `app/services/arcadedb_schema.py` (~335 rel-edge property
+  DDL) — register + write the relationship source-chunk edge properties (NO new edge type).
+- `scripts/verify_lineage_e2e.py` — the all-three-targets + per-target-recall gate (Section 5).
+- Tests: docling-graph normalizer unit test (positional stamp, all three, batch>1 K-set, cited_refs separate);
+  worker resolver unit test (resolve→chunk, miss→batch-set not all-doc, namespace bridge); field + relationship
+  lineage unit tests (resolved chunk_id; edge source-chunk props).
 
 ## 7. Scope / non-goals
 
