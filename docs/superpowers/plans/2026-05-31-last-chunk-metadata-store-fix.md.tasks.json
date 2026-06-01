@@ -1,0 +1,27 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-31-last-chunk-metadata-store-fix.md",
+  "tasks": [
+    {
+      "id": 29,
+      "subject": "Task 1: Fix patch 0002 to store last_chunk_metadata (TDD)",
+      "status": "pending",
+      "description": "**Goal:** The patched CHUNKED-BATCHES branch in `_extract_from_docling_document` stores its `chunk_metadata` on `doc_processor.last_chunk_metadata`, proven by a host-runnable test that exercises the patched artifact.\n\n**Files:**\n- Create: docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py\n- Modify: docker/docling-graph/patches/0002-stages-chunked-batches-for-docling-document-input.patch\n\n**Acceptance Criteria:**\n- Test applies patch stack to temp repo copy, imports patched stages, drives ExtractionStage._extract_from_docling_document via CHUNKED-BATCHES branch, asserts last_chunk_metadata carries self_refs+page_numbers.\n- Test FAILS pre-edit, PASSES post-edit.\n- Store line inside `if can_chunk_batch:` after extract_chunks_with_metadata, before extract_from_chunk_batches.\n- All 5 patches dry-run clean in sequence.\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py -v → 1 passed\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/patches/0002-stages-chunked-batches-for-docling-document-input.patch\", \"docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py -v\", \"acceptanceCriteria\": [\"test applies patch stack to temp repo and asserts last_chunk_metadata populated with self_refs+pages\", \"test fails pre-edit, passes post-edit\", \"store line inside can_chunk_batch branch after extract_chunks_with_metadata\", \"all 5 patches dry-run clean in sequence\"]}\n```"
+    },
+    {
+      "id": 30,
+      "subject": "Task 2: Rebuild docling-graph image and redeploy (no stale consumers)",
+      "status": "pending",
+      "blockedBy": [29],
+      "description": "**Goal:** The running docling-graph container has corrected patch 0002, and both graph-queue workers run current code.\n\n**Files:** deploy task; touches docling-graph image + eip-mmdpp-docling-graph-1, eip-mmdpp-worker-1, eip-mmdpp-worker-graph-1.\n\n**Acceptance Criteria:**\n- build docling-graph logs Applying patch 0002, no failure.\n- container stages.py has `last_chunk_metadata = chunk_metadata` in chunked-batches branch.\n- docling-graph-1 + worker-1 + worker-graph-1 StartedAt all advanced.\n- gemma4 pool idle before verification.\n\n**Verify:** docker exec eip-mmdpp-docling-graph-1 grep -c 'last_chunk_metadata = chunk_metadata' /app/repo/docling_graph/pipeline/stages.py → ≥1\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"docker exec eip-mmdpp-docling-graph-1 grep -c 'last_chunk_metadata = chunk_metadata' /app/repo/docling_graph/pipeline/stages.py\", \"acceptanceCriteria\": [\"build applies patch 0002 without failure\", \"running container has the store line in chunked-batches branch\", \"docling-graph + worker-1 + worker-graph StartedAt all advanced\", \"gemma4 pool idle before verification run\"]}\n```"
+    },
+    {
+      "id": 31,
+      "subject": "Task 3: End-to-end lineage verification gate (USER-ORDERED)",
+      "status": "pending",
+      "blockedBy": [30],
+      "userGate": true,
+      "description": "**Goal:** Prove on a fresh SA-2 graph_only run on the fixed build that lineage is restored end-to-end (non-empty element_uid+page, entities committed, 0 gate rejections, EXTRACTED_FROM>0, field→chunk→page on graph-query endpoint); MEASURE precise-vs-coarse.\n\n**USER-ORDERED GATE — NON-SKIPPABLE.** Requested by the user this conversation. MUST NOT be closed by walking around it or substituting a cheaper check. Close only after every acceptanceCriteria item is re-validated independently with output captured.\n\n**Files:** Reuse scripts/verify_lineage_e2e.py.\n\n**Acceptance Criteria:**\n- SNAPSHOT_PRE captured (entities 22; EXTRACTED_FROM pre=0).\n- graph_only reingest (mode=graph_only, bundle air_defense_v3_merged_v1) reaches terminal.\n- non-empty element_uid>0 (pre 0/141); 0 no-chunk-metadata warnings.\n- EXTRACTED_FROM post>0.\n- verify_lineage_e2e.py --run --pre → ALL CHECKS PASS.\n- /v1/graph/query SNR-75 sources carry document_id+page.\n- precision measured (precise vs coarse) and recorded.\n\n**Verify:** python3 scripts/verify_lineage_e2e.py --run <run_id> --pre <SNAPSHOT_PRE> → ALL CHECKS PASS\n\n```json:metadata\n{\"files\": [\"scripts/verify_lineage_e2e.py\"], \"verifyCommand\": \"python3 scripts/verify_lineage_e2e.py --run <run_id> --pre <SNAPSHOT_PRE>\", \"userGate\": true, \"tags\": [\"user-gate\"], \"acceptanceCriteria\": [\"SNAPSHOT_PRE captured (entities + EXTRACTED_FROM=0)\", \"graph_only reingest reaches terminal\", \"non-empty element_uid>0 and 0 no-chunk-metadata warnings\", \"EXTRACTED_FROM post>0\", \"verify_lineage_e2e ALL CHECKS PASS\", \"/v1/graph/query SNR-75 sources carry document_id+page\", \"precision measured precise-vs-coarse and recorded\"], \"requireEvidenceTokens\": [[\"pre\", \"EXTRACTED_FROM pre\", \"0/141\"], [\"post\", \"EXTRACTED_FROM post\", \"ALL CHECKS PASS\"]]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-31T00:00:00Z"
+}
