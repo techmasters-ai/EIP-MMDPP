@@ -149,6 +149,7 @@ run_dg_lineage() {
   PYTHONPATH="docker/docling-graph/repo:${PYTHONPATH:-}" pytest \
     docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py \
     docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py \
+    docker/docling-graph/tests/test_positional_provenance_stamp.py \
     --tb=short \
     --junitxml="${REPORTS_DIR}/junit_dg_lineage.xml" \
     -q
