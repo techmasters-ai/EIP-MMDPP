@@ -117,13 +117,21 @@ def resolve_doc(run_id, fallback):
 
 
 def _docker_logs(container, since, until):
+    """Return (text, line_count) for the container's logs in the window.
+
+    line_count lets a caller distinguish "0 matches over N lines" (real evidence)
+    from "0 matches over 0 lines" (no evidence — logs rotated/aged out, window
+    doesn't overlap retention, or container recreated). A blank trailing line from
+    docker is not counted as evidence."""
     cmd = ["docker", "logs", container]
     if since:
         cmd += ["--since", since]
     if until:
         cmd += ["--until", until]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    return r.stdout + r.stderr
+    text = r.stdout + r.stderr
+    n_lines = sum(1 for ln in text.splitlines() if ln.strip())
+    return text, n_lines
 
 
 def total_entities():
@@ -148,7 +156,14 @@ def main():
     run = args.run
     doc, doc_src = resolve_doc(run, args.doc)
     since, until = run_window(run)
+    # A (None, None) window means the run was not found in ingest.pipeline_runs
+    # (or pg failed). Without a window, _docker_logs would scan the ENTIRE
+    # container history and surface unrelated runs' warnings — so we treat the
+    # window as DEGRADED and fail-closed on the warning checks (4b).
+    window_degraded = since is None and until is None
     window_desc = f"since={since} until={until or '(open)'}"
+    if window_degraded:
+        window_desc += "  DEGRADED (run not found in pipeline_runs) — warning checks will fail-closed"
 
     # ------------------------------------------------------------------
     # 1. (HARD discriminator) run-scoped EXTRACTED_FROM count > 0.
@@ -251,17 +266,53 @@ def main():
     # 4b. run-windowed warning checks: zero provenance-drop warnings + zero
     #     spurious LINEAGE_GATE rejections, scoped to the RUN's Postgres time
     #     window (not a fixed --since 3h, which would catch unrelated runs).
+    #
+    #     FAIL-CLOSED: a PASS here requires actual log evidence. If the window is
+    #     DEGRADED (run not found -> (None, None)) OR the in-window log stream is
+    #     EMPTY (0 lines scanned), there is no evidence that zero warnings means
+    #     "clean run" rather than "logs rotated/aged out". For a user-ordered
+    #     forensic gate, absence-of-evidence must NOT be read as evidence-of-
+    #     absence, so the check FAILs and the detail says so. The scanned-line
+    #     count is always surfaced so a human can tell "0 drops / 4123 lines"
+    #     (trustworthy) from "0 drops / 0 lines — NO LOG EVIDENCE" (not).
     # ------------------------------------------------------------------
-    dl = _docker_logs("eip-mmdpp-docling-graph-1", since, until)
-    wl = _docker_logs("eip-mmdpp-worker-graph-1", since, until)
+    dl, dl_lines = _docker_logs("eip-mmdpp-docling-graph-1", since, until)
+    wl, wl_lines = _docker_logs("eip-mmdpp-worker-graph-1", since, until)
     drops = dl.count("dropping provenance row missing required fields")
     gate_rejects = wl.count("LINEAGE_GATE: rejected")
-    results.append(("zero provenance-drop warnings (run window)",
-                    drops == 0, f"drops={drops} [{window_desc}]"))
-    results.append(("zero LINEAGE_GATE rejections (run window)",
-                    gate_rejects == 0,
-                    f"gate_rejections={gate_rejects} (nonzero = entities lacked "
-                    f"lineage) [{window_desc}]"))
+
+    # provenance-drop warnings (docling-graph)
+    dl_no_evidence = window_degraded or dl_lines == 0
+    if dl_no_evidence:
+        reason = ("DEGRADED window (run not found)" if window_degraded
+                  else "in-window log stream EMPTY")
+        results.append(("zero provenance-drop warnings (run window)",
+                        False,
+                        f"drops={drops} / scanned {dl_lines} log lines — "
+                        f"NO LOG EVIDENCE, cannot confirm zero warnings "
+                        f"({reason}) [{window_desc}]"))
+    else:
+        results.append(("zero provenance-drop warnings (run window)",
+                        drops == 0,
+                        f"drops={drops} / scanned {dl_lines} log lines in window "
+                        f"[{window_desc}]"))
+
+    # LINEAGE_GATE rejections (worker-graph)
+    wl_no_evidence = window_degraded or wl_lines == 0
+    if wl_no_evidence:
+        reason = ("DEGRADED window (run not found)" if window_degraded
+                  else "in-window log stream EMPTY")
+        results.append(("zero LINEAGE_GATE rejections (run window)",
+                        False,
+                        f"gate_rejections={gate_rejects} / scanned {wl_lines} log "
+                        f"lines — NO LOG EVIDENCE, cannot confirm zero rejections "
+                        f"({reason}) [{window_desc}]"))
+    else:
+        results.append(("zero LINEAGE_GATE rejections (run window)",
+                        gate_rejects == 0,
+                        f"gate_rejections={gate_rejects} / scanned {wl_lines} log "
+                        f"lines in window (nonzero = entities lacked lineage) "
+                        f"[{window_desc}]"))
 
     # ------------------------------------------------------------------
     # 5. page is chunk-sourced. #4a reads page as @in.page_number — the page of
