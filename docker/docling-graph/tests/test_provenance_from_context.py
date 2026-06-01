@@ -205,8 +205,8 @@ def test_returns_empty_when_context_has_no_graph(dg_provenance):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_element_uid_prefers_provenance_self_refs(dg_provenance):
-    """self_refs (step 3) must beat evidence_ids (step 4) in resolution order."""
+def test_resolve_element_uid_prefers_evidence_ids_over_self_refs(dg_provenance):
+    """per-node evidence_ids (#/) beats batch-wide self_refs."""
     mod, ExtractionProvenance = dg_provenance
     ctx = _stub_context(nodes=[
         ("n1", {
@@ -220,7 +220,7 @@ def test_resolve_element_uid_prefers_provenance_self_refs(dg_provenance):
     ])
     prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
     assert len(prov) == 1
-    assert prov[0].element_uid == "#/texts/99"
+    assert prov[0].element_uid == "#/texts/0"
 
 
 def test_resolve_element_uid_falls_back_to_evidence_ids(dg_provenance):

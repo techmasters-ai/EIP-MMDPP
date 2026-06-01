@@ -211,9 +211,9 @@ def _resolve_element_uid(
     Resolution order:
       1. Direct `element_uid` attribute on the node dict.
       2. Nested `provenance.element_uid`.
-      3. Nested `provenance.self_refs[0]` (extraction-time, authoritative).
-      4. Nested `provenance.evidence_ids[0]` IF it is a Docling self_ref
-         (starts with '#/').
+      3. Nested `provenance.evidence_ids` smallest '#/' self_ref (per-node,
+         precise — narrowed per node by the IR normalizer).
+      4. Nested `provenance.self_refs[0]` (batch-wide, coarse fallback).
       5. `provenance.chunk_indexes[0]` → first self_ref via
          chunk_to_self_refs (extraction-time map from main.py).
     """
@@ -229,17 +229,27 @@ def _resolve_element_uid(
     if isinstance(nested, str) and nested:
         return nested
 
+    # Prefer the per-node evidence_ids self_ref: the IR normalizer narrows
+    # evidence_ids PER NODE (ir_normalizer._attach_evidence_to_prov) but copies
+    # self_refs BATCH-WIDE onto every node, so self_refs[0] is identical across a
+    # batch (coarse) while evidence_ids is this entity's actual source element(s).
+    # Pick the lexicographically-SMALLEST "#/" evidence_id (NOT [0]) so the
+    # resolved element_uid is deterministic regardless of LLM-emitted order —
+    # element_uid is part of the merge dedup key, so a run-stable choice keeps
+    # lineage reproducible across runs.
+    evidence_ids = prov.get("evidence_ids")
+    if isinstance(evidence_ids, list):
+        selfref_evidence = sorted(
+            eid for eid in evidence_ids if isinstance(eid, str) and eid.startswith("#/")
+        )
+        if selfref_evidence:
+            return selfref_evidence[0]
+
     self_refs = prov.get("self_refs")
     if isinstance(self_refs, list) and self_refs:
         first = self_refs[0]
         if isinstance(first, str) and first:
             return first
-
-    evidence_ids = prov.get("evidence_ids")
-    if isinstance(evidence_ids, list):
-        for eid in evidence_ids:
-            if isinstance(eid, str) and eid.startswith("#/"):
-                return eid
 
     if chunk_to_self_refs:
         chunk_indexes = prov.get("chunk_indexes")
