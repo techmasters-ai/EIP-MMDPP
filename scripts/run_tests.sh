@@ -138,6 +138,23 @@ run_unit() {
   info "Unit tests passed."
 }
 
+run_dg_lineage() {
+  divider
+  info "Running docling-graph lineage tests (host-safe subset)..."
+  cd "${PROJECT_ROOT}"
+  # NOTE: name the two files explicitly. The full docker/docling-graph/tests
+  # directory is container-only (~360 tests that ERROR on the host via an
+  # `app` namespace collision), so it must NOT be collected as a directory.
+  # The repo clone on PYTHONPATH lets the patched-library imports resolve.
+  PYTHONPATH="docker/docling-graph/repo:${PYTHONPATH:-}" pytest \
+    docker/docling-graph/tests/test_chunked_batches_stores_chunk_metadata.py \
+    docker/docling-graph/tests/test_resolve_element_uid_prefers_evidence.py \
+    --tb=short \
+    --junitxml="${REPORTS_DIR}/junit_dg_lineage.xml" \
+    -q
+  info "docling-graph lineage tests passed."
+}
+
 run_integration() {
   divider
   info "Running integration tests..."
@@ -217,7 +234,8 @@ FAILED=0
 
 case "${MODE}" in
   unit)
-    run_unit || FAILED=1
+    run_unit       || FAILED=1
+    run_dg_lineage || FAILED=1
     ;;
   integration)
     start_stack
@@ -230,7 +248,8 @@ case "${MODE}" in
     run_e2e || FAILED=1
     ;;
   all)
-    run_unit || FAILED=1
+    run_unit        || FAILED=1
+    run_dg_lineage  || FAILED=1
     start_stack
     run_migrations || FAILED=1
     run_integration || FAILED=1
