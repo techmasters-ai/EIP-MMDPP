@@ -365,9 +365,17 @@ def _serialize_for_audit(
                 "entity_type": record.identity.entity_type,
                 "entity_id": entity_id,
                 "rid": rid,
+                # Task 3: forward the POSITIONAL lineage LISTS in addition
+                # to the legacy scalars (scalar element_uid stays =
+                # self_refs[0] when present). derive_structure_links can
+                # now emit one EXTRACTED_FROM edge per source element
+                # instead of collapsing to a single chunk.
                 "element_uid": prov.element_uid,
                 "page": prov.page,
                 "chunk_index": prov.chunk_index,
+                "self_refs": prov.self_refs,
+                "chunk_indexes": prov.chunk_indexes,
+                "page_numbers": prov.page_numbers,
                 "instance_id": prov.instance_id,
             })
 
@@ -3805,6 +3813,26 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         evidence_text = raw.get("evidence_text")
         if evidence_text is not None and not isinstance(evidence_text, str):
             evidence_text = None
+        # Task 3: carry the POSITIONAL lineage LISTS. The docling-graph
+        # service (Task 2) now emits self_refs/chunk_indexes/cited_refs.
+        # BACK-COMPAT: an older scalar-only response (no self_refs key)
+        # derives self_refs from element_uid and chunk_indexes from the
+        # scalar chunk_index.
+        if "self_refs" in raw:
+            self_refs = raw.get("self_refs") or []
+            if not isinstance(self_refs, list):
+                self_refs = []
+        else:
+            self_refs = [element_uid] if element_uid else []
+        if "chunk_indexes" in raw:
+            chunk_indexes = raw.get("chunk_indexes") or []
+            if not isinstance(chunk_indexes, list):
+                chunk_indexes = []
+        else:
+            chunk_indexes = [chunk_index] if chunk_index is not None else []
+        cited_refs = raw.get("cited_refs") or []
+        if not isinstance(cited_refs, list):
+            cited_refs = []
         provenance_rows.append(ExtractionProvenance(
             instance_id=instance_id,
             ontology_name=ontology_name,
@@ -3815,6 +3843,9 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             evidence_ids=evidence_ids,
             page_numbers=page_numbers,
             evidence_text=evidence_text,
+            self_refs=self_refs,
+            chunk_indexes=chunk_indexes,
+            cited_refs=cited_refs,
         ))
 
     # Phase 3 task 32: parse field_provenance rows from the response
@@ -3852,6 +3883,25 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         fe_document_id = raw.get("document_id")
         if fe_document_id is not None and not isinstance(fe_document_id, str):
             fe_document_id = None
+        # Task 3: carry the POSITIONAL lineage LISTS on field evidence.
+        # BACK-COMPAT mirrors the entity-provenance path: when the
+        # response is scalar-only, derive self_refs from element_uid and
+        # chunk_indexes from the scalar chunk_index (if present).
+        fe_chunk_index = raw.get("chunk_index")
+        if fe_chunk_index is not None and not isinstance(fe_chunk_index, int):
+            fe_chunk_index = None
+        if "self_refs" in raw:
+            fe_self_refs = raw.get("self_refs") or []
+            if not isinstance(fe_self_refs, list):
+                fe_self_refs = []
+        else:
+            fe_self_refs = [element_uid] if element_uid else []
+        if "chunk_indexes" in raw:
+            fe_chunk_indexes = raw.get("chunk_indexes") or []
+            if not isinstance(fe_chunk_indexes, list):
+                fe_chunk_indexes = []
+        else:
+            fe_chunk_indexes = [fe_chunk_index] if fe_chunk_index is not None else []
         row = FieldEvidenceRow(
             chunk_id=None,  # resolved later from element_uid → chunk vertex
             snippet=snippet,
@@ -3860,6 +3910,8 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             evidence_id=evidence_id,
             page=fe_page,
             document_id=fe_document_id,
+            self_refs=fe_self_refs,
+            chunk_indexes=fe_chunk_indexes,
         )
         field_evidence.setdefault(instance_id, {}).setdefault(field_name, []).append(row)
 

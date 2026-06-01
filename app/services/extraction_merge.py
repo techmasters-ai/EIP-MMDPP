@@ -154,6 +154,12 @@ class FieldEvidenceRow:
     evidence_id: str | None = None
     page: int | None = None
     document_id: str | None = None
+    # Task 3: POSITIONAL lineage lists (mirror ExtractionProvenance).
+    # ``self_refs`` every source element ref backing this field's
+    # evidence (scalar ``element_uid`` is self_refs[0]); ``chunk_indexes``
+    # the parallel chunk positions.
+    self_refs: list[str] = field(default_factory=list)
+    chunk_indexes: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -181,6 +187,15 @@ class ExtractionProvenance:
     evidence_ids: list[str] = field(default_factory=list)
     page_numbers: list[int] = field(default_factory=list)
     evidence_text: str | None = None
+    # Task 3: POSITIONAL lineage lists carried end-to-end. ``self_refs``
+    # holds every source DoclingDocument element ref backing this
+    # extracted instance (the scalar ``element_uid`` is self_refs[0]);
+    # ``chunk_indexes`` the parallel chunk positions; ``cited_refs`` the
+    # subset the LLM explicitly cited. Closes the scalar-collapse
+    # boundary where only one element_uid/chunk_index survived.
+    self_refs: list[str] = field(default_factory=list)
+    chunk_indexes: list[int] = field(default_factory=list)
+    cited_refs: list[str] = field(default_factory=list)
 
 
 @dataclass
