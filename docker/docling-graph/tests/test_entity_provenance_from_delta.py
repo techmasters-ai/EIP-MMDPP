@@ -105,6 +105,23 @@ class _Ctx:
         self.knowledge_graph = None
 
 
+# Evidence-unit text source — the SAME shape main.py builds (chunk_index →
+# [{text, evidence_id, ...}]) and threads into the delta builder. The field
+# row's supporting_snippet is joined from the units the field cites; without a
+# non-empty snippet the worker's _parse_pass_response DROPS the row, so this
+# map is what lets the precise delta field rows survive into per-field lineage.
+_BAND_EVIDENCE_TEXT = "The SNR-75 operates in the S band."
+_EVIDENCE_UNITS = {
+    0: [
+        {"evidence_id": "#/texts/3", "text": _BAND_EVIDENCE_TEXT},
+        {"evidence_id": "#/texts/3a", "text": "Unrelated noise that is not cited."},
+    ],
+    1: [
+        {"evidence_id": "#/texts/4", "text": "Continuation paragraph on page 20."},
+    ],
+}
+
+
 def _make_ctx():
     return _Ctx({
         "nodes": [
@@ -161,6 +178,7 @@ def test_emits_field_provenance_with_positional_self_refs():
     entity_rows, field_rows = build_entity_provenance_from_delta_graph(
         ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
         chunk_to_self_refs=None,
+        chunk_to_evidence_units=_EVIDENCE_UNITS,
     )
     assert any(getattr(f, "field_name", None) == "band" for f in field_rows), field_rows
     band_row = next(f for f in field_rows if f.field_name == "band")
@@ -169,6 +187,33 @@ def test_emits_field_provenance_with_positional_self_refs():
     assert band_row.chunk_indexes == [0, 1]
     # field row instance_id is the SAME as the parent entity row's instance_id
     assert band_row.instance_id == entity_rows[0].instance_id
+
+
+def test_field_provenance_supporting_snippet_is_non_empty():
+    """REGRESSION GUARD (the bug this fix closes): the worker's
+    _parse_pass_response DROPS any field_provenance row whose
+    supporting_snippet is falsy. A delta field row emitted with
+    supporting_snippet="" is therefore SILENTLY discarded by the worker even
+    though it is "emitted" service-side — net-zero per-field lineage. The
+    builder must join the field's cited evidence-unit text into a non-empty
+    snippet so the row survives. Here `band` cites #/texts/3, whose only unit
+    text is _BAND_EVIDENCE_TEXT — so the snippet must equal exactly that
+    (the #/texts/3a noise + the chunk-1 #/texts/4 unit are NOT cited)."""
+    ctx = _make_ctx()
+    _entity_rows, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None,
+        chunk_to_evidence_units=_EVIDENCE_UNITS,
+    )
+    band_row = next(f for f in field_rows if f.field_name == "band")
+    # NON-EMPTY — survives the worker drop-gate.
+    assert band_row.supporting_snippet, (
+        "supporting_snippet must be non-empty or the worker drops the row "
+        "(net-zero field lineage)"
+    )
+    # Resolved from ONLY the field's cited ref (#/texts/3), not the uncited
+    # noise unit or the chunk-1 unit.
+    assert band_row.supporting_snippet == _BAND_EVIDENCE_TEXT
 
 
 def test_returns_entity_and_field_tuple():

@@ -1725,6 +1725,12 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     ExtractionProvenance,
                     ExtractionFieldProvenance,
                     chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                    # LOAD-BEARING: the builder populates each field row's
+                    # supporting_snippet from these evidence units; an empty
+                    # snippet is DROPPED by the worker's _parse_pass_response,
+                    # so without this the precise delta field rows never
+                    # survive to become per-field lineage.
+                    chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
                 )
             )
         except Exception as exc:

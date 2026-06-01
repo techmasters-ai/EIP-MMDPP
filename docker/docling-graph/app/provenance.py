@@ -647,6 +647,19 @@ def _build_path_to_entity_model(
     visited: set[type[BaseModel]] = set()
 
     def walk(model: type[BaseModel], path_prefix: str) -> None:
+        # NOTE: this visited-set guard INTENTIONALLY diverges from the real
+        # catalog walk (build_delta_node_catalog, catalog.py:244-310), which
+        # has NO such guard and re-walks a shared component model once under
+        # EACH parent path that reaches it. The guard here visits a shared
+        # model only under its FIRST parent path, so an entity nested beneath
+        # a component reachable from 2+ parents (a diamond) would be MISSED.
+        # This is SAFE ONLY while no schema has a shared-component-with-
+        # nested-entities diamond — verified true for every current template.
+        # The drift guard below INTERSECTS with the catalog's paths, so it can
+        # only FILTER paths this walk produced — it can NEVER RECOVER a path
+        # the visited-guard skipped. If a diamond is ever introduced, drop this
+        # guard (match the catalog's un-guarded re-walk) instead of relying on
+        # the intersection.
         if model in visited:
             return
         visited.add(model)
@@ -671,17 +684,22 @@ def _build_path_to_entity_model(
 
     walk(template_cls, "")
 
-    # Drift guard: keep only paths the REAL catalog reports as nodes. If the
-    # catalog is unavailable (e.g. isolated unit-test import without the
-    # docling_graph package), fall back to the walk-derived map unchanged.
+    # Drift guard: keep only paths the REAL catalog reports as nodes. Catch
+    # ONLY ImportError so the isolated-unit-test case (no docling_graph package
+    # importable) still falls back to the walk-derived map — but a GENUINE
+    # build_delta_node_catalog failure (it imports fine but raises) propagates
+    # instead of silently degrading to the un-intersected walk map, which would
+    # mask a real catalog/normalizer drift. AttributeError (e.g. a renamed
+    # `.nodes`/`.path` attribute) is intentionally NOT caught for the same
+    # reason: it signals the catalog contract changed and must be seen.
     try:
         from docling_graph.core.extractors.contracts.delta.catalog import (
             build_delta_node_catalog,
         )
-
-        catalog_paths = {spec.path for spec in build_delta_node_catalog(template_cls).nodes}
-    except Exception:  # noqa: BLE001 — catalog optional in isolated tests
+    except ImportError:
         return out
+
+    catalog_paths = {spec.path for spec in build_delta_node_catalog(template_cls).nodes}
     return {path: cls for path, cls in out.items() if path in catalog_paths}
 
 
@@ -691,6 +709,7 @@ def build_entity_provenance_from_delta_graph(
     provenance_cls: type,
     field_provenance_cls: type,
     chunk_to_self_refs: dict[int, list[str]] | None = None,
+    chunk_to_evidence_units: dict[int, list[dict]] | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """Emit PRECISE per-entity ExtractionProvenance + per-field
     ExtractionFieldProvenance from ``context._delta_merged_graph["nodes"]``.
@@ -721,6 +740,15 @@ def build_entity_provenance_from_delta_graph(
     ``element_uid`` == self_refs[0] (positional, authoritative). Scalar
     ``page`` == page_numbers[0] — REQUIRED, the worker lineage gate
     rejects any entity whose provenance has ``page is None``.
+
+    ``chunk_to_evidence_units`` (chunk_index → [{text, evidence_id, ...}])
+    is the SAME map main.py builds for ``build_auto_field_evidence`` /
+    ``build_provenance_from_context``. It is used to populate each field
+    row's ``supporting_snippet`` with the joined evidence-unit text for the
+    field's cited refs (falling back to the entity's chunk_indexes). This
+    is LOAD-BEARING: the worker's ``_parse_pass_response`` DROPS any field
+    row with a falsy ``supporting_snippet`` — emitting "" here silently
+    zeroes per-field lineage even though the row is "emitted" service-side.
 
     Returns ``(entity_rows, field_rows)``. Both empty when no usable
     delta graph is present.
@@ -799,6 +827,14 @@ def build_entity_provenance_from_delta_graph(
             )
         )
 
+        # Entity-level evidence text — computed ONCE per node and reused as
+        # the per-field snippet fallback. Joined from the SAME evidence-unit
+        # map main.py feeds the text-match builder.
+        entity_evidence_text = _join_evidence_text_for_node(
+            {"chunk_indexes": chunk_indexes, "evidence_ids": prov.get("evidence_ids") or []},
+            chunk_to_evidence_units,
+        )
+
         # Per-field provenance from the node's property_evidence map. Each
         # key is a field name the LLM emitted; carry the entity's positional
         # self_refs/chunk_indexes onto every field row so the field's lineage
@@ -815,12 +851,39 @@ def build_entity_provenance_from_delta_graph(
                 # field evidence_id / element_uid: prefer the field's own
                 # cited self_ref, else the entity's element_uid.
                 field_evidence_id = cited_field_refs[0] if cited_field_refs else None
+
+                # supporting_snippet is LOAD-BEARING — the worker
+                # (_parse_pass_response) DROPS any field row whose
+                # supporting_snippet is falsy, so an empty string here
+                # silently zeroes per-field lineage. Resolve the text from
+                # the SAME evidence-unit map build_auto_field_evidence uses:
+                #   1. join units cited by THIS field (property_evidence refs)
+                #      over the entity's chunk_indexes;
+                #   2. else the entity-level evidence text (all the node's
+                #      cited refs);
+                #   3. else ANY text in the entity's chunk_indexes (uncited).
+                # Only when no text is resolvable at all does the snippet fall
+                # to "" — and that row is the genuine no-text case, not a bug.
+                field_snippet = _join_evidence_text_for_node(
+                    {"chunk_indexes": chunk_indexes, "evidence_ids": cited_field_refs},
+                    chunk_to_evidence_units,
+                ) if cited_field_refs else None
+                if not field_snippet:
+                    field_snippet = entity_evidence_text
+                if not field_snippet:
+                    # Uncited fallback: any unit text across the entity's
+                    # chunk span (cited_ids empty → join takes all units).
+                    field_snippet = _join_evidence_text_for_node(
+                        {"chunk_indexes": chunk_indexes, "evidence_ids": []},
+                        chunk_to_evidence_units,
+                    )
+
                 field_rows.append(
                     field_provenance_cls(
                         instance_id=str(instance_id),
                         field_name=fname,
                         value=None,
-                        supporting_snippet="",
+                        supporting_snippet=field_snippet or "",
                         element_uid=field_evidence_id or element_uid,
                         evidence_id=field_evidence_id,
                         page=scalar_page,
