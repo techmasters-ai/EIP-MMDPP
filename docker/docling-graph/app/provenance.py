@@ -208,13 +208,14 @@ def _resolve_element_uid(
 ) -> str | None:
     """Return element_uid for a knowledge-graph node, or None if none.
 
-    Resolution order:
+    Resolution order (cited-evidence preference REMOVED — Task 2):
       1. Direct `element_uid` attribute on the node dict.
       2. Nested `provenance.element_uid`.
-      3. Nested `provenance.evidence_ids` numerically-smallest '#/' self_ref
-         (per-node, precise — narrowed per node by the IR normalizer).
-      4. Nested `provenance.self_refs[0]` (batch-wide, coarse fallback).
-      5. `provenance.chunk_indexes[0]` → first self_ref via
+      3. Nested `provenance.self_refs[0]` (positional, authoritative — the
+         delta-IR normalizer now stamps self_refs as the AUTHORITATIVE
+         positional lineage of the batch; cited refs live in cited_refs and
+         are NO LONGER preferred here).
+      4. `provenance.chunk_indexes[0]` → first self_ref via
          chunk_to_self_refs (extraction-time map from main.py).
     """
     direct = node_data.get("element_uid")
@@ -228,22 +229,6 @@ def _resolve_element_uid(
     nested = prov.get("element_uid")
     if isinstance(nested, str) and nested:
         return nested
-
-    # Prefer the per-node evidence_ids self_ref: the IR normalizer narrows
-    # evidence_ids PER NODE (ir_normalizer._attach_evidence_to_prov) but copies
-    # self_refs BATCH-WIDE onto every node, so self_refs[0] is identical across a
-    # batch (coarse) while evidence_ids is this entity's actual source element(s).
-    # Pick the numerically-smallest "#/" self_ref (stable, deterministic —
-    # element_uid is part of the merge dedup key, so a run-stable choice keeps
-    # lineage reproducible across runs).
-    evidence_ids = prov.get("evidence_ids")
-    if isinstance(evidence_ids, list):
-        selfref_evidence = [eid for eid in evidence_ids if isinstance(eid, str) and eid.startswith("#/")]
-        if selfref_evidence:
-            def _selfref_sort_key(ref: str):
-                head, _, tail = ref.rpartition("/")
-                return (head, 0, int(tail)) if tail.isdigit() else (head, 1, tail)
-            return min(selfref_evidence, key=_selfref_sort_key)
 
     self_refs = prov.get("self_refs")
     if isinstance(self_refs, list) and self_refs:
@@ -634,3 +619,185 @@ def build_relationship_provenance_from_delta_trace(
             )
         )
     return out
+
+
+def _build_path_to_entity_model(
+    template_cls: type[BaseModel],
+) -> dict[str, type[BaseModel]]:
+    """Map each delta node ``path`` → its entity model class.
+
+    Mirrors the path construction in
+    ``docling_graph...delta.catalog.build_delta_node_catalog`` (top-level
+    field → ``field_name``; nested → ``parent.field``) so the path key
+    here matches the ``path`` the normalizer stamps on every node. Only
+    ``is_entity=True`` models are mapped — non-entity component nodes are
+    skipped exactly like the synth/primary entity walks.
+    """
+    out: dict[str, type[BaseModel]] = {}
+    visited: set[type[BaseModel]] = set()
+
+    def walk(model: type[BaseModel], path_prefix: str) -> None:
+        if model in visited:
+            return
+        visited.add(model)
+        for field_name, field_info in model.model_fields.items():
+            item_cls = _find_model_class(getattr(field_info, "annotation", None))
+            if item_cls is None:
+                continue
+            segment = f".{field_name}" if path_prefix else field_name
+            path = f"{path_prefix}{segment}" if path_prefix else field_name
+            cfg = item_cls.model_config or {}
+            if cfg.get("is_entity"):
+                out[path] = item_cls
+            walk(item_cls, path)
+
+    walk(template_cls, "")
+    return out
+
+
+def build_entity_provenance_from_delta_graph(
+    context: Any,
+    template_cls: type[BaseModel],
+    provenance_cls: type,
+    field_provenance_cls: type,
+    chunk_to_self_refs: dict[int, list[str]] | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Emit PRECISE per-entity ExtractionProvenance + per-field
+    ExtractionFieldProvenance from ``context._delta_merged_graph["nodes"]``.
+
+    This is the KEYSTONE source of entity+field lineage. The
+    Pydantic→graph converter STRIPS provenance off
+    ``context.knowledge_graph``, so ``build_provenance_from_context``
+    returns [] in production and the pipeline would otherwise fall to the
+    COARSE chunk-0 ``synthesize_provenance_from_pass_output``. Task 1's
+    positional stamp (self_refs / chunk_indexes / page_numbers /
+    cited_refs / property_evidence) lands on ``_delta_merged_graph`` —
+    which only the relationship builder read until now. Mirrors the
+    node-walk of ``build_relationship_provenance_from_delta_trace``.
+
+    CRITICAL: ``ontology_name`` is the entity model's
+    ``model_config["ontology_name"]`` VALUE (e.g. "RADAR_SYSTEM"), NOT the
+    node's ``node_type`` (the class name e.g. "RadarSystemEntity"). The
+    worker's ``logical_identity_from_dict`` keys on the ontology_name
+    value; the class name would drop EVERY row → silent total lineage
+    collapse. Derivation mirrors ``synthesize_provenance_from_pass_output``
+    (model_config.get("ontology_name") or item_cls.__name__).
+
+    ``identity_values`` come from the delta node's ``ids`` dict (NOT
+    ``_resolve_identity_values``, which returns {} for delta nodes). The
+    node ``ids`` keys already equal the model's graph_id_fields, so the
+    worker identity index matches.
+
+    ``element_uid`` == self_refs[0] (positional, authoritative). Scalar
+    ``page`` == page_numbers[0] — REQUIRED, the worker lineage gate
+    rejects any entity whose provenance has ``page is None``.
+
+    Returns ``(entity_rows, field_rows)``. Both empty when no usable
+    delta graph is present.
+    """
+    merged_graph = getattr(context, "_delta_merged_graph", None)
+    if not isinstance(merged_graph, dict):
+        return [], []
+    nodes = merged_graph.get("nodes") or []
+    if not isinstance(nodes, list):
+        return [], []
+
+    path_to_model = _build_path_to_entity_model(template_cls)
+
+    entity_rows: list[Any] = []
+    field_rows: list[Any] = []
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        path = node.get("path")
+        item_cls = path_to_model.get(str(path)) if path is not None else None
+        if item_cls is None:
+            # Not an entity-typed node we recognise (component / unknown).
+            continue
+        cfg = item_cls.model_config or {}
+        ontology_name = str(cfg.get("ontology_name") or item_cls.__name__)
+
+        ids = node.get("ids")
+        identity_values = dict(ids) if isinstance(ids, dict) else {}
+
+        prov = node.get("provenance") if isinstance(node.get("provenance"), dict) else {}
+        self_refs = [r for r in (prov.get("self_refs") or []) if isinstance(r, str)]
+        chunk_indexes = [c for c in (prov.get("chunk_indexes") or []) if isinstance(c, int)]
+        page_numbers = [p for p in (prov.get("page_numbers") or []) if isinstance(p, int)]
+        cited_refs = [r for r in (prov.get("cited_refs") or []) if isinstance(r, str)]
+
+        # element_uid == self_refs[0]; fall back through chunk_indexes →
+        # chunk_to_self_refs only when positional self_refs are absent.
+        element_uid: str | None = self_refs[0] if self_refs else None
+        if element_uid is None and chunk_to_self_refs and chunk_indexes:
+            refs = chunk_to_self_refs.get(chunk_indexes[0])
+            if refs:
+                element_uid = refs[0]
+        if element_uid is None:
+            # No resolvable element_uid → cannot seed mentions; skip so the
+            # row never reaches the worker lineage gate as a dead entry.
+            logger.warning(
+                "build_entity_provenance_from_delta_graph: skipping node "
+                "path=%s ontology=%s — no resolvable element_uid (self_refs "
+                "empty and no chunk_to_self_refs hit)",
+                path, ontology_name,
+            )
+            continue
+
+        # Scalar page REQUIRED by the worker gate; page_numbers[0] when present.
+        scalar_page: int | None = page_numbers[0] if page_numbers else None
+
+        instance_id = _resolve_instance_id(node) or str(uuid.uuid4())
+
+        entity_rows.append(
+            provenance_cls(
+                instance_id=str(instance_id),
+                ontology_name=ontology_name,
+                identity_values=identity_values,
+                element_uid=element_uid,
+                page=scalar_page,
+                chunk_index=chunk_indexes[0] if chunk_indexes else None,
+                evidence_ids=[
+                    eid for eid in (prov.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                page_numbers=page_numbers,
+                self_refs=self_refs,
+                chunk_indexes=chunk_indexes,
+                cited_refs=cited_refs,
+            )
+        )
+
+        # Per-field provenance from the node's property_evidence map. Each
+        # key is a field name the LLM emitted; carry the entity's positional
+        # self_refs/chunk_indexes onto every field row so the field's lineage
+        # matches the entity's batch span.
+        property_evidence = prov.get("property_evidence")
+        if isinstance(property_evidence, dict):
+            for fname, fevidence in property_evidence.items():
+                if not isinstance(fname, str):
+                    continue
+                cited_field_refs = (
+                    [e for e in fevidence if isinstance(e, str)]
+                    if isinstance(fevidence, list) else []
+                )
+                # field evidence_id / element_uid: prefer the field's own
+                # cited self_ref, else the entity's element_uid.
+                field_evidence_id = cited_field_refs[0] if cited_field_refs else None
+                field_rows.append(
+                    field_provenance_cls(
+                        instance_id=str(instance_id),
+                        field_name=fname,
+                        value=None,
+                        supporting_snippet="",
+                        element_uid=field_evidence_id or element_uid,
+                        evidence_id=field_evidence_id,
+                        page=scalar_page,
+                        chunk_index=chunk_indexes[0] if chunk_indexes else None,
+                        self_refs=self_refs,
+                        chunk_indexes=chunk_indexes,
+                    )
+                )
+
+    return entity_rows, field_rows

@@ -179,6 +179,7 @@ from app.evidence_gate import (
 )
 from app.provenance import (
     build_auto_field_evidence,
+    build_entity_provenance_from_delta_graph,
     build_provenance_from_context,
     build_relationship_provenance_from_delta_trace,
     synthesize_provenance_from_pass_output,
@@ -1695,22 +1696,63 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         raw_edge_count_for_log = raw_pass_counts["edge_count"]
         raw_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
 
-        # Phase 8 Task 51: per-entity-instance provenance payload. Nodes
-        # whose element_uid cannot be resolved are dropped with WARNING
-        # inside the helper — the response only carries chunk-linkable
-        # rows.
+        # Phase 8 Task 51 / KEYSTONE Task 2: per-entity-instance provenance
+        # payload. Three sources, tried in order of precision:
+        #
+        #   1. build_entity_provenance_from_delta_graph (KEYSTONE) — reads the
+        #      delta-IR normalizer's per-node POSITIONAL stamp on
+        #      context._delta_merged_graph (self_refs / chunk_indexes /
+        #      page_numbers / cited_refs / property_evidence). This is the only
+        #      PRECISE source: the Pydantic→graph converter STRIPS provenance
+        #      off context.knowledge_graph, so build_provenance_from_context
+        #      returns [] in production.
+        #   2. build_provenance_from_context — walks context.knowledge_graph
+        #      (works only when the library preserved node provenance).
+        #   3. synthesize_provenance_from_pass_output — COARSE chunk-0 fallback.
+        #
+        # The delta builder also emits PRECISE per-field provenance rows
+        # (carried positional self_refs); when it produces field rows the
+        # text-match build_auto_field_evidence below is suppressed so no
+        # document gets two competing field-provenance sources.
+        provenance_rows = []
+        delta_field_provenance_rows: list[ExtractionFieldProvenance] = []
+        provenance_source = "none"
         try:
-            provenance_rows = build_provenance_from_context(
-                context, ExtractionProvenance,
-                chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
-                chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
+            provenance_rows, delta_field_provenance_rows = (
+                build_entity_provenance_from_delta_graph(
+                    context,
+                    template_cls,
+                    ExtractionProvenance,
+                    ExtractionFieldProvenance,
+                    chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                )
             )
         except Exception as exc:
             logger.warning(
-                "extract-pass: provenance builder failed for document_id=%s bundle=%s pass=%s: %s",
+                "extract-pass: delta-graph entity provenance builder failed for "
+                "document_id=%s bundle=%s pass=%s: %s",
                 body.document_id, body.bundle_key, body.pass_name, exc,
             )
             provenance_rows = []
+            delta_field_provenance_rows = []
+        if provenance_rows:
+            provenance_source = "delta_merged_graph"
+
+        if not provenance_rows:
+            try:
+                provenance_rows = build_provenance_from_context(
+                    context, ExtractionProvenance,
+                    chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                    chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "extract-pass: provenance builder failed for document_id=%s bundle=%s pass=%s: %s",
+                    body.document_id, body.bundle_key, body.pass_name, exc,
+                )
+                provenance_rows = []
+            if provenance_rows:
+                provenance_source = "knowledge_graph"
 
         # Fallback: when the library's salvage path (missing_root_instance
         # / empty_output → legacy prompt-schema retry → direct mode) drops
@@ -1726,12 +1768,14 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 chunk_to_page_numbers=getattr(context, "_chunk_to_page_numbers", None),
             )
             if provenance_rows:
-                logger.info(
-                    "extract-pass: synthesized %d provenance rows from "
-                    "pass_output for document_id=%s bundle=%s pass=%s "
-                    "(library knowledge_graph path yielded none)",
-                    len(provenance_rows), body.document_id, body.bundle_key, body.pass_name,
-                )
+                provenance_source = "synthesized_pass_output"
+
+        logger.info(
+            "extract-pass: %d entity provenance rows via %s (+%d delta field rows) "
+            "for document_id=%s bundle=%s pass=%s",
+            len(provenance_rows), provenance_source, len(delta_field_provenance_rows),
+            body.document_id, body.bundle_key, body.pass_name,
+        )
 
         evidence_text = _collect_batch_evidence_text(body.docling_document_json)
         filtered_pass_output, service_filter_stats, allowed_identities = _filter_pass_output_by_batch_text(
@@ -1830,7 +1874,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 ),
             )
 
-        # Phase 3 (post-LLM-quote refactor): deterministic per-field
+        # KEYSTONE Task 2 field reconciliation: when the delta-graph entity
+        # builder produced PRECISE per-field provenance rows (carried
+        # positional self_refs from the IR normalizer's property_evidence
+        # stamp), those are authoritative. The deterministic text-match
+        # build_auto_field_evidence path below fires ONLY as a FALLBACK when
+        # the delta builder produced no field rows — so no document gets two
+        # competing field-provenance sources.
+        #
+        # Phase 3 (post-LLM-quote refactor) fallback: deterministic per-field
         # provenance. For each non-None populated field on each primary
         # entity, substring-match the value against the DoclingDocument's
         # text elements and attach matching chunks as evidence. No LLM
@@ -1840,7 +1892,9 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         # C0 telemetry: time the full field-provenance block including
         # auto-evidence build + channel-A cell_refs enrichment.
         _fp_t0 = time.perf_counter()
-        field_provenance_rows: list[ExtractionFieldProvenance] = []
+        field_provenance_rows: list[ExtractionFieldProvenance] = list(
+            delta_field_provenance_rows
+        )
         primary_types = pass_def.get("primary_entity_types", []) or []
         primary_type = primary_types[0] if primary_types else None
         list_field_name: str | None = None
@@ -1922,9 +1976,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         if self_ref and txt:
                             input_chunks_for_resolver.append((str(self_ref), str(txt)))
 
-                # Run field-evidence builder if EITHER source has content
-                # (fixes table-only docs that previously fell through the gate).
-                if all_evidence_units or input_chunks_for_resolver:
+                # FALLBACK ONLY (KEYSTONE Task 2 reconciliation): the
+                # deterministic text-match builder fires only when the
+                # delta-graph builder produced NO precise field rows. When
+                # delta_field_provenance_rows is non-empty those authoritative
+                # positional rows (already seeded into field_provenance_rows)
+                # stand — never overwritten by the coarser text-match source.
+                # Run if EITHER input source has content (covers table-only
+                # docs that previously fell through the gate).
+                if not delta_field_provenance_rows and (
+                    all_evidence_units or input_chunks_for_resolver
+                ):
                     field_provenance_rows = build_auto_field_evidence(
                         primary_entities=primary_entities,
                         instance_ids=instance_ids,

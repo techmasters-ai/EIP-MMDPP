@@ -205,8 +205,11 @@ def test_returns_empty_when_context_has_no_graph(dg_provenance):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_element_uid_prefers_evidence_ids_over_self_refs(dg_provenance):
-    """per-node evidence_ids (#/) beats batch-wide self_refs."""
+def test_resolve_element_uid_uses_self_refs_over_cited_evidence_ids(dg_provenance):
+    """Task 2 demotion: the cited-evidence (evidence_ids) preference is GONE.
+    self_refs is now the AUTHORITATIVE positional lineage (the delta-IR
+    normalizer stamps it per-node); _resolve_element_uid returns self_refs[0]
+    regardless of which refs the LLM cited."""
     mod, ExtractionProvenance = dg_provenance
     ctx = _stub_context(nodes=[
         ("n1", {
@@ -220,12 +223,14 @@ def test_resolve_element_uid_prefers_evidence_ids_over_self_refs(dg_provenance):
     ])
     prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
     assert len(prov) == 1
-    assert prov[0].element_uid == "#/texts/0"
+    assert prov[0].element_uid == "#/texts/99"
 
 
-def test_resolve_element_uid_falls_back_to_evidence_ids(dg_provenance):
-    """When no direct / nested element_uid / self_refs, a '#/'-prefixed
-    evidence_id should resolve to element_uid."""
+def test_resolve_element_uid_does_not_fall_back_to_cited_evidence_ids(dg_provenance):
+    """Task 2 demotion: with no direct / nested element_uid / self_refs, a
+    '#/'-prefixed evidence_id is NO LONGER consulted (Strategy 3 removed). With
+    no chunk_to_self_refs to anchor it, build_provenance_from_context drops the
+    node — cited evidence_ids alone can't resolve element_uid anymore."""
     mod, ExtractionProvenance = dg_provenance
     ctx = _stub_context(nodes=[
         ("n1", {
@@ -237,8 +242,7 @@ def test_resolve_element_uid_falls_back_to_evidence_ids(dg_provenance):
         }),
     ])
     prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
-    assert len(prov) == 1
-    assert prov[0].element_uid == "#/texts/42"
+    assert prov == []
 
 
 def test_resolve_element_uid_skips_non_selfref_evidence(dg_provenance):

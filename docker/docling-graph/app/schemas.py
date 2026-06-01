@@ -340,6 +340,31 @@ class ExtractionProvenance(BaseModel):
             "snippet display."
         ),
     )
+    # Positional lineage carried from the delta-IR normalizer's per-node
+    # stamp (context._delta_merged_graph). The normalizer marks
+    # self_refs/chunk_indexes as the AUTHORITATIVE positional lineage of the
+    # batch every node spanned; cited_refs holds ONLY the LLM's explicit
+    # citations (possibly empty). element_uid == self_refs[0] when present.
+    # All additive / default-empty for backward compatibility.
+    self_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Authoritative positional DoclingDocument self_refs the entity's "
+            "source batch spanned. element_uid == self_refs[0] when present."
+        ),
+    )
+    chunk_indexes: list[int] = Field(
+        default_factory=list,
+        description="Library chunk indexes (0..N-1) the entity's batch spanned.",
+    )
+    cited_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DoclingDocument self_refs the LLM EXPLICITLY cited as evidence "
+            "for this entity. Subset of self_refs; empty when the LLM cited "
+            "nothing (positional self_refs still anchor the entity)."
+        ),
+    )
 
 
 class ExtractionFieldProvenance(BaseModel):
@@ -399,6 +424,20 @@ class ExtractionFieldProvenance(BaseModel):
             "by _enrich_field_provenance_with_cell_refs via the two-hop lookup "
             "(chunk_index → chunk_to_self_refs → first #/texts/N → bridge → cell_refs)."
         ),
+    )
+    # Positional lineage carried from the parent entity node's delta-IR stamp
+    # (build_entity_provenance_from_delta_graph). Authoritative positional refs
+    # of the batch the entity spanned; additive / default-empty.
+    self_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Authoritative positional DoclingDocument self_refs carried from "
+            "the parent entity's delta-IR provenance stamp."
+        ),
+    )
+    chunk_indexes: list[int] = Field(
+        default_factory=list,
+        description="Library chunk indexes the parent entity's batch spanned.",
     )
 
 

@@ -42,12 +42,16 @@ finally:
     sys.modules.update(_saved_modules)
 
 
-def test_prefers_per_node_evidence_id_over_batch_self_refs():
+def test_returns_self_refs_first_over_cited_evidence_id():
+    # Task 2 demotion: the cited-evidence (evidence_ids) preference is GONE.
+    # self_refs is now the AUTHORITATIVE positional lineage the delta-IR
+    # normalizer stamps on every node; _resolve_element_uid returns
+    # self_refs[0] regardless of which refs the LLM cited in evidence_ids.
     node = {"provenance": {
         "self_refs": ["#/texts/10"],
         "evidence_ids": ["#/texts/42"],
     }}
-    assert _resolve_element_uid(node, None) == "#/texts/42"
+    assert _resolve_element_uid(node, None) == "#/texts/10"
 
 
 def test_falls_back_to_self_refs_when_no_evidence_ids():
@@ -71,9 +75,10 @@ def test_chunk_indexes_fallback_unchanged():
     assert _resolve_element_uid(node, {0: ["#/texts/7"]}) == "#/texts/7"
 
 
-def test_evidence_id_choice_is_deterministic_regardless_of_order():
-    # Numeric-aware key: #/texts/9 < #/texts/42 (not lexicographic), and the
-    # result is identical regardless of LLM-emitted order.
+def test_self_refs_choice_is_independent_of_cited_evidence_order():
+    # Task 2 demotion: the cited evidence_ids no longer influence the result.
+    # Whatever order/content the LLM emits in evidence_ids, _resolve_element_uid
+    # returns the positional self_refs[0] — here "#/texts/1" for both nodes.
     a = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/42", "#/texts/9"]}}
     b = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/9", "#/texts/42"]}}
-    assert _resolve_element_uid(a, None) == _resolve_element_uid(b, None) == "#/texts/9"
+    assert _resolve_element_uid(a, None) == _resolve_element_uid(b, None) == "#/texts/1"
