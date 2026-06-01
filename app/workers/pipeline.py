@@ -1768,6 +1768,46 @@ def _build_docling_document_json(document_id: str) -> dict:
     return _json_mod.loads(raw)
 
 
+def _resolve_mention_chunks(
+    element_uid: str,
+    element_uid_chunk_map: dict[str, list[str]],
+    identity_map: dict[str, str],
+    all_text_chunk_ids: list[str],
+) -> tuple[list[str], bool]:
+    """Resolve a mention's element_uid to concrete chunk ids. Returns
+    (chunk_ids, is_coarse). Order: (1) direct hit in element_uid_chunk_map;
+    (2) Docling self_ref ('#/...') -> identity_map[self_ref] -> element_uid_chunk_map;
+    (3) last resort: all text chunks (is_coarse=True), caller WARNs."""
+    direct = element_uid_chunk_map.get(element_uid)
+    if direct:
+        return direct, False
+    if isinstance(element_uid, str) and element_uid.startswith("#/"):
+        mapped_uid = identity_map.get(element_uid)
+        if mapped_uid:
+            resolved = element_uid_chunk_map.get(mapped_uid)
+            if resolved:
+                return resolved, False
+        return all_text_chunk_ids, True
+    return [], False
+
+
+def _load_identity_map(document_id: str) -> dict[str, str]:
+    """self_ref -> element_uid map persisted at ingest in docling_document.json
+    _enrichments.identity_map. {} on any miss/parse error — never raises (degrades
+    to flagged coarse fan-out in _resolve_mention_chunks)."""
+    try:
+        doc_json = _build_docling_document_json(document_id)
+        if isinstance(doc_json, dict):
+            enr = doc_json.get("_enrichments") or {}
+            im = enr.get("identity_map") or {}
+            if isinstance(im, dict):
+                return {k: v for k, v in im.items() if isinstance(k, str) and isinstance(v, str)}
+    except Exception as exc:
+        logger.warning("derive_structure_links: identity_map load failed for %s: %s",
+                       document_id, exc)
+    return {}
+
+
 def _load_chunks_for_derivation(document_id: str) -> list:
     """Load TextChunk vertices from ArcadeDB and convert to ChunkForDerivation DTOs.
 
@@ -9320,18 +9360,27 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             # TextChunks of this document as a coarse-but-valid anchor.
             all_text_chunk_ids = [str(tc.id) for tc in text_chunks]
 
+            # Part C: bridge the synthesizer's Docling self_ref namespace
+            # ("#/texts/N") to DocumentElement.element_uid ("{page}-{order}-...")
+            # via the identity_map persisted at ingest. Loaded once; {} on miss
+            # so _resolve_mention_chunks degrades to the flagged coarse fan-out.
+            identity_map = _load_identity_map(document_id)
+
             for mention in graph_extraction.graph_json.get("mentions", []):
                 eid = mention.get("entity_id")
                 name = mention.get("entity_name", "")
                 etype = mention.get("entity_type", "UNKNOWN")
                 euid = mention.get("element_uid", "")
                 src_rid = mention.get("rid")
-                resolved_chunks = element_uid_chunk_map.get(euid, [])
-                if not resolved_chunks and isinstance(euid, str) and euid.startswith("#/"):
-                    # Synthesizer-anchored self_ref couldn't resolve to a
-                    # concrete DocumentElement. Attach to every text chunk
-                    # in the document.
-                    resolved_chunks = all_text_chunk_ids
+                resolved_chunks, is_coarse = _resolve_mention_chunks(
+                    euid, element_uid_chunk_map, identity_map, all_text_chunk_ids,
+                )
+                if is_coarse:
+                    logger.warning(
+                        "derive_structure_links: self_ref %r unresolved via "
+                        "identity_map; coarse fan-out across %d chunks (entity=%s)",
+                        euid, len(all_text_chunk_ids), name,
+                    )
                 for chunk_id in resolved_chunks:
                     edge_records.append((name, etype, chunk_id, eid, src_rid))
                     if eid:
