@@ -211,8 +211,8 @@ def _resolve_element_uid(
     Resolution order:
       1. Direct `element_uid` attribute on the node dict.
       2. Nested `provenance.element_uid`.
-      3. Nested `provenance.evidence_ids` smallest '#/' self_ref (per-node,
-         precise — narrowed per node by the IR normalizer).
+      3. Nested `provenance.evidence_ids` numerically-smallest '#/' self_ref
+         (per-node, precise — narrowed per node by the IR normalizer).
       4. Nested `provenance.self_refs[0]` (batch-wide, coarse fallback).
       5. `provenance.chunk_indexes[0]` → first self_ref via
          chunk_to_self_refs (extraction-time map from main.py).
@@ -233,17 +233,17 @@ def _resolve_element_uid(
     # evidence_ids PER NODE (ir_normalizer._attach_evidence_to_prov) but copies
     # self_refs BATCH-WIDE onto every node, so self_refs[0] is identical across a
     # batch (coarse) while evidence_ids is this entity's actual source element(s).
-    # Pick the lexicographically-SMALLEST "#/" evidence_id (NOT [0]) so the
-    # resolved element_uid is deterministic regardless of LLM-emitted order —
+    # Pick the numerically-smallest "#/" self_ref (stable, deterministic —
     # element_uid is part of the merge dedup key, so a run-stable choice keeps
-    # lineage reproducible across runs.
+    # lineage reproducible across runs).
     evidence_ids = prov.get("evidence_ids")
     if isinstance(evidence_ids, list):
-        selfref_evidence = sorted(
-            eid for eid in evidence_ids if isinstance(eid, str) and eid.startswith("#/")
-        )
+        selfref_evidence = [eid for eid in evidence_ids if isinstance(eid, str) and eid.startswith("#/")]
         if selfref_evidence:
-            return selfref_evidence[0]
+            def _selfref_sort_key(ref: str):
+                head, _, tail = ref.rpartition("/")
+                return (head, 0, int(tail)) if tail.isdigit() else (head, 1, tail)
+            return min(selfref_evidence, key=_selfref_sort_key)
 
     self_refs = prov.get("self_refs")
     if isinstance(self_refs, list) and self_refs:

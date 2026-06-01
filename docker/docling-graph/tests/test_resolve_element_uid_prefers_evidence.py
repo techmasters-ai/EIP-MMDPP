@@ -14,18 +14,32 @@ from pathlib import Path
 # root (index ~9, behind the repo-root at index 0), so a guarded insert is a
 # no-op; force it to the FRONT and evict any cached repo-root `app.*` so the
 # fresh provenance import binds against the service-root `app` package.
+#
+# This mutation is RESTORED in the finally block: leaving the service root on
+# sys.path (and the docling-graph `app.*` in sys.modules) would shadow the
+# repo-root `app` package for the rest of the combined repo-root suite. Mirrors
+# the save/restore convention in conftest._ensure_dg_app_package.
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent  # docker/docling-graph
-while str(_SERVICE_ROOT) in sys.path:
-    sys.path.remove(str(_SERVICE_ROOT))
-sys.path.insert(0, str(_SERVICE_ROOT))
-for _stale in [k for k in list(sys.modules) if k == "app" or k.startswith("app.")]:
-    del sys.modules[_stale]
+_saved_path = list(sys.path)
+_saved_modules = {k: v for k, v in sys.modules.items() if k == "app" or k.startswith("app.")}
+try:
+    sys.path.insert(0, str(_SERVICE_ROOT))
+    for _stale in [k for k in list(sys.modules) if k == "app" or k.startswith("app.")]:
+        del sys.modules[_stale]
 
-_PROV = _SERVICE_ROOT / "app" / "provenance.py"
-_spec = importlib.util.spec_from_file_location("dg_provenance_under_test", _PROV)
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
-_resolve_element_uid = _mod._resolve_element_uid
+    _PROV = _SERVICE_ROOT / "app" / "provenance.py"
+    _spec = importlib.util.spec_from_file_location("dg_provenance_under_test", _PROV)
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _resolve_element_uid = _mod._resolve_element_uid
+finally:
+    # Restore sys.path and re-instate the prior `app.*` sys.modules entries so
+    # the docling-graph `app` doesn't shadow the repo-root `app` package after
+    # this module finishes importing. _resolve_element_uid is already captured.
+    sys.path[:] = _saved_path
+    for _key in [k for k in list(sys.modules) if k == "app" or k.startswith("app.")]:
+        del sys.modules[_key]
+    sys.modules.update(_saved_modules)
 
 
 def test_prefers_per_node_evidence_id_over_batch_self_refs():
@@ -58,6 +72,8 @@ def test_chunk_indexes_fallback_unchanged():
 
 
 def test_evidence_id_choice_is_deterministic_regardless_of_order():
+    # Numeric-aware key: #/texts/9 < #/texts/42 (not lexicographic), and the
+    # result is identical regardless of LLM-emitted order.
     a = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/42", "#/texts/9"]}}
     b = {"provenance": {"self_refs": ["#/texts/1"], "evidence_ids": ["#/texts/9", "#/texts/42"]}}
-    assert _resolve_element_uid(a, None) == _resolve_element_uid(b, None) == "#/texts/42"
+    assert _resolve_element_uid(a, None) == _resolve_element_uid(b, None) == "#/texts/9"
