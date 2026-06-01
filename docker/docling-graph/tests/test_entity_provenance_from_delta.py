@@ -44,6 +44,7 @@ try:
     _mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
     build_entity_provenance_from_delta_graph = _mod.build_entity_provenance_from_delta_graph
+    _build_path_to_entity_model = _mod._build_path_to_entity_model
 
     _SCHEMAS = _SERVICE_ROOT / "app" / "schemas.py"
     _sspec = importlib.util.spec_from_file_location("dg_schemas_under_test_delta", _SCHEMAS)
@@ -76,8 +77,25 @@ class RadarSystemEntity(BaseModel):
 
 
 class _Template(BaseModel):
-    # Top-level field name == the delta node's `path` segment.
+    # Top-level LIST field — the normalizer/catalog stamps this node's `path`
+    # WITH the `[]` list-suffix (e.g. ``radar_systems[]``), never the bare
+    # field name. The builder's path→model bridge MUST key on that suffixed
+    # form or every list-entity node misses → total lineage collapse.
     radar_systems: list[RadarSystemEntity] = Field(default_factory=list)
+
+
+# The exact `path` the delta catalog/normalizer stamps onto a top-level
+# list-entity node. Derived from the production helper itself so the fixture
+# can never drift back to the bare (suffix-less) form that silently zeroes
+# lineage. _build_path_to_entity_model reproduces the catalog's path shape
+# (and intersects with build_delta_node_catalog when docling_graph is on
+# path), so its sole key here is the canonical `radar_systems[]`.
+_RADAR_PATHS = [p for p, c in _build_path_to_entity_model(_Template).items()
+                if c is RadarSystemEntity]
+assert _RADAR_PATHS == ["radar_systems[]"], (
+    f"expected canonical []-suffixed path, got {_RADAR_PATHS!r}"
+)
+RADAR_NODE_PATH = _RADAR_PATHS[0]
 
 
 class _Ctx:
@@ -91,7 +109,9 @@ def _make_ctx():
     return _Ctx({
         "nodes": [
             {
-                "path": "radar_systems",
+                # Production-shape path: `[]`-suffixed, exactly what the
+                # normalizer stamps — NOT the bare "radar_systems".
+                "path": RADAR_NODE_PATH,
                 "node_type": "RadarSystemEntity",   # class name — MUST NOT become ontology_name
                 "ids": {"system_name": "SNR-75"},
                 "properties": {"system_name": "SNR-75", "band": "S"},
@@ -171,3 +191,20 @@ def test_empty_when_no_delta_graph():
     )
     assert entity_rows == []
     assert field_rows == []
+
+
+def test_path_bridge_keys_carry_list_suffix():
+    """RELEASE-BLOCKER regression guard: the path→model bridge MUST key on
+    the `[]`-suffixed catalog/normalizer path, NOT the bare field name. A
+    bridge keyed on "radar_systems" misses every production node whose path
+    is "radar_systems[]" → item_cls is None → all rows skipped → the builder
+    returns ([], []) → main.py falls to the coarse chunk-0 synth. Pin the
+    canonical shape so the helper can't regress to the suffix-less form."""
+    mapping = _build_path_to_entity_model(_Template)
+    # The production list-entity path is the suffixed form, and it resolves
+    # to the entity model whose ontology_name the worker keys on.
+    assert "radar_systems[]" in mapping
+    assert mapping["radar_systems[]"] is RadarSystemEntity
+    # The bare (buggy) key must NOT be present — that is the exact miss the
+    # old helper produced against the real delta catalog.
+    assert "radar_systems" not in mapping

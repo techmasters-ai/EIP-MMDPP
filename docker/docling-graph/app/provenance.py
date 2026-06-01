@@ -626,10 +626,20 @@ def _build_path_to_entity_model(
 ) -> dict[str, type[BaseModel]]:
     """Map each delta node ``path`` → its entity model class.
 
-    Mirrors the path construction in
-    ``docling_graph...delta.catalog.build_delta_node_catalog`` (top-level
-    field → ``field_name``; nested → ``parent.field``) so the path key
-    here matches the ``path`` the normalizer stamps on every node. Only
+    The path KEY here MUST equal the canonical catalog path the normalizer
+    stamps on every ``_delta_merged_graph`` node — which carries the ``[]``
+    list-suffix (e.g. ``radar_systems[]``, ``radar_systems[].specs[]``).
+    The lookup in ``build_entity_provenance_from_delta_graph`` does
+    ``path_to_model.get(str(node["path"]))``; a key WITHOUT the suffix
+    silently misses every list-entity node → ``item_cls is None`` → every
+    row skipped → total lineage collapse.
+
+    This walks the template reproducing the EXACT path construction of
+    ``docling_graph...delta.catalog.build_delta_node_catalog`` (list fields
+    append ``[]``; scalar model fields do not; component nodes stay in the
+    tree so entities nested under a component still get the right path), and
+    then INTERSECTS the result with the real catalog's entity-node paths so
+    the bridge cannot drift from what the normalizer actually emits. Only
     ``is_entity=True`` models are mapped — non-entity component nodes are
     skipped exactly like the synth/primary entity walks.
     """
@@ -641,18 +651,38 @@ def _build_path_to_entity_model(
             return
         visited.add(model)
         for field_name, field_info in model.model_fields.items():
-            item_cls = _find_model_class(getattr(field_info, "annotation", None))
+            annotation = getattr(field_info, "annotation", None)
+            item_cls = _find_model_class(annotation)
             if item_cls is None:
                 continue
+            # Mirror catalog path construction: list-typed model fields get
+            # the `[]` suffix; scalar model fields do not.
+            is_list = get_origin(annotation) is list
             segment = f".{field_name}" if path_prefix else field_name
-            path = f"{path_prefix}{segment}" if path_prefix else field_name
+            base_path = f"{path_prefix}{segment}" if path_prefix else field_name
+            path = f"{base_path}[]" if is_list else base_path
             cfg = item_cls.model_config or {}
             if cfg.get("is_entity"):
                 out[path] = item_cls
+            # Recurse with the suffixed path so children inherit the `[]`
+            # form (e.g. radar_systems[].specs[]). Components recurse too so
+            # entities nested under them resolve to the catalog path.
             walk(item_cls, path)
 
     walk(template_cls, "")
-    return out
+
+    # Drift guard: keep only paths the REAL catalog reports as nodes. If the
+    # catalog is unavailable (e.g. isolated unit-test import without the
+    # docling_graph package), fall back to the walk-derived map unchanged.
+    try:
+        from docling_graph.core.extractors.contracts.delta.catalog import (
+            build_delta_node_catalog,
+        )
+
+        catalog_paths = {spec.path for spec in build_delta_node_catalog(template_cls).nodes}
+    except Exception:  # noqa: BLE001 — catalog optional in isolated tests
+        return out
+    return {path: cls for path, cls in out.items() if path in catalog_paths}
 
 
 def build_entity_provenance_from_delta_graph(
