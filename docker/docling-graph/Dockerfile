@@ -125,7 +125,7 @@ COPY app/services/designation_alias_overlay.py /app/app/services/designation_ali
 # diff resolve under /app/repo.
 RUN cd /app/repo && for p in /app/patches/*.patch; do \
         echo "Applying patch: $p"; \
-        patch -p1 < "$p"; \
+        patch -p1 --fuzz=0 -i "$p" || exit 1; \
     done \
     && pip install --no-cache-dir --no-deps -e /app/repo
 
