@@ -1780,7 +1780,6 @@ def _resolve_mention_chunks(
     self_refs: list[str],
     element_uid_chunk_map: dict[str, list[str]],
     identity_map: dict[str, str],
-    batch_chunk_ids: list[str],
 ) -> tuple[list[str], bool]:
     """Resolve a mention's self_refs to concrete chunk ids. Returns
     (chunk_ids, is_coarse).
@@ -1790,17 +1789,15 @@ def _resolve_mention_chunks(
     Resolution order:
       (1) resolve EACH self_ref via element_uid_chunk_map (direct hit) or
           identity_map (self_ref -> element_uid -> element_uid_chunk_map);
-          UNION the concrete chunks of all resolved self_refs.
-      (2) if ANY self_ref is unresolved, fall back to ``batch_chunk_ids``
-          (the mention's batch chunk-set, derived from its OWN self_refs by
-          the caller — NOT the whole document and NOT all artifact chunks).
-      (3) if batch_chunk_ids is ALSO empty, return ([], is_coarse=True); the
-          caller WARNs. This is the only "coarse" outcome and it links to
-          nothing rather than fanning out across the document.
+          UNION the concrete chunks of all resolved self_refs, dedup preserving
+          order. Unresolvable self_refs simply contribute nothing — they are
+          NOT fanned out across the document or artifact.
+      (2) is_coarse is True ONLY when there were self_refs but NONE resolved
+          to a chunk. In that case the caller WARNs and emits no edge, linking
+          to nothing rather than fanning out across the document.
     """
     resolved: list[str] = []
     seen: set[str] = set()
-    any_unresolved = False
 
     for ref in self_refs or []:
         chunks: list[str] | None = element_uid_chunk_map.get(ref)
@@ -1813,32 +1810,18 @@ def _resolve_mention_chunks(
                 if cid not in seen:
                     seen.add(cid)
                     resolved.append(cid)
-        else:
-            any_unresolved = True
 
-    if any_unresolved:
-        # Fall back to the mention's BATCH chunk-set for the unresolved
-        # self_refs. batch_chunk_ids is the union of resolvable chunks across
-        # all of the mention's self_refs (built by the caller). For a single
-        # mention this is essentially its own resolvable chunks; the fallback
-        # matters when some self_refs resolve and others don't.
-        for cid in batch_chunk_ids or []:
-            if cid not in seen:
-                seen.add(cid)
-                resolved.append(cid)
-
-    if not resolved:
-        # No concrete chunks AND no batch set: link to nothing (is_coarse=True),
-        # caller WARNs. Never fan out across the whole document/artifact.
-        return [], True
-
-    return resolved, False
+    # Coarse ONLY when there were self_refs but none resolved: caller WARNs and
+    # emits no edge. Never fan out across the whole document/artifact.
+    is_coarse = (not resolved) and bool(self_refs)
+    return resolved, is_coarse
 
 
 def _load_identity_map(document_id: str) -> dict[str, str]:
     """self_ref -> element_uid map persisted at ingest in docling_document.json
     _enrichments.identity_map. {} on any miss/parse error — never raises (degrades
-    to flagged coarse fan-out in _resolve_mention_chunks)."""
+    to the mention's precise/empty chunk-set in _resolve_mention_chunks, never
+    all-document)."""
     try:
         doc_json = _build_docling_document_json(document_id)
         if isinstance(doc_json, dict):
@@ -9441,32 +9424,13 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             # live in a different namespace than DocumentElement.element_uid
             # ("{page}-{order}-{type}-{hash}"); the identity_map persisted at
             # ingest bridges the two. Loaded once; {} on miss so resolution
-            # degrades to the mention's batch chunk-set (never all-document).
+            # degrades to the mention's precise/empty chunk-set (never
+            # all-document).
             #
             # There is NO all-document / all-artifact fan-out: a mention links
-            # only to its own resolvable source chunks, falling back at worst to
-            # the union of its self_refs' chunks (its "batch" set), and linking
-            # to nothing (with a WARNING) if even that is empty.
+            # only to its own resolvable source chunks, and links to nothing
+            # (with a WARNING) if none of its self_refs resolve.
             identity_map = _load_identity_map(document_id)
-
-            def _resolve_self_ref_chunks(refs: list[str]) -> list[str]:
-                """Union of concrete chunks for the resolvable refs in ``refs``
-                (direct hit in element_uid_chunk_map, else identity_map bridge).
-                Used both to derive the mention's batch chunk-set and (inside
-                _resolve_mention_chunks) the final resolution."""
-                out: list[str] = []
-                seen: set[str] = set()
-                for ref in refs or []:
-                    chunks = element_uid_chunk_map.get(ref)
-                    if not chunks and isinstance(ref, str) and ref.startswith("#/"):
-                        mapped = identity_map.get(ref)
-                        if mapped:
-                            chunks = element_uid_chunk_map.get(mapped)
-                    for cid in (chunks or []):
-                        if cid not in seen:
-                            seen.add(cid)
-                            out.append(cid)
-                return out
 
             for mention in graph_extraction.graph_json.get("mentions", []):
                 eid = mention.get("entity_id")
@@ -9479,18 +9443,13 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                 if not isinstance(self_refs, list) or not self_refs:
                     legacy_uid = mention.get("element_uid", "")
                     self_refs = [legacy_uid] if legacy_uid else []
-                # batch_chunk_ids = union of chunks across ALL of this mention's
-                # self_refs (NOT chunk_indexes — those are extraction-batch
-                # ordinals in a different index space than TextChunk.chunk_index).
-                batch_chunk_ids = _resolve_self_ref_chunks(self_refs)
                 resolved_chunks, is_coarse = _resolve_mention_chunks(
-                    self_refs, element_uid_chunk_map, identity_map, batch_chunk_ids,
+                    self_refs, element_uid_chunk_map, identity_map,
                 )
                 if is_coarse:
                     logger.warning(
-                        "derive_structure_links: mention self_refs %r unresolved "
-                        "and batch chunk-set empty; emitting NO EXTRACTED_FROM "
-                        "edge (entity=%s, entity_id=%s)",
+                        "derive_structure_links: mention self_refs %r unresolved; "
+                        "emitting NO EXTRACTED_FROM edge (entity=%s, entity_id=%s)",
                         self_refs, name, eid,
                     )
                 for chunk_id in resolved_chunks:
@@ -9506,8 +9465,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # ingest path stores chunking metadata (self_ref/ext/...) in
         # content_metadata (see persist ~line 2521), never those keys — so it
         # produced zero edge_records here regardless. The primary mention path
-        # above (with its batch chunk-set fallback) is the sole EXTRACTED_FROM
-        # source. If a future ingest path ever repopulates those metadata keys,
+        # above (precise self_ref resolution, no fan-out) is the sole
+        # EXTRACTED_FROM source. If a future ingest path ever repopulates those keys,
         # this WARNING fires so we route them through the precise self_ref
         # resolver instead of resurrecting the fan-out.
         entity_ids_needing_fallback = [
