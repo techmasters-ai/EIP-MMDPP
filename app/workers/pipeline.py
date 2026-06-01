@@ -1777,26 +1777,62 @@ def _build_docling_document_json(document_id: str) -> dict:
 
 
 def _resolve_mention_chunks(
-    element_uid: str,
+    self_refs: list[str],
     element_uid_chunk_map: dict[str, list[str]],
     identity_map: dict[str, str],
-    all_text_chunk_ids: list[str],
+    batch_chunk_ids: list[str],
 ) -> tuple[list[str], bool]:
-    """Resolve a mention's element_uid to concrete chunk ids. Returns
-    (chunk_ids, is_coarse). Order: (1) direct hit in element_uid_chunk_map;
-    (2) Docling self_ref ('#/...') -> identity_map[self_ref] -> element_uid_chunk_map;
-    (3) last resort: all text chunks (is_coarse=True), caller WARNs."""
-    direct = element_uid_chunk_map.get(element_uid)
-    if direct:
-        return direct, False
-    if isinstance(element_uid, str) and element_uid.startswith("#/"):
-        mapped_uid = identity_map.get(element_uid)
-        if mapped_uid:
-            resolved = element_uid_chunk_map.get(mapped_uid)
-            if resolved:
-                return resolved, False
-        return all_text_chunk_ids, True
-    return [], False
+    """Resolve a mention's self_refs to concrete chunk ids. Returns
+    (chunk_ids, is_coarse).
+
+    Task 4 precision fix — there is NO all-document / all-artifact fan-out.
+
+    Resolution order:
+      (1) resolve EACH self_ref via element_uid_chunk_map (direct hit) or
+          identity_map (self_ref -> element_uid -> element_uid_chunk_map);
+          UNION the concrete chunks of all resolved self_refs.
+      (2) if ANY self_ref is unresolved, fall back to ``batch_chunk_ids``
+          (the mention's batch chunk-set, derived from its OWN self_refs by
+          the caller — NOT the whole document and NOT all artifact chunks).
+      (3) if batch_chunk_ids is ALSO empty, return ([], is_coarse=True); the
+          caller WARNs. This is the only "coarse" outcome and it links to
+          nothing rather than fanning out across the document.
+    """
+    resolved: list[str] = []
+    seen: set[str] = set()
+    any_unresolved = False
+
+    for ref in self_refs or []:
+        chunks: list[str] | None = element_uid_chunk_map.get(ref)
+        if not chunks and isinstance(ref, str) and ref.startswith("#/"):
+            mapped_uid = identity_map.get(ref)
+            if mapped_uid:
+                chunks = element_uid_chunk_map.get(mapped_uid)
+        if chunks:
+            for cid in chunks:
+                if cid not in seen:
+                    seen.add(cid)
+                    resolved.append(cid)
+        else:
+            any_unresolved = True
+
+    if any_unresolved:
+        # Fall back to the mention's BATCH chunk-set for the unresolved
+        # self_refs. batch_chunk_ids is the union of resolvable chunks across
+        # all of the mention's self_refs (built by the caller). For a single
+        # mention this is essentially its own resolvable chunks; the fallback
+        # matters when some self_refs resolve and others don't.
+        for cid in batch_chunk_ids or []:
+            if cid not in seen:
+                seen.add(cid)
+                resolved.append(cid)
+
+    if not resolved:
+        # No concrete chunks AND no batch set: link to nothing (is_coarse=True),
+        # caller WARNs. Never fan out across the whole document/artifact.
+        return [], True
+
+    return resolved, False
 
 
 def _load_identity_map(document_id: str) -> dict[str, str]:
@@ -9399,93 +9435,106 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     node.get("rid"),
                 )
 
-            # Fallback pool for mentions whose element_uid doesn't resolve
-            # through element_uid_chunk_map. The docling-graph service's
-            # provenance synthesizer emits Docling-internal self_refs
-            # (e.g. "#/pictures/1") as element_uid when the library's
-            # salvage path strips the per-node element-tracking attrs,
-            # but DocumentElement.element_uid is stored as
-            # "{page}-{order}-{type}-{hash}" — the two namespaces don't
-            # overlap. Without a fallback, those mentions produce zero
-            # EXTRACTED_FROM edges and the entity becomes unreachable
-            # from Document via the chunk traversal. Fan out across all
-            # TextChunks of this document as a coarse-but-valid anchor —
-            # but only when identity_map translation also misses (see
-            # _resolve_mention_chunks / Part C below); fan-out is the
-            # last resort, no longer the unconditional fallback.
-            all_text_chunk_ids = [str(tc.id) for tc in text_chunks]
-
-            # Part C: bridge the synthesizer's Docling self_ref namespace
-            # ("#/texts/N") to DocumentElement.element_uid ("{page}-{order}-...")
-            # via the identity_map persisted at ingest. Loaded once; {} on miss
-            # so _resolve_mention_chunks degrades to the flagged coarse fan-out.
+            # Part C / Task 4: resolve each mention's self_refs to its CONCRETE
+            # source chunk(s). The docling-graph service's provenance synthesizer
+            # emits Docling-internal self_refs ("#/texts/N", "#/pictures/1") that
+            # live in a different namespace than DocumentElement.element_uid
+            # ("{page}-{order}-{type}-{hash}"); the identity_map persisted at
+            # ingest bridges the two. Loaded once; {} on miss so resolution
+            # degrades to the mention's batch chunk-set (never all-document).
+            #
+            # There is NO all-document / all-artifact fan-out: a mention links
+            # only to its own resolvable source chunks, falling back at worst to
+            # the union of its self_refs' chunks (its "batch" set), and linking
+            # to nothing (with a WARNING) if even that is empty.
             identity_map = _load_identity_map(document_id)
+
+            def _resolve_self_ref_chunks(refs: list[str]) -> list[str]:
+                """Union of concrete chunks for the resolvable refs in ``refs``
+                (direct hit in element_uid_chunk_map, else identity_map bridge).
+                Used both to derive the mention's batch chunk-set and (inside
+                _resolve_mention_chunks) the final resolution."""
+                out: list[str] = []
+                seen: set[str] = set()
+                for ref in refs or []:
+                    chunks = element_uid_chunk_map.get(ref)
+                    if not chunks and isinstance(ref, str) and ref.startswith("#/"):
+                        mapped = identity_map.get(ref)
+                        if mapped:
+                            chunks = element_uid_chunk_map.get(mapped)
+                    for cid in (chunks or []):
+                        if cid not in seen:
+                            seen.add(cid)
+                            out.append(cid)
+                return out
 
             for mention in graph_extraction.graph_json.get("mentions", []):
                 eid = mention.get("entity_id")
                 name = mention.get("entity_name", "")
                 etype = mention.get("entity_type", "UNKNOWN")
-                euid = mention.get("element_uid", "")
                 src_rid = mention.get("rid")
+                # Prefer the positional self_refs LIST (Task 3); fall back to the
+                # legacy scalar element_uid for back-compat audit blobs.
+                self_refs = mention.get("self_refs")
+                if not isinstance(self_refs, list) or not self_refs:
+                    legacy_uid = mention.get("element_uid", "")
+                    self_refs = [legacy_uid] if legacy_uid else []
+                # batch_chunk_ids = union of chunks across ALL of this mention's
+                # self_refs (NOT chunk_indexes — those are extraction-batch
+                # ordinals in a different index space than TextChunk.chunk_index).
+                batch_chunk_ids = _resolve_self_ref_chunks(self_refs)
                 resolved_chunks, is_coarse = _resolve_mention_chunks(
-                    euid, element_uid_chunk_map, identity_map, all_text_chunk_ids,
+                    self_refs, element_uid_chunk_map, identity_map, batch_chunk_ids,
                 )
                 if is_coarse:
                     logger.warning(
-                        "derive_structure_links: self_ref %r unresolved via "
-                        "identity_map; coarse fan-out across %d chunks (entity=%s)",
-                        euid, len(all_text_chunk_ids), name,
+                        "derive_structure_links: mention self_refs %r unresolved "
+                        "and batch chunk-set empty; emitting NO EXTRACTED_FROM "
+                        "edge (entity=%s, entity_id=%s)",
+                        self_refs, name, eid,
                     )
                 for chunk_id in resolved_chunks:
                     edge_records.append((name, etype, chunk_id, eid, src_rid))
                     if eid:
                         mentioned_entity_ids.add(eid)
 
-        # Fallback — fan the entity out across its artifact's chunks when
-        # the primary mention path yielded zero links. Keyed by entity_id
-        # so same-name same-type siblings with different identity tuples
-        # are tracked independently (T53b correctness fix).
+        # Task 4: the legacy artifact-metadata fallback is GATED OFF. It used to
+        # fan each metadata-derived entity across ALL chunks of its artifact —
+        # an all-artifact coarse-lineage fan-out we must not reintroduce. It is
+        # ALSO inert for the delta pipeline: it reads docling_graph_data /
+        # extracted_entities from Artifact.content_metadata, but the delta
+        # ingest path stores chunking metadata (self_ref/ext/...) in
+        # content_metadata (see persist ~line 2521), never those keys — so it
+        # produced zero edge_records here regardless. The primary mention path
+        # above (with its batch chunk-set fallback) is the sole EXTRACTED_FROM
+        # source. If a future ingest path ever repopulates those metadata keys,
+        # this WARNING fires so we route them through the precise self_ref
+        # resolver instead of resurrecting the fan-out.
         entity_ids_needing_fallback = [
             eid for eid in node_by_entity_id if eid not in mentioned_entity_ids
         ]
         if entity_ids_needing_fallback or not mentioned_entity_ids:
-            artifact_chunk_map: dict[str, list[str]] = {}
-            for tc in text_chunks:
-                artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
-            for ic in image_chunks:
-                artifact_chunk_map.setdefault(str(ic.artifact_id), []).append(str(ic.id))
-
-            artifacts_with_entities = db.execute(
+            legacy_artifacts_with_entities = db.execute(
                 select(Artifact).where(
                     Artifact.document_id == uuid.UUID(document_id),
                     Artifact.content_metadata.isnot(None),
                 )
             ).scalars().all()
-
-            # Legacy fallback: artifact_metadata-derived entities (no
-            # entity_id / source_rid available from that path — writer
-            # falls back to the name+type subquery with a WARNING).
-            for artifact in artifacts_with_entities:
-                metadata = artifact.content_metadata or {}
-                chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
-                if not chunk_ids:
-                    continue
-
-                entities_list: list[tuple[str, str]] = []
-                graph_data = metadata.get("docling_graph_data")
-                if graph_data:
-                    for node in graph_data.get("nodes", []):
-                        entities_list.append((
-                            node.get("name", node.get("id", "")),
-                            node.get("entity_type", "UNKNOWN"),
-                        ))
-                else:
-                    for ent in metadata.get("extracted_entities", []):
-                        entities_list.append((ent["name"], ent["entity_type"]))
-
-                for (name, etype) in entities_list:
-                    for chunk_id in chunk_ids:
-                        edge_records.append((name, etype, chunk_id, None, None))
+            legacy_metadata_entities = sum(
+                len((a.content_metadata or {}).get("docling_graph_data", {}).get("nodes", []))
+                + len((a.content_metadata or {}).get("extracted_entities", []))
+                for a in legacy_artifacts_with_entities
+            )
+            if legacy_metadata_entities:
+                logger.warning(
+                    "derive_structure_links: legacy artifact-metadata entity "
+                    "fallback is gated off but found %d metadata entities for %s "
+                    "(%d entity_ids unmentioned); these are NOT linked via the "
+                    "removed all-artifact fan-out — route them through the "
+                    "self_ref resolver instead.",
+                    legacy_metadata_entities, document_id,
+                    len(entity_ids_needing_fallback),
+                )
 
         # Batch-create EXTRACTED_FROM edges in one sqlscript call.
         from app.services.graph_store import EntityChunkEdge as _ECE
