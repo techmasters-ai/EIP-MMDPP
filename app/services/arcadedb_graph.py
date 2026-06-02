@@ -319,15 +319,32 @@ def _build_upsert_relationship_script(
         run_id_set = f", pipeline_run_id = :{run_id_param_key}" if run_id_param_key else ""
 
         if doc_id_param_key:
-            # Union doc_id only when the edge exists AND doc_id is not
-            # already in the list, preventing duplicate entries on
-            # repeat ingest of the same doc.
+            # Idempotently union doc_id into document_ids while ALWAYS
+            # re-applying the lineage/property SETs.
+            #
+            # The previous form gated the whole UPDATE on
+            # ``AND NOT (document_ids CONTAINS :doc_id)`` so that on a
+            # re-ingest of the same doc the predicate was FALSE → the
+            # UPDATE matched zero rows → pipeline_run_id (run_id_set),
+            # source_chunk_ids and other props (extra) were silently
+            # dropped on pre-existing edges (only freshly-CREATEd edges
+            # got lineage). The membership gate was correct when the
+            # UPDATE only appended document_ids; later commits piled
+            # must-always-apply SETs into the same gated statement.
+            #
+            # Fix (Option A): drop the WHERE gate so the lineage SETs run
+            # on every re-upsert, and move idempotency for the doc-id
+            # append into the SET via a CASE expression — append only when
+            # the id is not already present, so document_ids never gains a
+            # duplicate. CASE-in-SET is documented ArcadeDB SQL (manual
+            # "CASE Expression", p. 174) and verified against the live DB.
             update_sql = (
                 f"  UPDATE {rtype} "
-                f"SET document_ids = document_ids || [:{doc_id_param_key}], "
+                f"SET document_ids = (CASE WHEN document_ids CONTAINS "
+                f":{doc_id_param_key} THEN document_ids "
+                f"ELSE document_ids || [:{doc_id_param_key}] END), "
                 f"updated_at = sysdate(){run_id_set}{extra} "
-                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid "
-                f"AND NOT (document_ids CONTAINS :{doc_id_param_key})"
+                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid"
             )
         else:
             update_sql = (

@@ -149,3 +149,190 @@ def test_no_pipeline_run_id_binding_when_run_id_absent():
         "unexpected pipeline_run_id param when pipeline_run_id is None: "
         f"{list(params.keys())}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Re-upsert lineage regression (the real bug)
+#
+# The above tests only assert the lineage SET *string* is present. They pass
+# even when the UPDATE that carries those SETs is gated by
+# ``AND NOT (document_ids CONTAINS :doc_id)`` — which means on a re-ingest of
+# the same (edge, doc) the UPDATE matches zero rows and pipeline_run_id /
+# source_chunk_ids are NEVER written onto the pre-existing edge. These tests
+# pin that the lineage/property SETs apply REGARDLESS of document_ids
+# membership, while the document_ids append stays idempotent.
+# ---------------------------------------------------------------------------
+
+
+def _update_branch(script: str) -> str:
+    """Return the UPDATE branch (the ELSE block) of the find-or-create script."""
+    return script.split("} ELSE {", 1)[1]
+
+
+def test_lineage_update_not_gated_by_document_ids_membership():
+    """The UPDATE carrying lineage SETs must NOT be gated by a
+    ``NOT (document_ids CONTAINS ...)`` predicate.
+
+    Option A (chosen): a single UPDATE whose WHERE only matches the edge
+    endpoints. Idempotent doc-id append lives in the SET via a CASE
+    expression, so the lineage SETs (pipeline_run_id, source_chunk_ids,
+    updated_at, props) always apply on re-upsert.
+    """
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={"source_chunk_ids": ["c1", "c2"]})
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, _ = _build_upsert_relationship_script([rec], provenance=prov)
+
+    update_branch = _update_branch(script)
+    assert "pipeline_run_id" in update_branch, (
+        f"pipeline_run_id SET missing from UPDATE branch:\n{update_branch}"
+    )
+    # The lineage SETs must not be gated by document_ids membership: the
+    # gating predicate that buried them must be gone from the UPDATE.
+    assert "NOT (document_ids CONTAINS" not in update_branch, (
+        "UPDATE branch still gates the lineage SETs with "
+        "'NOT (document_ids CONTAINS ...)'; on re-upsert of the same doc the "
+        "UPDATE matches zero rows and pipeline_run_id/source_chunk_ids are "
+        f"never written:\n{update_branch}"
+    )
+
+
+def test_document_ids_append_remains_idempotent_via_case():
+    """The doc-id append must stay idempotent (no duplicate on re-ingest).
+
+    With the membership gate removed from the WHERE, idempotency moves into
+    the SET via a CASE expression so we never append a doc id already present.
+    """
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record()
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, _ = _build_upsert_relationship_script([rec], provenance=prov)
+
+    update_branch = _update_branch(script)
+    assert "CASE WHEN document_ids CONTAINS" in update_branch, (
+        "idempotent doc-id append (CASE WHEN document_ids CONTAINS ... "
+        f"ELSE document_ids || [...] END) missing from UPDATE branch:\n{update_branch}"
+    )
+
+
+def test_source_chunk_ids_set_in_update_branch():
+    """source_chunk_ids (a record property) must appear in the UPDATE SETs so
+    it is overwritten on re-upsert, not only on the initial CREATE."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={"source_chunk_ids": ["c1", "c2"]})
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, _ = _build_upsert_relationship_script([rec], provenance=prov)
+
+    update_branch = _update_branch(script)
+    assert "source_chunk_ids" in update_branch, (
+        "source_chunk_ids not SET in UPDATE branch; per-edge chunk lineage is "
+        f"dropped on re-upsert:\n{update_branch}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live ArcadeDB integration (opt-in; skips cleanly when DB unreachable).
+# Proves the chosen SQL actually overwrites lineage on a second upsert of the
+# same (edge, doc) without duplicating the doc id.
+# ---------------------------------------------------------------------------
+
+
+def _arcadedb_reachable() -> bool:
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        "http://localhost:2480/api/v1/query/eip_knowledge_graph",
+        data=b'{"language":"sql","command":"SELECT 1 as one"}',
+        headers={
+            "Content-Type": "application/json",
+            # root:eip_arcadedb_secret
+            "Authorization": "Basic cm9vdDplaXBfYXJjYWRlZGJfc2VjcmV0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def test_live_reupsert_overwrites_lineage_no_doc_dup():
+    """Live: re-upsert SAME (edge, doc) with a NEW run id + chunk ids must
+    overwrite pipeline_run_id/source_chunk_ids and keep document_ids unique."""
+    import json
+    import urllib.request
+
+    import pytest
+
+    if not _arcadedb_reachable():
+        pytest.skip("ArcadeDB not reachable at localhost:2480")
+
+    def cmd(language: str, command: str, params: dict | None = None):
+        body = {"language": language, "command": command}
+        if params is not None:
+            body["params"] = params
+        req = urllib.request.Request(
+            "http://localhost:2480/api/v1/command/eip_knowledge_graph",
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Basic cm9vdDplaXBfYXJjYWRlZGJfc2VjcmV0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    # Throwaway types so we never touch domain data.
+    cmd("sqlscript",
+        "CREATE VERTEX TYPE ReupV IF NOT EXISTS; "
+        "CREATE EDGE TYPE ReupE IF NOT EXISTS")
+    try:
+        cmd("sqlscript",
+            "DELETE FROM ReupE; DELETE FROM ReupV; "
+            "CREATE VERTEX ReupV SET k=1; CREATE VERTEX ReupV SET k=2")
+        # Initial create (run-OLD, doc D, chunks c1)
+        cmd("sqlscript",
+            "LET s = SELECT FROM ReupV WHERE k=1; "
+            "LET d = SELECT FROM ReupV WHERE k=2; "
+            "CREATE EDGE ReupE FROM $s[0] TO $d[0] "
+            "SET document_ids=[:doc], pipeline_run_id=:rid, "
+            "source_chunk_ids=:scids",
+            {"doc": "D", "rid": "run-OLD", "scids": ["c1"]})
+
+        # Re-upsert SAME edge, SAME doc D, NEW run id + chunks — exactly the
+        # UPDATE shape the builder now emits (CASE idempotent append, ungated).
+        cmd("sql",
+            "UPDATE ReupE SET "
+            "document_ids = (CASE WHEN document_ids CONTAINS :doc "
+            "THEN document_ids ELSE document_ids || [:doc] END), "
+            "updated_at = sysdate(), pipeline_run_id = :rid, "
+            "source_chunk_ids = :scids "
+            "WHERE @out = (SELECT FROM ReupV WHERE k=1)[0].@rid "
+            "AND @in = (SELECT FROM ReupV WHERE k=2)[0].@rid",
+            {"doc": "D", "rid": "run-NEW", "scids": ["c1", "c2", "c3"]})
+
+        rows = cmd("sql",
+            "SELECT document_ids, pipeline_run_id, source_chunk_ids "
+            "FROM ReupE")["result"]
+        assert len(rows) == 1, f"expected exactly one edge, got: {rows}"
+        edge = rows[0]
+        assert edge["pipeline_run_id"] == "run-NEW", (
+            f"pipeline_run_id not overwritten on re-upsert: {edge}"
+        )
+        assert edge["source_chunk_ids"] == ["c1", "c2", "c3"], (
+            f"source_chunk_ids not overwritten on re-upsert: {edge}"
+        )
+        assert edge["document_ids"] == ["D"], (
+            f"document_ids gained a duplicate on re-upsert of same doc: {edge}"
+        )
+    finally:
+        cmd("sqlscript",
+            "DELETE FROM ReupE; DELETE FROM ReupV; "
+            "DROP TYPE ReupE IF EXISTS UNSAFE; "
+            "DROP TYPE ReupV IF EXISTS UNSAFE")
