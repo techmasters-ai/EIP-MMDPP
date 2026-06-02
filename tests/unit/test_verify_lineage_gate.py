@@ -204,12 +204,47 @@ def test_relationship_precision_missing_source_chunks_fails():
     assert "without=3" in detail
 
 
-def test_relationship_precision_zero_edges_is_na_not_fail():
-    """0 relationship edges -> N/A-not-fail (depends on system_links extracting)."""
-    status, ok, detail = gate.compute_relationship_precision([])
+def test_relationship_precision_zero_edges_zero_accepted_is_na_not_fail():
+    """0 committed domain edges AND 0 accepted rels in the audit blob -> N/A.
+    Vacuously honest: the run accepted nothing, so there is nothing to lose."""
+    status, ok, detail = gate.compute_relationship_precision([], accepted_rels=0)
     assert status == "NA"
     assert ok is True
     assert "N/A" in detail
+
+
+def test_relationship_precision_zero_edges_unknown_accepted_is_na():
+    """0 committed edges with the accepted baseline UNKNOWN (None) -> N/A. We
+    cannot prove the vacuous-pass hole without the denominator, so default to the
+    historical N/A-not-fail rather than fail-closed on a missing baseline."""
+    status, ok, _ = gate.compute_relationship_precision([])
+    assert status == "NA"
+    assert ok is True
+
+
+def test_relationship_precision_zero_committed_but_accepted_positive_FAILS():
+    """THE VACUOUS-PASS HOLE the review flagged: the run accepted >0 relationships
+    but 0 are committed-with-lineage (every domain edge carries NULL
+    source_chunk_ids, so the doc-scoped lineage-bearing set is empty). This MUST
+    FAIL, not pass as N/A — the document's relationships exist but none is
+    lineage-bearing."""
+    status, ok, detail = gate.compute_relationship_precision([], accepted_rels=77)
+    assert status == "FAIL"
+    assert ok is False
+    assert "77" in detail
+
+
+def test_relationship_precision_is_doc_population_not_run_scoped_concept():
+    """Doc-scoped fail-closed: when the document carries 32 domain edges and only
+    3 are lineage-bearing (29 NULL source_chunk_ids), precision FAILS — the gate
+    measures the DOCUMENT's full relationship population, not just the 3 a run
+    re-emitted."""
+    rows = ([{"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1"]}] * 3
+            + [{"type": "ASSOCIATED_WITH", "source_chunk_ids": None}] * 29)
+    status, ok, detail = gate.compute_relationship_precision(rows, accepted_rels=77)
+    assert status == "FAIL"
+    assert ok is False
+    assert "without=29" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -404,17 +439,18 @@ def test_ontology_edge_types_filters_structural(monkeypatch):
     assert domain == {"ASSOCIATED_WITH", "CUES"}
 
 
-def test_relationship_edge_rows_scopes_by_pipeline_run_id(monkeypatch):
-    """RELATIONSHIP-precision edges must be RUN-SCOPED by pipeline_run_id, NOT
-    doc-scoped by document_ids.
+def test_relationship_edge_rows_scopes_by_document_ids_not_run(monkeypatch):
+    """RELATIONSHIP-precision edges must be DOC-SCOPED by `document_ids CONTAINS
+    '<doc>'`, NOT run-scoped by pipeline_run_id (REVERTING the false-green prior
+    fix).
 
-    Domain relationship edges are GLOBAL and accumulate across runs (30+ prior
-    graph_only runs on the same doc), so `document_ids CONTAINS '<doc>'`
-    over-counts stale cross-run edges and scores pre-fix NULL-run edges, producing
-    a false FAIL. After the upstream Fix H every edge a run upserts carries
-    pipeline_run_id = run, so run-scoping captures EXACTLY this run's committed
-    edges — mirroring the EXTRACTED_FROM run-scoping in the same gate. The
-    domain-edge-type restriction (structural edges excluded) is preserved."""
+    The goal is the DOCUMENT's full relationship population. Run-scoping inspected
+    only the 3 edges THIS run re-emitted and was blind to 29/32 (91%) of the
+    document's domain edges that carry NULL source_chunk_ids — so it passed green
+    while 91% of the document's relationships had no lineage. Doc-scoping counts
+    every domain relationship of the document so the gate FAILs while lineage is
+    missing. The domain-edge-type restriction (structural edges excluded) is
+    preserved."""
     issued = []
 
     def fake_adb(sql):
@@ -429,17 +465,172 @@ def test_relationship_edge_rows_scopes_by_pipeline_run_id(monkeypatch):
         return []
 
     monkeypatch.setattr(gate, "adb", fake_adb)
-    rows = gate.relationship_edge_rows("RUN-ABC")
+    rows = gate.relationship_edge_rows("DOC-XYZ")
     # 22 ASSOCIATED_WITH + 7 CUES = 29 domain edges; structural ones excluded.
     assert len(rows) == 29
     types = {r["type"] for r in rows}
     assert types == {"ASSOCIATED_WITH", "CUES"}
-    # every per-type query scopes by the run id, never by document_ids.
+    # every per-type query scopes by the DOCUMENT, never by pipeline_run_id.
     per_type = [s for s in issued if "schema:types" not in s]
     assert per_type, "expected per-edge-type queries"
     for sql in per_type:
-        assert "pipeline_run_id = 'RUN-ABC'" in sql
-        assert "document_ids CONTAINS" not in sql
+        assert "document_ids CONTAINS 'DOC-XYZ'" in sql
+        assert "pipeline_run_id =" not in sql
+
+
+# ---------------------------------------------------------------------------
+# RELATIONSHIP recall floor — committed lineage-bearing edges vs accepted rels.
+# The old check only failed on committed==0; 3-of-77 passed green. The floor
+# fails on a large shortfall so "3 of 77 accepted" is not called full recall.
+# ---------------------------------------------------------------------------
+def test_relationship_recall_floor_fails_on_large_shortfall():
+    """3 committed of 77 accepted (~4%) is a massive shortfall -> FAIL. The old
+    check (committed>0) would have passed this green."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=3, accepted=77, rejected=0)
+    assert ok is False
+    assert "3" in detail and "77" in detail
+
+
+def test_relationship_recall_floor_passes_at_or_above_threshold():
+    """Committed >= floor*accepted -> PASS. With a 50% floor, 40 of 77 passes."""
+    ok, _ = gate.compute_relationship_recall(committed_edges=40, accepted=77, rejected=0)
+    assert ok is True
+
+
+def test_relationship_recall_floor_reports_committed_vs_accepted():
+    """The shortfall report surfaces committed vs accepted prominently."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=3, accepted=77, rejected=2)
+    assert ok is False
+    assert "committed" in detail.lower()
+    assert "rejected=2" in detail
+
+
+# ---------------------------------------------------------------------------
+# source_pages shape check — committed edges have source_pages malformed as a
+# list-of-lists ([[6,7]]); the gate must DETECT and FAIL on the malformed shape
+# AND on inconsistency with the resolved chunks' pages.
+# ---------------------------------------------------------------------------
+def test_source_pages_flat_and_consistent_passes():
+    """Flat list of ints, consistent with the resolved chunks' pages -> PASS."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1", "c2"],
+         "source_pages": [6, 7]},
+    ]
+    chunk_pages = {"c1": 6, "c2": 7}
+    ok, detail = gate.check_source_pages_shape(rows, chunk_pages)
+    assert ok is True
+
+
+def test_source_pages_list_of_lists_fails():
+    """The committed malformation [[6,7]] (list-of-lists) -> FAIL."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1", "c2"],
+         "source_pages": [[6, 7]]},
+    ]
+    chunk_pages = {"c1": 7, "c2": 7}
+    ok, detail = gate.check_source_pages_shape(rows, chunk_pages)
+    assert ok is False
+    assert "malformed" in detail.lower() or "list-of-lists" in detail.lower()
+
+
+def test_source_pages_inconsistent_with_chunk_pages_fails():
+    """Flat list of ints but inconsistent with the resolved chunks' pages
+    (source_pages says page 6 but the resolved chunks are both page 7) -> FAIL."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1", "c2"],
+         "source_pages": [6]},
+    ]
+    chunk_pages = {"c1": 7, "c2": 7}
+    ok, detail = gate.check_source_pages_shape(rows, chunk_pages)
+    assert ok is False
+    assert "inconsistent" in detail.lower()
+
+
+def test_source_pages_no_lineage_edges_is_na():
+    """No lineage-bearing edges (none has source_chunk_ids) -> nothing to shape
+    check; N/A-not-fail (the precision/recall checks already carry that verdict)."""
+    rows = [{"type": "ASSOCIATED_WITH", "source_chunk_ids": None}]
+    ok, detail = gate.check_source_pages_shape(rows, {})
+    assert ok is True
+    assert "N/A" in detail or "no lineage" in detail.lower()
+
+
+def test_drop_check_greps_worker_string_in_worker_containers(monkeypatch):
+    """#7b drop-check must grep the WORKER container(s) for the WORKER string
+    ('dropping provenance row missing required fields') — the old gate greped that
+    string against docling-graph (its non-emitter), so it could NEVER see a real
+    worker drop. It must ALSO grep docling-graph for its OWN drop string
+    ('build_provenance: dropping node … no resolvable element_uid') and SUM both.
+
+    Drive main() with all I/O monkeypatched; assert the worker drop is COUNTED
+    (the provenance-drop check FAILs because a worker emitted the worker string),
+    and that docling-graph was scanned with its own string."""
+    import sys
+
+    # _docker_logs(container, since, until) -> (text, n_lines). Emit the WORKER
+    # drop string ONLY from a worker container; emit the docling-graph drop string
+    # ONLY from docling-graph. If the gate greps the right string in the right
+    # container, drops>0 and the provenance-drop check FAILs.
+    seen = {}
+
+    def fake_docker_logs(container, since, until):
+        seen[container] = True
+        if container == "eip-mmdpp-worker-graph-1":
+            return ("INFO start\n_parse_pass_response: dropping provenance row "
+                    "missing required fields: {...}\nINFO end\n", 3)
+        if container == "eip-mmdpp-worker-1":
+            return ("INFO catchall worker idle\n", 1)
+        if container == "eip-mmdpp-docling-graph-1":
+            return ("INFO dg\nbuild_provenance: dropping node n1 (label=X) — no "
+                    "resolvable element_uid\n", 2)
+        return ("INFO\n", 1)
+
+    # neutralize every other I/O helper so main() runs purely off our fakes.
+    monkeypatch.setattr(gate, "_docker_logs", fake_docker_logs)
+    monkeypatch.setattr(gate, "adb", lambda sql: [])
+    monkeypatch.setattr(gate, "count", lambda sql: 0)
+    monkeypatch.setattr(gate, "pg", lambda sql: [])
+    monkeypatch.setattr(gate, "resolve_doc", lambda run, fb: (fb, "test"))
+    monkeypatch.setattr(gate, "run_window", lambda run: ("2026-05-31T00:00:00+00:00",
+                                                         "2026-05-31T01:00:00+00:00"))
+    monkeypatch.setattr(gate, "total_entities", lambda: 0)
+    monkeypatch.setattr(gate, "committed_entity_field_evidence", lambda: [])
+    monkeypatch.setattr(gate, "merged_node_count", lambda doc: None)
+    monkeypatch.setattr(gate, "_pg_int_sum", lambda run, col: None)
+    monkeypatch.setattr(gate, "relationship_edge_rows", lambda doc: [])
+    monkeypatch.setattr(gate, "chunk_pages_for", lambda ids: {})
+    monkeypatch.setattr(sys, "argv", ["prog", "--run", "RUN-1", "--doc", "DOC-1"])
+
+    captured = {}
+
+    def fake_print(*a, **k):
+        captured.setdefault("out", []).append(" ".join(str(x) for x in a))
+
+    monkeypatch.setattr("builtins.print", fake_print)
+
+    exited = {}
+
+    def fake_exit(code):
+        exited["code"] = code
+        raise SystemExit(code)
+
+    monkeypatch.setattr(sys, "exit", fake_exit)
+    try:
+        gate.main()
+    except SystemExit:
+        pass
+
+    out = "\n".join(captured.get("out", []))
+    # the worker container(s) AND docling-graph were scanned.
+    assert "eip-mmdpp-worker-graph-1" in seen
+    assert "eip-mmdpp-worker-1" in seen
+    assert "eip-mmdpp-docling-graph-1" in seen
+    # the provenance-drop check saw the drops and FAILED (worker=1 + docling-graph=1).
+    drop_line = [ln for ln in out.splitlines() if "provenance-drop" in ln]
+    assert drop_line, "expected a provenance-drop result line"
+    assert "[FAIL]" in drop_line[0]
+    assert "drops=2" in drop_line[0]
+    assert "worker" in drop_line[0] and "docling-graph" in drop_line[0]
 
 
 def test_committed_field_evidence_has_no_document_id_filter(monkeypatch):

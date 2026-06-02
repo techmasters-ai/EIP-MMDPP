@@ -224,21 +224,49 @@ def evaluate_field_precision(total_rows, null_rows, entities_with_evidence):
     )
 
 
-def compute_relationship_precision(rel_edge_rows):
-    """RELATIONSHIP PRECISION (#5): committed ontology relationship edges carry a
-    non-empty ``source_chunk_ids`` LIST.
+def compute_relationship_precision(rel_edge_rows, accepted_rels=None):
+    """RELATIONSHIP PRECISION (#5): EVERY domain relationship edge of the DOCUMENT
+    under test carries a non-empty ``source_chunk_ids`` LIST.
 
-    ``rel_edge_rows`` is an iterable of dicts, each with a ``source_chunk_ids``
-    key (value may be a list, None, or absent). Returns (status, ok, detail)
-    where status is one of 'PASS' | 'FAIL' | 'NA'. 0 edges -> N/A-not-fail
-    (relationships depend on the system_links pass extracting any; absence is a
-    noted gap, NOT a lineage regression). When edges exist, PASS iff EVERY edge
-    has a non-empty source_chunk_ids list."""
+    DOC-SCOPED, FAIL-CLOSED (reverts the false-green run-scoping). ``rel_edge_rows``
+    is the document's FULL domain-relationship population (every edge whose
+    ``document_ids`` CONTAINS the doc — see relationship_edge_rows), NOT just the
+    handful a single run re-emitted. The prior fix scoped these by
+    ``pipeline_run_id = :run`` and so inspected only the 3 edges THIS run touched,
+    going BLIND to 29/32 (91%) of the document's domain edges that carry NULL
+    ``source_chunk_ids`` — a false PASS while 91% of the document's relationships
+    had no lineage. The document's full relationship population is the goal, so the
+    check counts every domain edge and FAILs when ANY counted edge lacks lineage.
+
+    ``accepted_rels`` (the run's accepted/emitted relationship count from the audit
+    blob / pipeline_pass_outputs.relationships_extracted) closes the vacuous-pass
+    hole: 0 committed domain edges is N/A-not-fail ONLY if the run also accepted 0
+    relationships (nothing to lose). If the run accepted >0 relationships but 0 are
+    committed-with-lineage, that is a real lineage drop and FAILs, NOT N/A.
+
+    Returns (status, ok, detail), status in 'PASS' | 'FAIL' | 'NA'. When edges
+    exist, PASS iff EVERY edge has a non-empty source_chunk_ids list."""
     rows = list(rel_edge_rows)
     if not rows:
+        # 0 committed domain edges for the document. Decide NA-vs-FAIL by the
+        # run's accepted count (the vacuous-pass hole the review flagged):
+        #   accepted == 0 -> nothing accepted, nothing to commit -> honest N/A.
+        #   accepted  > 0 -> the run accepted relationships but none is committed
+        #                    with lineage -> FAIL (not a vacuous N/A pass).
+        #   accepted None -> baseline UNKNOWN; cannot prove the hole, default to
+        #                    the historical N/A-not-fail.
+        if accepted_rels and accepted_rels > 0:
+            return "FAIL", False, (
+                f"0 committed-with-lineage domain relationship edges for the "
+                f"document, but the run ACCEPTED {accepted_rels} relationships — "
+                f"every committed domain edge carries NULL source_chunk_ids "
+                f"(lineage drop, NOT a vacuous N/A pass)"
+            )
+        accepted_note = (" accepted=0 (nothing to lose)" if accepted_rels == 0
+                         else " accepted=UNKNOWN")
         return "NA", True, (
-            "0 ontology relationship edges for the run — N/A (relationships "
-            "depend on the system_links pass extracting any; noted, not a fail)"
+            "0 domain relationship edges for the document — N/A (relationships "
+            f"depend on the system_links pass extracting any){accepted_note}"
         )
     have = 0
     lack = 0
@@ -250,8 +278,10 @@ def compute_relationship_precision(rel_edge_rows):
             lack += 1
     ok = lack == 0
     return ("PASS" if ok else "FAIL"), ok, (
-        f"relationship_edges={len(rows)} with_source_chunk_ids={have} "
-        f"without={lack} (PASS requires non-empty source_chunk_ids on every edge)"
+        f"domain_relationship_edges(doc-scoped)={len(rows)} "
+        f"with_source_chunk_ids={have} without={lack} "
+        f"(PASS requires non-empty source_chunk_ids on EVERY domain edge of the "
+        f"document)"
     )
 
 
@@ -304,26 +334,133 @@ def compute_entity_recall(committed, merged, instance_emissions=None):
     )
 
 
-def compute_relationship_recall(committed_edges, accepted, rejected):
-    """RELATIONSHIP RECALL baseline (#6c): committed edges vs post-validation
-    ACCEPTED rels. Rejected rels are reported SEPARATELY and NOT counted as loss
-    (valid rejection is not recall loss). LOUD fail iff accepted>0 but committed
-    edges==0. accepted unknown (None) -> report only, don't fail on the baseline.
+# Relationship-recall PROPORTIONAL floor: committed lineage-bearing domain edges
+# must be at least this fraction of the run's ACCEPTED relationships, else FAIL.
+# 0.50 is deliberately conservative: a >50% gap between accepted and
+# committed-with-lineage is a real recall regression that the gate must not call
+# "full recall". This is what makes "3 committed of 77 accepted" (~4%) FAIL
+# instead of passing green under the old committed==0-only check.
+RELATIONSHIP_RECALL_FLOOR = 0.50
+
+
+def compute_relationship_recall(committed_edges, accepted, rejected,
+                                floor=RELATIONSHIP_RECALL_FLOOR):
+    """RELATIONSHIP RECALL baseline (#6c): committed lineage-bearing domain edges
+    vs post-validation ACCEPTED rels, with a PROPORTIONAL FLOOR.
+
+    Rejected rels are reported SEPARATELY and NOT counted as loss (valid rejection
+    is not recall loss). The old check only failed on committed==0, so 3 committed
+    of 77 accepted passed GREEN — that is not full recall. The floor closes that
+    hole: PASS requires committed_edges >= floor * accepted (default 50%). A large
+    shortfall FAILs and the detail surfaces committed-vs-accepted prominently.
+
+      * accepted unknown (None) -> denominator missing; at minimum REPORT
+        committed prominently and don't fail on the absent baseline.
+      * accepted == 0           -> nothing accepted -> vacuous PASS (0 >= 0).
+      * accepted  > 0 and committed == 0 -> LOUD fail (commit dropped to zero).
+      * accepted  > 0 and committed < floor*accepted -> FAIL (large shortfall).
     Returns (ok, detail)."""
     rej = rejected or 0
     if accepted is None:
         return True, (
             f"committed_edges={committed_edges} accepted_baseline=UNKNOWN "
-            f"rejected={rej} (reported; rejection is not loss)"
+            f"rejected={rej} (reported; cannot apply the recall floor without the "
+            f"accepted denominator — committed reported prominently)"
         )
     if accepted > 0 and committed_edges == 0:
         return False, (
             f"committed_edges=0 but {accepted} rels accepted post-validation — "
             f"edge commit dropped to zero (rejected={rej}, not counted as loss)"
         )
-    return True, (
-        f"committed_edges={committed_edges} accepted={accepted} rejected={rej} "
-        f"(rejection reported separately, NOT counted as recall loss)"
+    need = floor * accepted
+    pct = (committed_edges / accepted * 100.0) if accepted else 0.0
+    ok = committed_edges >= need
+    verdict = "" if ok else (
+        f" — SHORTFALL: committed {committed_edges} << accepted {accepted} "
+        f"(need >= {need:.0f} = {int(floor * 100)}% of accepted)"
+    )
+    return ok, (
+        f"committed_edges={committed_edges} accepted={accepted} "
+        f"recall={pct:.0f}% rejected={rej} "
+        f"(PASS requires committed >= {int(floor * 100)}% of accepted; "
+        f"rejection reported separately, NOT counted as recall loss){verdict}"
+    )
+
+
+def check_source_pages_shape(rel_edge_rows, chunk_pages):
+    """source_pages SHAPE check: every lineage-bearing domain edge's
+    ``source_pages`` must be a FLAT list of ints AND consistent with the resolved
+    chunks' pages.
+
+    Committed edges were observed with ``source_pages`` malformed as a
+    list-of-lists (e.g. ``[[6, 7]]``) — see the worker-origin note in the gate
+    header — and ALSO inconsistent with the resolved chunks (the two resolved
+    chunks were both page 7, yet source_pages claimed ``[[6, 7]]``). The gate
+    cannot heal this (it originates worker-side), but it MUST DETECT and FAIL on
+    it. ``rel_edge_rows`` are the doc-scoped domain edges (each a dict with
+    ``source_chunk_ids`` + ``source_pages``); ``chunk_pages`` maps chunk_id ->
+    int page for the resolved chunks.
+
+    A row is checked only when it is lineage-bearing (non-empty source_chunk_ids).
+    For each such row:
+      * source_pages must be a list of plain ints (NOT a list-of-lists / nested)
+        -> malformed shape FAILs.
+      * the SET of source_pages must be a SUBSET of the resolved chunks' pages
+        (every source_page must correspond to a resolved chunk's page) -> an
+        extra/foreign page FAILs as inconsistent. (Resolved-chunk pages missing
+        from chunk_pages are tolerated — the gate may not have every page.)
+    No lineage-bearing edges -> N/A (nothing to shape check). Returns (ok, detail)."""
+    rows = [r for r in rel_edge_rows if isinstance(r, dict)]
+    lineage = [
+        r for r in rows
+        if isinstance(r.get("source_chunk_ids"), list) and r.get("source_chunk_ids")
+    ]
+    if not lineage:
+        return True, (
+            "N/A — no lineage-bearing domain edges to shape-check "
+            "(precision/recall carry the verdict)"
+        )
+    malformed = 0
+    inconsistent = 0
+    checked = 0
+    examples = []
+    for r in lineage:
+        sp = r.get("source_pages")
+        if sp is None:
+            # No source_pages on a lineage-bearing edge: cannot prove the page
+            # was chunk-sourced -> count as malformed (missing shape).
+            malformed += 1
+            if len(examples) < 3:
+                examples.append(f"source_pages=None scids={r.get('source_chunk_ids')}")
+            continue
+        checked += 1
+        if not isinstance(sp, list) or any(not isinstance(p, int) or isinstance(p, bool)
+                                           for p in sp):
+            # list-of-lists ([[6,7]]) or non-int members -> malformed shape.
+            malformed += 1
+            if len(examples) < 3:
+                examples.append(f"malformed source_pages={sp!r} (not a flat list of ints)")
+            continue
+        # consistency: source_pages set must be a subset of the resolved chunks'
+        # pages. Only the chunk_ids we have a page for constrain the check.
+        resolved_pages = {
+            chunk_pages[c] for c in r["source_chunk_ids"]
+            if c in chunk_pages and isinstance(chunk_pages.get(c), int)
+        }
+        if resolved_pages and not set(sp).issubset(resolved_pages):
+            inconsistent += 1
+            if len(examples) < 3:
+                examples.append(
+                    f"inconsistent source_pages={sp} not subset of resolved chunk "
+                    f"pages={sorted(resolved_pages)}"
+                )
+    ok = malformed == 0 and inconsistent == 0
+    ex = ("; ".join(examples)) if examples else "none"
+    return ok, (
+        f"lineage_bearing_edges={len(lineage)} checked={checked} "
+        f"malformed_shape={malformed} inconsistent_with_chunk_pages={inconsistent} "
+        f"(PASS requires every source_pages be a FLAT list of ints whose pages are "
+        f"a subset of the resolved chunks' pages) examples: {ex}"
     )
 
 
@@ -522,37 +659,62 @@ def _ontology_edge_types():
     return [n for n in names if n not in STRUCTURAL_EDGE_TYPES]
 
 
-def relationship_edge_rows(run):
-    """RUN-SCOPED DOMAIN relationship edge rows with their source_chunk_ids.
+def relationship_edge_rows(doc):
+    """DOC-SCOPED DOMAIN relationship edge rows — the document's FULL relationship
+    population, with their source_chunk_ids + source_pages.
 
-    RUN-SCOPING IS THE CORRECT DISCRIMINATOR HERE. Domain relationship edges are
-    GLOBAL and accumulate across runs — they are append/upsert and never purged,
-    so 30+ prior graph_only runs on the same document leave their edges in place.
-    Scoping by ``document_ids CONTAINS '<doc>'`` (the old behaviour) therefore
-    counts ALL of those cross-run edges (e.g. 32 when only ~3-20 belong to the
-    current run) and scores STALE pre-fix edges, which carry pipeline_run_id=NULL
-    and an empty source_chunk_ids — producing a false FAIL for the run under test.
-    Only edges scoped to THIS run reflect the current build's lineage.
-
-    After the upstream Fix H, every edge a run upserts carries
-    ``pipeline_run_id = run``, so ``WHERE pipeline_run_id = '<run>'`` captures
-    EXACTLY the edges this run committed. This mirrors the run-scoping the
-    HARD EXTRACTED_FROM check uses for the very same reason (EXTRACTED_FROM is
-    likewise append-only/global, so its count is run-scoped by pipeline_run_id).
+    DOC-SCOPING IS THE HONEST DISCRIMINATOR (reverts the false-green run-scoping).
+    The gate must measure the DOCUMENT's full domain-relationship population and
+    FAIL while lineage is missing — not just the handful a single run re-emitted.
+    The prior fix scoped these by ``pipeline_run_id = :run`` and so inspected only
+    the 3 edges THIS run touched, going BLIND to 29/32 (91%) of the document's
+    domain edges that carry NULL source_chunk_ids (and pipeline_run_id=NULL — they
+    were committed by older runs and were NOT re-emitted by the run under test). A
+    run-scoped query simply does not see those un-re-emitted edges, so it passed
+    GREEN while 91% of the document's relationships had no lineage. Scoping by
+    ``document_ids CONTAINS '<doc>'`` counts EVERY domain relationship of the
+    document (domain edges carry ``document_ids`` as a LIST — see
+    arcadedb_graph.py upsert_relationships_batch), so the precision check FAILs
+    until every one of them is lineage-bearing.
 
     Enumerate ONLY the non-structural (domain) edge types — the structural /
     derive-rules / doc-anchor edge classes are excluded via STRUCTURAL_EDGE_TYPES
     (see _ontology_edge_types) because they legitimately carry no
-    source_chunk_ids — and pull this run's rows from each. Returns a list of
-    dicts {type, source_chunk_ids}."""
+    source_chunk_ids. Returns a list of dicts {type, source_chunk_ids,
+    source_pages}."""
     out = []
     for etype in _ontology_edge_types():
         rows = adb(
-            f"SELECT '{etype}' AS etype, source_chunk_ids AS source_chunk_ids "
-            f"FROM `{etype}` WHERE pipeline_run_id = '{run}'"
+            f"SELECT '{etype}' AS etype, source_chunk_ids AS source_chunk_ids, "
+            f"source_pages AS source_pages "
+            f"FROM `{etype}` WHERE document_ids CONTAINS '{doc}'"
         )
         for r in rows:
-            out.append({"type": etype, "source_chunk_ids": r.get("source_chunk_ids")})
+            out.append({
+                "type": etype,
+                "source_chunk_ids": r.get("source_chunk_ids"),
+                "source_pages": r.get("source_pages"),
+            })
+    return out
+
+
+def chunk_pages_for(chunk_ids):
+    """Return {chunk_id: page_number(int)} for the given resolved chunk ids, read
+    off the TextChunk vertices. Used by the source_pages shape/consistency check to
+    compare each edge's source_pages against its resolved chunks' actual pages.
+    Empty input -> {}. Missing/non-int pages are simply omitted (the shape check
+    tolerates chunks it has no page for)."""
+    ids = [c for c in (chunk_ids or []) if isinstance(c, str) and c]
+    if not ids:
+        return {}
+    in_list = ", ".join(f"'{c}'" for c in sorted(set(ids)))
+    rows = adb(
+        f"SELECT chunk_id, page_number FROM TextChunk WHERE chunk_id IN [{in_list}]")
+    out = {}
+    for r in rows:
+        cid, pg = r.get("chunk_id"), r.get("page_number")
+        if isinstance(cid, str) and isinstance(pg, int) and not isinstance(pg, bool):
+            out[cid] = pg
     return out
 
 
@@ -653,25 +815,35 @@ def main():
                     field_ok, f"doc={doc} {field_detail}"))
 
     # ------------------------------------------------------------------
-    # 5. RELATIONSHIP PRECISION — committed DOMAIN relationship edges carry a
-    #    non-empty source_chunk_ids LIST (resolved in the merge phase from the
-    #    rel's positional self_refs). Counts ONLY domain (LLM / system_links)
-    #    relationship edge types — structural / derive-rules / doc-anchor edges
-    #    (HAS_COMPONENT, HAS_SECTION, HAS_FIGURE, HAS_IMAGE, NEAR_TEXT,
-    #    EXTRACTED_FROM, MENTIONED_IN, …) are excluded via STRUCTURAL_EDGE_TYPES
-    #    because they are built by a different path and legitimately carry no
-    #    source_chunk_ids (the old gate counted them, yielding the spurious 170).
-    #    RUN-SCOPED by pipeline_run_id (NOT doc-scoped): domain relationship edges
-    #    are global and accumulate across runs, so a doc scope counts stale
-    #    cross-run edges (32 vs the ~3-20 this run built) and scores pre-fix
-    #    NULL-run edges — a false FAIL. Mirrors the EXTRACTED_FROM run-scoping (#1).
-    #    N/A-not-fail when there are 0 domain edges for the run: relationships
-    #    depend on the system_links pass extracting any, so an absent edge set is
-    #    a noted gap, NOT a lineage regression.
+    # 5. RELATIONSHIP PRECISION — every DOMAIN relationship edge OF THE DOCUMENT
+    #    carries a non-empty source_chunk_ids LIST (resolved in the merge phase
+    #    from the rel's positional self_refs). Counts ONLY domain (LLM /
+    #    system_links) relationship edge types — structural / derive-rules /
+    #    doc-anchor edges (HAS_COMPONENT, HAS_SECTION, HAS_FIGURE, HAS_IMAGE,
+    #    NEAR_TEXT, EXTRACTED_FROM, MENTIONED_IN, …) are excluded via
+    #    STRUCTURAL_EDGE_TYPES because they are built by a different path and
+    #    legitimately carry no source_chunk_ids (the old gate counted them,
+    #    yielding the spurious 170).
+    #
+    #    DOC-SCOPED by `document_ids CONTAINS '<doc>'` (REVERTS the false-green
+    #    run-scoping). The goal is the DOCUMENT's FULL relationship population:
+    #    every domain relationship of the document must be lineage-bearing. The
+    #    prior fix scoped by pipeline_run_id and so inspected only the 3 edges THIS
+    #    run re-emitted, going BLIND to 29/32 (91%) of the document's domain edges
+    #    that carry NULL source_chunk_ids (committed by older runs, not re-emitted)
+    #    — a false PASS. Doc-scope counts them all so the gate FAILs while lineage
+    #    is missing (even if that means it correctly FAILS until healing happens).
+    #
+    #    NA-vs-FAIL: 0 committed domain edges is N/A ONLY if the run also accepted
+    #    0 relationships; if the run accepted >0 but 0 are committed-with-lineage,
+    #    that is the vacuous-pass hole the review flagged -> FAIL (accepted_rels).
     # ------------------------------------------------------------------
-    rel_rows = relationship_edge_rows(run)
-    rel_status, rel_ok, rel_detail = compute_relationship_precision(rel_rows)
-    rel_label = "RELATIONSHIP precision (committed edges carry non-empty source_chunk_ids)"
+    accepted_rels = _pg_int_sum(run, "relationships_extracted")
+    rejected_rels = _pg_int_sum(run, "relationships_rejected")
+    rel_rows = relationship_edge_rows(doc)
+    rel_status, rel_ok, rel_detail = compute_relationship_precision(rel_rows, accepted_rels)
+    rel_label = ("RELATIONSHIP precision (DOC-scoped: every domain edge of the "
+                 "document carries non-empty source_chunk_ids)")
     if rel_status == "NA":
         rel_label += " [N/A]"
     results.append((rel_label, rel_ok, rel_detail))
@@ -705,11 +877,34 @@ def main():
                     f"resolved={fe_resolved}/{fe_total} field-evidence rows "
                     f"(verdict carried by FIELD precision #4; this is a report row)"))
 
-    accepted_rels = _pg_int_sum(run, "relationships_extracted")
-    rejected_rels = _pg_int_sum(run, "relationships_rejected")
+    # accepted_rels / rejected_rels read above (hoisted for the precision NA guard).
+    # Denominator = the run's ACCEPTED relationship count
+    # (pipeline_pass_outputs.relationships_extracted, e.g. 77 for SA-2). committed
+    # is the DOC-scoped domain edge count; a >50% gap (e.g. 3 of 77) FAILS the
+    # proportional floor instead of passing green under the old committed==0 check.
     rr_ok, rr_detail = compute_relationship_recall(len(rel_rows), accepted_rels, rejected_rels)
-    results.append(("RELATIONSHIP recall (committed edges vs accepted; rejection NOT counted as loss)",
+    results.append(("RELATIONSHIP recall (DOC-scoped committed edges vs accepted, proportional floor; rejection NOT counted as loss)",
                     rr_ok, rr_detail))
+
+    # ------------------------------------------------------------------
+    # 6d. source_pages SHAPE — every lineage-bearing domain edge's source_pages
+    #     must be a FLAT list of ints AND consistent with the resolved chunks'
+    #     pages. Committed edges were observed malformed as a list-of-lists
+    #     ([[6,7]]) AND inconsistent (resolved chunks both page 7 yet source_pages
+    #     claimed [[6,7]]). This malformation originates WORKER-SIDE (the only
+    #     source_pages write is app/workers/pipeline.py: props["source_pages"] =
+    #     list(pages)); the host gate cannot heal it, so it DETECTS and FAILs on
+    #     it here (worker origin reported separately for a worker-side fix).
+    # ------------------------------------------------------------------
+    sp_chunk_ids = []
+    for r in rel_rows:
+        scids = r.get("source_chunk_ids")
+        if isinstance(scids, list):
+            sp_chunk_ids.extend(c for c in scids if isinstance(c, str))
+    sp_chunk_pages = chunk_pages_for(sp_chunk_ids)
+    sp_ok, sp_detail = check_source_pages_shape(rel_rows, sp_chunk_pages)
+    results.append(("source_pages shape (flat list of ints, consistent with resolved chunk pages)",
+                    sp_ok, sp_detail))
 
     # ------------------------------------------------------------------
     # 7a. EXTRACTED_FROM-only, EDGE-ANCHORED, run-scoped trace -> chunk + doc + page.
@@ -741,26 +936,55 @@ def main():
     #     count is always surfaced so a human can tell "0 drops / 4123 lines"
     #     (trustworthy) from "0 drops / 0 lines — NO LOG EVIDENCE" (not).
     # ------------------------------------------------------------------
-    dl, dl_lines = _docker_logs("eip-mmdpp-docling-graph-1", since, until)
-    wl, wl_lines = _docker_logs("eip-mmdpp-worker-graph-1", since, until)
-    drops = dl.count("dropping provenance row missing required fields")
+    # Provenance-DROP warnings come from TWO distinct code paths / containers and
+    # the old check looked for the WRONG string in the WRONG container:
+    #   * WORKER string "dropping provenance row missing required fields" is
+    #     emitted ONLY by the worker (_parse_pass_response in
+    #     app/workers/pipeline.py) — NOT by docling-graph. The old gate greped it
+    #     against docling-graph, so it could NEVER see a real worker drop.
+    #     worker-graph-1 is the dedicated graph worker; worker-1 is the catch-all
+    #     that also consumes the graph queue (MEMORY: catch-all worker trap), so
+    #     BOTH are scanned for the worker string.
+    #   * DOCLING-GRAPH string "build_provenance: dropping node ... no resolvable
+    #     element_uid" is emitted by docling-graph (docker/docling-graph/app/
+    #     provenance.py build_provenance_from_context). Greped against
+    #     docling-graph (its actual emitter).
+    # Drops are the SUM across both paths so the check can actually SEE real drops.
+    WORKER_DROP = "dropping provenance row missing required fields"
+    DG_DROP = "build_provenance: dropping node"  # "... no resolvable element_uid"
+    dg, dg_lines = _docker_logs("eip-mmdpp-docling-graph-1", since, until)
+    wg, wg_lines = _docker_logs("eip-mmdpp-worker-graph-1", since, until)
+    wc, wc_lines = _docker_logs("eip-mmdpp-worker-1", since, until)
+    wl, wl_lines = wg, wg_lines  # LINEAGE_GATE rejections are a worker-graph string
+
+    worker_drops = wg.count(WORKER_DROP) + wc.count(WORKER_DROP)
+    dg_drops = dg.count(DG_DROP)
+    drops = worker_drops + dg_drops
     gate_rejects = wl.count("LINEAGE_GATE: rejected")
 
-    # provenance-drop warnings (docling-graph)
-    dl_no_evidence = window_degraded or dl_lines == 0
+    # provenance-drop warnings (worker string in worker containers + docling-graph
+    # string in docling-graph). FAIL-CLOSED on no log evidence across ALL scanned
+    # containers (every relevant stream empty -> cannot confirm zero drops).
+    drop_lines = dg_lines + wg_lines + wc_lines
+    dl_no_evidence = window_degraded or drop_lines == 0
     if dl_no_evidence:
         reason = ("DEGRADED window (run not found)" if window_degraded
-                  else "in-window log stream EMPTY")
-        results.append(("zero provenance-drop warnings (run window)",
+                  else "in-window log streams EMPTY")
+        results.append(("zero provenance-drop warnings (run window; worker + docling-graph)",
                         False,
-                        f"drops={drops} / scanned {dl_lines} log lines — "
-                        f"NO LOG EVIDENCE, cannot confirm zero warnings "
+                        f"drops={drops} (worker={worker_drops} docling-graph={dg_drops}) "
+                        f"/ scanned {drop_lines} log lines "
+                        f"(docling-graph={dg_lines} worker-graph={wg_lines} worker={wc_lines}) "
+                        f"— NO LOG EVIDENCE, cannot confirm zero warnings "
                         f"({reason}) [{window_desc}]"))
     else:
-        results.append(("zero provenance-drop warnings (run window)",
+        results.append(("zero provenance-drop warnings (run window; worker + docling-graph)",
                         drops == 0,
-                        f"drops={drops} / scanned {dl_lines} log lines in window "
-                        f"[{window_desc}]"))
+                        f"drops={drops} (worker '{WORKER_DROP}'={worker_drops} in "
+                        f"worker-graph+worker; docling-graph '{DG_DROP} … no "
+                        f"resolvable element_uid'={dg_drops}) / scanned {drop_lines} "
+                        f"log lines (docling-graph={dg_lines} worker-graph={wg_lines} "
+                        f"worker={wc_lines}) in window [{window_desc}]"))
 
     # LINEAGE_GATE rejections (worker-graph)
     wl_no_evidence = window_degraded or wl_lines == 0
