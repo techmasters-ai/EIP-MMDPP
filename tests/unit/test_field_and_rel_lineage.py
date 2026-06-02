@@ -170,7 +170,11 @@ def test_field_chunk_id_stays_none_when_nothing_resolves():
 def test_relationship_record_carries_source_chunk_ids():
     """A RelationshipRecord built from a rel whose provenance self_refs
     resolve to chunk C carries record.properties['source_chunk_ids'] == [C]
-    plus source_pages + source_self_refs."""
+    plus source_pages + source_self_refs.
+
+    source_pages is derived from the RESOLVED chunk's page via chunk_page_map
+    (consistent with source_chunk_ids), NOT the raw provenance page_numbers.
+    """
     from_id = _identity("SA-2")
     to_id = LogicalIdentity(
         entity_type="System",
@@ -203,6 +207,7 @@ def test_relationship_record_carries_source_chunk_ids():
         entity_provenance_rows=[],
         element_uid_chunk_map=ELEMENT_UID_CHUNK_MAP,
         identity_map=IDENTITY_MAP,
+        chunk_page_map={"chunkC": 7},
     )
 
     assert len(records) == 1
@@ -210,8 +215,119 @@ def test_relationship_record_carries_source_chunk_ids():
     assert rec.rel_type == "GUIDED_BY"
     assert "chunkC" in rec.properties["source_chunk_ids"]
     assert "chunkUnrelated" not in rec.properties["source_chunk_ids"]
-    assert rec.properties["source_pages"] == [1, 2]
+    # Pages derive from the resolved chunk (chunkC -> page 7), NOT raw prov [1,2].
+    assert rec.properties["source_pages"] == [7]
     assert rec.properties["source_self_refs"] == ["#/texts/3"]
+
+
+def test_relationship_source_pages_from_resolved_chunks_not_nested_or_raw():
+    """REGRESSION (lineage bug): provenance page_numbers is a malformed nested
+    list-of-lists ([[6,7]]) AND inconsistent with the resolved chunk's page.
+    The committed source_pages MUST be the RESOLVED chunk's page as flat ints
+    ([7]) — never the nested raw provenance [[6,7]] and never the raw [6,7]."""
+    edge = MergedEdgeRecord(
+        from_identity=_identity("A"),
+        to_identity=_identity("B"),
+        rel_type="GUIDED_BY",
+        confidence=0.8,
+        pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDED_BY",
+            source_instance_id=None,
+            target_instance_id=None,
+            self_refs=["#/texts/3"],
+            page_numbers=[[6, 7]],  # malformed nested AND inconsistent
+            evidence_ids=["ev1"],
+        )
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=ELEMENT_UID_CHUNK_MAP,
+        identity_map=IDENTITY_MAP,
+        chunk_page_map={"chunkC": 7},  # resolved chunkC is on page 7
+    )
+
+    assert len(records) == 1
+    pages = records[0].properties["source_pages"]
+    # Consistent with the resolved chunk (page 7), flat ints — not nested/raw.
+    assert pages == [7]
+    assert pages != [[6, 7]]
+    assert pages != [6, 7]
+    # No nested members at all.
+    assert all(isinstance(p, int) for p in pages)
+
+
+def test_relationship_source_pages_flattens_provenance_fallback():
+    """FALLBACK: when the resolved chunks yield NO pages (chunk_page_map empty),
+    source_pages falls back to a recursively-FLATTENED, de-duplicated, SORTED
+    version of the raw provenance page_numbers — never a nested list."""
+    edge = MergedEdgeRecord(
+        from_identity=_identity("A"),
+        to_identity=_identity("B"),
+        rel_type="GUIDED_BY",
+        confidence=0.8,
+        pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDED_BY",
+            source_instance_id=None,
+            target_instance_id=None,
+            self_refs=["#/texts/3"],
+            page_numbers=[[6, 7]],  # nested; no chunk pages available
+            evidence_ids=["ev1"],
+        )
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=ELEMENT_UID_CHUNK_MAP,
+        identity_map=IDENTITY_MAP,
+        chunk_page_map={},  # nothing resolvable -> fall back to flattened prov
+    )
+
+    assert len(records) == 1
+    pages = records[0].properties["source_pages"]
+    assert pages == [6, 7]  # flattened, sorted, unique
+    assert all(isinstance(p, int) for p in pages)
+
+
+def test_relationship_source_pages_dedups_and_sorts_flatten_fallback():
+    """The flatten fallback must DE-DUPLICATE and SORT (e.g. [[7,6],[6]] -> [6,7])."""
+    edge = MergedEdgeRecord(
+        from_identity=_identity("A"),
+        to_identity=_identity("B"),
+        rel_type="GUIDED_BY",
+        confidence=0.8,
+        pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDED_BY",
+            source_instance_id=None,
+            target_instance_id=None,
+            self_refs=["#/texts/3"],
+            page_numbers=[[7, 6], [6]],
+            evidence_ids=["ev1"],
+        )
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=ELEMENT_UID_CHUNK_MAP,
+        identity_map=IDENTITY_MAP,
+        chunk_page_map={},
+    )
+    assert records[0].properties["source_pages"] == [6, 7]
 
 
 def test_relationship_record_no_self_refs_omits_props():
@@ -233,6 +349,22 @@ def test_relationship_record_no_self_refs_omits_props():
     )
     assert len(records) == 1
     assert "source_chunk_ids" not in records[0].properties
+
+
+def test_flatten_pages_to_sorted_unique_ints():
+    """The flatten helper recursively flattens, coerces, de-dups, sorts; drops
+    non-coercible members and bools; never raises."""
+    f = pipeline_mod._flatten_pages_to_sorted_unique_ints
+    assert f([[6, 7]]) == [6, 7]
+    assert f([[7, 6], [6]]) == [6, 7]
+    assert f([1, [2, [3, [4]]]]) == [1, 2, 3, 4]
+    assert f([3, 1, 2, 1]) == [1, 2, 3]
+    assert f(["5", 5, "  7 "]) == [5, 7]      # string coercion + dedup
+    assert f(None) == []
+    assert f([]) == []
+    assert f(7) == [7]                          # bare scalar
+    assert f([True, False, 2]) == [2]          # bools dropped (int subclass)
+    assert f(["x", None, [1]]) == [1]          # junk dropped, never raises
 
 
 # ---------------------------------------------------------------------------

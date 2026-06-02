@@ -1497,11 +1497,11 @@ def _import_graph_phase_domain_edges(
     # when db is None (legacy/test callers) — rel records still build, just
     # without source_chunk_ids props (never fabricated).
     if db is not None:
-        identity_map, element_uid_chunk_map, _chunk_page_map = _build_lineage_resolver_maps(
+        identity_map, element_uid_chunk_map, chunk_page_map = _build_lineage_resolver_maps(
             db, document_id,
         )
     else:
-        identity_map, element_uid_chunk_map = {}, {}
+        identity_map, element_uid_chunk_map, chunk_page_map = {}, {}, {}
 
     rel_records = _build_relationship_records(
         edges=merged.edges,
@@ -1511,6 +1511,7 @@ def _import_graph_phase_domain_edges(
         identity_map=identity_map,
         upstream_refs=upstream_refs,
         identity_aliases=identity_aliases,
+        chunk_page_map=chunk_page_map,
     )
 
     # Fix M: lineage-NULL guard tied to the ACTUAL post-resolution OUTCOME, not
@@ -2138,6 +2139,45 @@ def _resolve_field_evidence_chunk_ids(
                         row.page = pg
 
 
+def _flatten_pages_to_sorted_unique_ints(raw) -> list[int]:
+    """Recursively flatten an arbitrarily-nested page-number value into a sorted,
+    de-duplicated list of ints.
+
+    LLM provenance ``page_numbers`` can arrive as a nested list-of-lists (e.g.
+    ``[[6, 7]]``) which, if written straight onto an edge, produces a malformed
+    ``source_pages`` nested list. This collapses any nesting to flat ints,
+    dropping non-int / non-coercible members (never raises). Used as the
+    relationship ``source_pages`` FALLBACK when resolved chunks yield no pages,
+    and reused for the field-evidence page write so both paths stay flat-int.
+    """
+    out: set[int] = set()
+
+    def _walk(val):
+        if isinstance(val, bool):
+            return  # bool is an int subclass; never a page number
+        if isinstance(val, int):
+            out.add(val)
+            return
+        if isinstance(val, str):
+            try:
+                out.add(int(val.strip()))
+            except (ValueError, TypeError):
+                pass
+            return
+        if isinstance(val, (list, tuple, set)):
+            for item in val:
+                _walk(item)
+            return
+        # Any other scalar that coerces cleanly to int (e.g. float page label).
+        try:
+            out.add(int(val))
+        except (ValueError, TypeError):
+            pass
+
+    _walk(raw)
+    return sorted(out)
+
+
 def _build_relationship_records(
     edges,
     relationship_provenance_rows,
@@ -2146,6 +2186,7 @@ def _build_relationship_records(
     identity_map,
     upstream_refs=None,
     identity_aliases=None,
+    chunk_page_map=None,
 ):
     """Build the RelationshipRecord list, attaching per-edge provenance AND
     resolved source-chunk lineage onto ``record.properties``.
@@ -2172,7 +2213,11 @@ def _build_relationship_records(
     coarse batch-context ``self_refs`` is the fallback anchor. Both are carried
     in the bucket; resolution favors evidence_ids. Resolved chunks are written:
       * ``source_chunk_ids``  — resolved concrete chunk ids (precise, no fan-out)
-      * ``source_pages``      — the rel provenance page_numbers
+      * ``source_pages``      — the pages of the RESOLVED source_chunk_ids
+        (sorted unique ints via ``chunk_page_map``), CONSISTENT with the chunk
+        lineage; only when the resolved chunks yield no pages does it fall back
+        to a flattened + de-duped + sorted form of the raw provenance
+        page_numbers (never the malformed nested raw value)
       * ``source_self_refs``  — the anchor refs that resolved
     A rel with no resolvable anchor gets NO source_chunk_ids property (never
     fabricated). The upsert injects record.properties on both create+update
@@ -2188,6 +2233,7 @@ def _build_relationship_records(
 
     upstream_refs = upstream_refs or {}
     identity_aliases = identity_aliases or {}
+    chunk_page_map = chunk_page_map or {}
     id_to_identity = _instance_to_identity_map(entity_provenance_rows)
     _FALLBACK = "__rel_type_fallback__"
 
@@ -2260,9 +2306,13 @@ def _build_relationship_records(
         bucket["self_refs"] = sorted(set(
             bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
         ))
-        bucket["page_numbers"] = sorted(set(
-            bucket["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
-        ))
+        # Flatten defensively: a row's page_numbers can arrive as a nested
+        # list-of-lists (e.g. [[6,7]]) which is both unhashable for set() and
+        # malformed for source_pages. Collapse to flat ints, merge with the
+        # bucket, keep sorted-unique.
+        bucket["page_numbers"] = _flatten_pages_to_sorted_unique_ints(
+            bucket["page_numbers"] + [getattr(row, "page_numbers", None)]
+        )
 
     rel_records = []
     for e in edges:
@@ -2291,9 +2341,27 @@ def _build_relationship_records(
             if resolved_chunks:
                 props["source_chunk_ids"] = resolved_chunks
                 props["source_self_refs"] = list(anchor_refs)
-                pages = rel_prov.get("page_numbers") or []
-                if pages:
-                    props["source_pages"] = list(pages)
+                # source_pages must be CONSISTENT with the resolved chunks:
+                # derive it from the page of each RESOLVED source_chunk_id via
+                # the chunk_id->page map (the same map field/entity lineage uses
+                # for page back-fill), as a sorted list of unique ints. Only
+                # when the resolved chunks yield NO pages do we fall back to a
+                # recursively-flattened + de-duped + sorted version of the raw
+                # provenance page_numbers (which can itself be a nested list).
+                # Never emit a nested list, never the inconsistent raw prov pages.
+                chunk_pages = sorted({
+                    pg
+                    for cid in resolved_chunks
+                    if (pg := chunk_page_map.get(cid)) is not None
+                })
+                if chunk_pages:
+                    props["source_pages"] = chunk_pages
+                else:
+                    flat_pages = _flatten_pages_to_sorted_unique_ints(
+                        rel_prov.get("page_numbers")
+                    )
+                    if flat_pages:
+                        props["source_pages"] = flat_pages
 
         rel_records.append(RelationshipRecord(
             from_type=e.from_identity.entity_type,
