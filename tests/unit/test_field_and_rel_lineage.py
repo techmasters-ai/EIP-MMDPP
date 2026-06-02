@@ -236,6 +236,139 @@ def test_relationship_record_no_self_refs_omits_props():
 
 
 # ---------------------------------------------------------------------------
+# (b2) PER-EDGE precision: from_ref_id / to_ref_id resolved through
+#      upstream_refs → precise (from_identity, rel_type, to_identity) triple,
+#      so two edges of the SAME rel_type each get ONLY their own chunks
+#      (no coarse __rel_type_fallback__ smear). evidence_ids (per-edge granular)
+#      is the precise anchor, favored over the coarse batch self_refs.
+# ---------------------------------------------------------------------------
+# distinct per-edge chunk anchors
+_PE_ELEMENT_UID_CHUNK_MAP = {
+    "p1-1-text-aaaa": ["chunkX"],
+    "p1-2-text-bbbb": ["chunkY"],
+}
+_PE_IDENTITY_MAP = {
+    "#/texts/100": "p1-1-text-aaaa",   # -> chunkX  (edge A->B evidence)
+    "#/texts/200": "p1-2-text-bbbb",   # -> chunkY  (edge A->C evidence)
+}
+
+
+def test_relationship_records_per_edge_from_ref_id_no_smear():
+    """TWO ASSOCIATED_WITH edges A->B and A->C share rel_type but have distinct
+    to_identity. With upstream_refs mapping E_A->A, E_B->B, E_C->C and two
+    provenance rows carrying (from_ref_id, to_ref_id, evidence_ids), each edge
+    must bucket to its OWN precise triple and get ONLY its own chunk — NOT the
+    union (the coarse __rel_type_fallback__ smear bug)."""
+    a, b, c = _identity("A"), _identity("B"), _identity("C")
+    edge_ab = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ac = MergedEdgeRecord(
+        from_identity=a, to_identity=c, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    upstream_refs = {"E_A": a, "E_B": b, "E_C": c}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+            self_refs=["#/texts/100", "#/texts/200"],  # coarse batch union
+        ),
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_C",
+            evidence_ids=["#/texts/200"],   # -> chunkY
+            self_refs=["#/texts/100", "#/texts/200"],  # coarse batch union
+        ),
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ac],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+    )
+
+    by_to = {rec.to_identity["name"]: rec for rec in records}
+    # A->B gets ONLY chunkX (its own evidence_id), NOT chunkY
+    assert by_to["B"].properties["source_chunk_ids"] == ["chunkX"]
+    # A->C gets ONLY chunkY (its own evidence_id), NOT chunkX
+    assert by_to["C"].properties["source_chunk_ids"] == ["chunkY"]
+
+
+def test_relationship_record_refless_row_falls_back_and_warns(caplog):
+    """A provenance row with NO from_ref_id/to_ref_id (and no resolvable
+    instance ids) lands in the __rel_type_fallback__ bucket AND emits a WARN
+    naming the rel_type + why (no ref)."""
+    import logging
+
+    a, b = _identity("A"), _identity("B")
+    edge = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.7, pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+        )
+    ]
+    with caplog.at_level(logging.WARNING):
+        records = pipeline_mod._build_relationship_records(
+            edges=[edge],
+            relationship_provenance_rows=rel_prov,
+            entity_provenance_rows=[],
+            element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+            identity_map=_PE_IDENTITY_MAP,
+            upstream_refs={},
+        )
+    # row still resolves chunks via the fallback bucket
+    assert records[0].properties["source_chunk_ids"] == ["chunkX"]
+    # and a WARN was emitted naming the rel_type
+    assert any(
+        "ASSOCIATED_WITH" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_relationship_record_ref_not_in_upstream_refs_falls_back_and_warns(caplog):
+    """A row carrying ref ids that are NOT present in upstream_refs cannot
+    resolve a precise triple → lands in fallback AND WARNs (ref-not-in-upstream)."""
+    import logging
+
+    a, b = _identity("A"), _identity("B")
+    edge = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.7, pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_MISSING", to_ref_id="E_ALSO_MISSING",
+            evidence_ids=["#/texts/100"],
+        )
+    ]
+    with caplog.at_level(logging.WARNING):
+        records = pipeline_mod._build_relationship_records(
+            edges=[edge],
+            relationship_provenance_rows=rel_prov,
+            entity_provenance_rows=[],
+            element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+            identity_map=_PE_IDENTITY_MAP,
+            upstream_refs={"E_A": a},  # neither ref present
+        )
+    assert records[0].properties["source_chunk_ids"] == ["chunkX"]
+    assert any(
+        "ASSOCIATED_WITH" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+# ---------------------------------------------------------------------------
 # (c) _build_lineage_resolver_maps — exercises the REAL function body
 #     (the select(...) calls + artifact_id -> element_uid -> chunk_id join).
 #     Regression guard: this function previously called select() WITHOUT a

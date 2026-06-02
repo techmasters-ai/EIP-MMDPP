@@ -199,6 +199,76 @@ def test_dto_node_without_rel_type_not_emitted():
     assert rows == []
 
 
+def test_dto_node_relationship_carries_ref_ids_and_precise_evidence():
+    """Per-edge lineage: a DTO relationship node carries from_ref_id / to_ref_id
+    on node['properties'], and a per-edge-granular evidence_ids set on its
+    provenance dict. The emitted row MUST surface BOTH ref ids (so the worker can
+    resolve them through upstream_refs to a precise (from_identity, rel_type,
+    to_identity) triple) AND the precise evidence_ids anchor — NOT just the coarse
+    batch-context self_refs."""
+    merged_graph = {
+        "relationships": [],
+        "nodes": [
+            {
+                "path": "system_links[]",
+                "node_type": "SystemLinkRelationship",
+                "ids": {},
+                "properties": {
+                    "rel_type": "ASSOCIATED_WITH",
+                    "from_ref_id": "E001",
+                    "to_ref_id": "E041",
+                },
+                "provenance": {
+                    # coarse batch-context union (whole batch the node spanned)
+                    "self_refs": ["#/texts/5", "#/texts/6", "#/texts/7"],
+                    "page_numbers": [3],
+                    # per-edge granular precise anchor
+                    "evidence_ids": ["#/texts/6"],
+                },
+            },
+        ],
+    }
+
+    rows = build_relationship_provenance_from_delta_trace(
+        _Ctx(merged_graph), ExtractionRelationshipProvenance
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.relationship_type == "ASSOCIATED_WITH"
+    assert row.from_ref_id == "E001"
+    assert row.to_ref_id == "E041"
+    # the precise per-edge anchor survives
+    assert row.evidence_ids == ["#/texts/6"]
+    # the coarse self_refs are still carried (downstream favors evidence_ids)
+    assert row.self_refs == ["#/texts/5", "#/texts/6", "#/texts/7"]
+
+
+def test_dto_node_ref_ids_default_none_when_absent():
+    """A DTO rel_type node lacking from_ref_id / to_ref_id (or a graph-edge
+    relationship that never had them) emits a row with both ref ids None —
+    the worker then keeps that row in the __rel_type_fallback__ bucket."""
+    merged_graph = {
+        "relationships": [],
+        "nodes": [
+            {
+                "path": "system_links[]",
+                "node_type": "SystemLinkRelationship",
+                "ids": {},
+                "properties": {"rel_type": "VARIANT_OF"},
+                "provenance": {"self_refs": ["#/texts/5"], "page_numbers": [3]},
+            },
+        ],
+    }
+
+    rows = build_relationship_provenance_from_delta_trace(
+        _Ctx(merged_graph), ExtractionRelationshipProvenance
+    )
+    assert len(rows) == 1
+    assert rows[0].from_ref_id is None
+    assert rows[0].to_ref_id is None
+
+
 def test_dto_branch_and_graph_edges_coexist():
     """Defensive: if a single merged graph happened to carry BOTH a graph edge
     AND a DTO rel_type node (not expected for a single pass, but the builder

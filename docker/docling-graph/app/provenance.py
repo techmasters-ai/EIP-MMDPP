@@ -663,11 +663,24 @@ def build_relationship_provenance_from_delta_trace(
         if not isinstance(rel_type, str) or not rel_type:
             continue
         prov = n.get("provenance") if isinstance(n.get("provenance"), dict) else {}
+        # Cross-pass DTO ref ids (e.g. "E001") live on node["properties"]; the
+        # worker resolves them through upstream_refs to a precise
+        # (from_identity, rel_type, to_identity) triple so each edge keys to its
+        # OWN source chunks (was: every edge of a rel_type collapsing into one
+        # __rel_type_fallback__ bucket → identical lineage smear). source/target
+        # instance ids stay None (no resolvable endpoint node in this graph).
+        from_ref_id = props.get("from_ref_id")
+        to_ref_id = props.get("to_ref_id")
+        # evidence_ids is the PER-EDGE granular precise anchor (distinct per
+        # DTO node); self_refs is the coarse batch-context union the node
+        # spanned. Both are carried; downstream resolution favors evidence_ids.
         out.append(
             provenance_cls(
                 relationship_type=rel_type,
                 source_instance_id=None,
                 target_instance_id=None,
+                from_ref_id=from_ref_id if isinstance(from_ref_id, str) else None,
+                to_ref_id=to_ref_id if isinstance(to_ref_id, str) else None,
                 evidence_ids=[
                     eid for eid in (prov.get("evidence_ids") or [])
                     if isinstance(eid, str)

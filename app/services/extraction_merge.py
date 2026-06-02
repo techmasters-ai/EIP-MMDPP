@@ -200,10 +200,20 @@ class ExtractionProvenance:
 
 @dataclass
 class ExtractionRelationshipProvenance:
-    """Worker-side mirror of docling-graph ExtractionRelationshipProvenance."""
+    """Worker-side mirror of docling-graph ExtractionRelationshipProvenance.
+
+    Wire contract: field set MUST stay byte-for-byte equivalent to the
+    docling-graph schemas.ExtractionRelationshipProvenance.
+    """
     relationship_type: str
     source_instance_id: str | None = None
     target_instance_id: str | None = None
+    # Cross-pass DTO ref ids (e.g. "E001"/"E041") carried from a DTO
+    # relationship node's properties.from_ref_id / to_ref_id. Resolved through
+    # PassResult.upstream_refs to a precise (from_identity, rel_type,
+    # to_identity) triple in _build_relationship_records (per-edge lineage).
+    from_ref_id: str | None = None
+    to_ref_id: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
     self_refs: list[str] = field(default_factory=list)
     page_numbers: list[int] = field(default_factory=list)

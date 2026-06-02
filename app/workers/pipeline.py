@@ -1456,6 +1456,7 @@ def _import_graph_phase_domain_edges(
     entity_provenance_rows=None,
     db=None,
     document_id=None,
+    upstream_refs=None,
 ) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
@@ -1501,12 +1502,30 @@ def _import_graph_phase_domain_edges(
     else:
         identity_map, element_uid_chunk_map = {}, {}
 
+    # identity_map-empty GUARD: identity_map (self_ref → element_uid, loaded from
+    # docling_document.json _enrichments) is the bridge that turns the rel
+    # provenance's #/-style self_refs/evidence_ids into element_uids resolvable
+    # to chunks. When it is EMPTY but we DO have rel provenance rows, every
+    # #/-anchor silently fails to bridge → all source_chunk_ids resolve to []
+    # → NULL relationship lineage. This is the MinIO-miss / missing-enrichments
+    # failure mode (_load_identity_map degrades to {} on any miss). Surface it.
+    if (relationship_provenance_rows or []) and not identity_map:
+        logger.warning(
+            "_import_graph_phase_domain_edges: identity_map is EMPTY for "
+            "document_id=%s while %d relationship_provenance row(s) are present "
+            "— every #/-self_ref/evidence_id anchor will fail to bridge, so "
+            "committed relationship edges will carry NULL source_chunk_ids "
+            "(likely a MinIO miss / missing docling_document.json _enrichments).",
+            document_id, len(relationship_provenance_rows or []),
+        )
+
     rel_records = _build_relationship_records(
         edges=merged.edges,
         relationship_provenance_rows=relationship_provenance_rows,
         entity_provenance_rows=entity_provenance_rows,
         element_uid_chunk_map=element_uid_chunk_map,
         identity_map=identity_map,
+        upstream_refs=upstream_refs,
     )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
@@ -1953,23 +1972,40 @@ def _build_relationship_records(
     entity_provenance_rows,
     element_uid_chunk_map,
     identity_map,
+    upstream_refs=None,
 ):
     """Build the RelationshipRecord list, attaching per-edge provenance AND
     resolved source-chunk lineage onto ``record.properties``.
 
-    Pure (no graph mutation, no DB) so it is directly unit-testable. The
-    relationship's positional self_refs (from ``ExtractionRelationshipProvenance``,
-    bucketed by composite key) are resolved to concrete chunk ids via the same
-    ``_resolve_mention_chunks`` resolver, then written as:
+    Pure (no graph mutation, no DB) so it is directly unit-testable. Each rel
+    provenance row is bucketed under a PRECISE ``(from_identity, rel_type,
+    to_identity)`` composite key so two edges of the same rel_type each receive
+    ONLY their own source chunks (no coarse fan-out smear):
+
+      * DTO ``from_ref_id`` / ``to_ref_id`` rows (system_links et al.) resolve
+        BOTH refs through ``upstream_refs`` (ref_id → LogicalIdentity, the SAME
+        map ``_resolve_relationship`` uses) to a precise triple.
+      * Typed-edge passes resolve ``source/target_instance_id`` through
+        ``_instance_to_identity_map`` (unchanged path).
+
+    The precise anchor is each row's per-edge ``evidence_ids`` (granular); the
+    coarse batch-context ``self_refs`` is the fallback anchor. Both are carried
+    in the bucket; resolution favors evidence_ids. Resolved chunks are written:
       * ``source_chunk_ids``  — resolved concrete chunk ids (precise, no fan-out)
       * ``source_pages``      — the rel provenance page_numbers
-      * ``source_self_refs``  — the rel's self_refs
-    A rel with no resolvable self_refs gets NO source_chunk_ids property (never
+      * ``source_self_refs``  — the anchor refs that resolved
+    A rel with no resolvable anchor gets NO source_chunk_ids property (never
     fabricated). The upsert injects record.properties on both create+update
     branches (arcadedb_graph.py), so no SQL change is needed.
+
+    A row that cannot resolve a precise triple (no ref / ref not in
+    ``upstream_refs`` / no resolvable instance ids) lands in the
+    ``__rel_type_fallback__`` bucket keyed on rel_type alone and emits a WARN
+    (previously silent) so the coarse smear is observable.
     """
     from app.services.graph_store import RelationshipRecord
 
+    upstream_refs = upstream_refs or {}
     id_to_identity = _instance_to_identity_map(entity_provenance_rows)
     _FALLBACK = "__rel_type_fallback__"
 
@@ -1978,10 +2014,45 @@ def _build_relationship_records(
         rt = getattr(row, "relationship_type", None)
         if not rt:
             continue
-        src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
-        tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
-        src_identity = id_to_identity.get(src_id_str)
-        tgt_identity = id_to_identity.get(tgt_id_str)
+
+        # PRECISE-triple resolution. Two independent paths feed the SAME
+        # (from_identity, rel_type, to_identity) key:
+        #   (1) DTO ref ids resolved through upstream_refs (system_links et al.)
+        #   (2) per-instance UUIDs resolved through entity provenance.
+        from_ref_id = getattr(row, "from_ref_id", None)
+        to_ref_id = getattr(row, "to_ref_id", None)
+        src_identity = None
+        tgt_identity = None
+        if from_ref_id is not None or to_ref_id is not None:
+            # DTO ref-id row: resolve BOTH refs through upstream_refs.
+            if (
+                from_ref_id in upstream_refs
+                and to_ref_id in upstream_refs
+            ):
+                src_identity = upstream_refs[from_ref_id]
+                tgt_identity = upstream_refs[to_ref_id]
+            else:
+                logger.warning(
+                    "_build_relationship_records: rel_type=%s row carries "
+                    "from_ref_id=%r / to_ref_id=%r not resolvable via "
+                    "upstream_refs (%d refs) — falling back to coarse "
+                    "__rel_type_fallback__ bucket (shared lineage smear).",
+                    rt, from_ref_id, to_ref_id, len(upstream_refs),
+                )
+        else:
+            # Typed-edge row: resolve per-instance UUIDs (unchanged path).
+            src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
+            tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
+            src_identity = id_to_identity.get(src_id_str)
+            tgt_identity = id_to_identity.get(tgt_id_str)
+            if src_identity is None or tgt_identity is None:
+                logger.warning(
+                    "_build_relationship_records: rel_type=%s row has no "
+                    "resolvable endpoint identity (no from_ref_id/to_ref_id; "
+                    "instance ids src=%r tgt=%r) — falling back to coarse "
+                    "__rel_type_fallback__ bucket (shared lineage smear).",
+                    rt, src_id_str or None, tgt_id_str or None,
+                )
 
         if src_identity is not None and tgt_identity is not None:
             key: tuple = (src_identity, rt, tgt_identity)
@@ -2014,13 +2085,22 @@ def _build_relationship_records(
 
         props: dict[str, Any] = {}
         if rel_prov:
+            # Favor the precise per-edge evidence_ids anchor; fall back to the
+            # coarse batch self_refs only when evidence_ids resolve to nothing.
+            rel_evidence_ids = rel_prov.get("evidence_ids") or []
             rel_self_refs = rel_prov.get("self_refs") or []
             resolved_chunks, _ = _resolve_mention_chunks(
-                rel_self_refs, element_uid_chunk_map, identity_map,
+                rel_evidence_ids, element_uid_chunk_map, identity_map,
             )
+            anchor_refs = rel_evidence_ids
+            if not resolved_chunks:
+                resolved_chunks, _ = _resolve_mention_chunks(
+                    rel_self_refs, element_uid_chunk_map, identity_map,
+                )
+                anchor_refs = rel_self_refs
             if resolved_chunks:
                 props["source_chunk_ids"] = resolved_chunks
-                props["source_self_refs"] = list(rel_self_refs)
+                props["source_self_refs"] = list(anchor_refs)
                 pages = rel_prov.get("page_numbers") or []
                 if pages:
                     props["source_pages"] = list(pages)
@@ -4210,10 +4290,18 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         rp_snippet = raw.get("supporting_snippet")
         if rp_snippet is not None and not isinstance(rp_snippet, str):
             rp_snippet = None
+        rp_from_ref_id = raw.get("from_ref_id")
+        if rp_from_ref_id is not None and not isinstance(rp_from_ref_id, str):
+            rp_from_ref_id = None
+        rp_to_ref_id = raw.get("to_ref_id")
+        if rp_to_ref_id is not None and not isinstance(rp_to_ref_id, str):
+            rp_to_ref_id = None
         relationship_provenance_rows.append(ExtractionRelationshipProvenance(
             relationship_type=rel_type,
             source_instance_id=raw.get("source_instance_id"),
             target_instance_id=raw.get("target_instance_id"),
+            from_ref_id=rp_from_ref_id,
+            to_ref_id=rp_to_ref_id,
             evidence_ids=rp_evidence_ids,
             self_refs=rp_self_refs,
             page_numbers=rp_page_numbers,
@@ -8354,11 +8442,34 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             for pr in rehydrated.values()
             for row in (getattr(pr, "provenance", None) or [])
         ]
+        # Merge per-pass PassResult.upstream_refs (ref_id → LogicalIdentity,
+        # already rehydrated by _rehydrate_pass_result for the
+        # document_plus_entity_refs passes via the SAME helper the live request
+        # path uses) into one dict. This lets _build_relationship_records resolve
+        # each DTO rel provenance row's from_ref_id/to_ref_id through the SAME
+        # mapping merge_and_resolve used, keying each edge to its OWN precise
+        # (from_identity, rel_type, to_identity) triple instead of the coarse
+        # __rel_type_fallback__ smear. Distinct passes assign disjoint ref_ids
+        # within a run, so this union is collision-free in practice; a conflict
+        # (same ref_id → different identity) is logged but does not raise.
+        merged_upstream_refs: dict = {}
+        for pr in rehydrated.values():
+            for ref_id, identity in (getattr(pr, "upstream_refs", None) or {}).items():
+                existing = merged_upstream_refs.get(ref_id)
+                if existing is not None and existing != identity:
+                    logger.warning(
+                        "derive_ontology_graph_merge: upstream_refs ref_id=%r "
+                        "maps to conflicting identities across passes "
+                        "(%r vs %r); keeping first.", ref_id, existing, identity,
+                    )
+                    continue
+                merged_upstream_refs[ref_id] = identity
         _import_graph_phase_domain_edges(
             merged, ontology, tracker, provenance_envelope,
             relationship_provenance_rows=all_rel_provenance,
             entity_provenance_rows=all_entity_provenance,
             db=db, document_id=document_id,
+            upstream_refs=merged_upstream_refs,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(

@@ -451,6 +451,14 @@ class ExtractionRelationshipProvenance(BaseModel):
     relationship_type: str
     source_instance_id: Optional[str] = None
     target_instance_id: Optional[str] = None
+    # Cross-pass DTO ref ids (e.g. "E001"/"E041") carried from a DTO
+    # relationship node's properties.from_ref_id / to_ref_id. The worker
+    # resolves these through PassResult.upstream_refs to a precise
+    # (from_identity, rel_type, to_identity) triple so each edge keys to its
+    # OWN source chunks instead of the coarse __rel_type_fallback__ bucket.
+    # Distinct from source/target_instance_id (per-instance UUIDs) — additive.
+    from_ref_id: Optional[str] = None
+    to_ref_id: Optional[str] = None
     evidence_ids: list[str] = Field(default_factory=list)
     self_refs: list[str] = Field(default_factory=list)
     page_numbers: list[int] = Field(default_factory=list)
