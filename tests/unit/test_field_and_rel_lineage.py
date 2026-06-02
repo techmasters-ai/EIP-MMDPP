@@ -504,6 +504,11 @@ def test_build_lineage_resolver_maps_joins_artifact_to_chunk(monkeypatch):
     monkeypatch.setattr(
         pipeline_mod, "_load_identity_map", lambda doc_id: {"#/texts/3": "euid-A"}
     )
+    # Hermetic: no-op the ArcadeDB self_ref bridge so the augmenter can't fall
+    # through to a live get_graph_store() degrade path.
+    monkeypatch.setattr(
+        pipeline_mod, "_load_self_ref_chunk_map_from_arcadedb", lambda doc_id: {}
+    )
 
     elements = [
         _Elem(artifact_id="art-1", element_uid="euid-A", element_order=0),
@@ -593,6 +598,11 @@ def test_build_element_uid_chunk_map_matches_lineage_resolver(monkeypatch):
     _build_lineage_resolver_maps returns from the identical row sets — the
     whole point of the refactor (no divergence between the two call sites)."""
     monkeypatch.setattr(pipeline_mod, "_load_identity_map", lambda doc_id: {})
+    # Hermetic: no-op the ArcadeDB self_ref bridge so the resolver path equals
+    # the direct artifact_id-join map (no live get_graph_store() degrade).
+    monkeypatch.setattr(
+        pipeline_mod, "_load_self_ref_chunk_map_from_arcadedb", lambda doc_id: {}
+    )
 
     elements = [
         _Elem(artifact_id="art-1", element_uid="euid-A", element_order=0),
@@ -620,6 +630,10 @@ def test_build_lineage_resolver_maps_empty_db_no_nameerror(monkeypatch):
     """Smoke guard: empty result sets must yield three empty-ish maps WITHOUT
     raising NameError (the minimal repro of the missing-import bug)."""
     monkeypatch.setattr(pipeline_mod, "_load_identity_map", lambda doc_id: {})
+    # Hermetic: no-op the ArcadeDB self_ref bridge (no live get_graph_store()).
+    monkeypatch.setattr(
+        pipeline_mod, "_load_self_ref_chunk_map_from_arcadedb", lambda doc_id: {}
+    )
     db = _StubDB([[], [], []])
 
     identity_map, element_uid_chunk_map, chunk_page_map = (

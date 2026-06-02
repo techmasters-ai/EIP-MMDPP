@@ -1959,6 +1959,31 @@ def _seed_self_ref_chunk_map(element_uid_chunk_map, self_ref_chunk_map) -> None:
         element_uid_chunk_map.setdefault(ref, list(chunk_ids))
 
 
+def _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id) -> None:
+    """Seed RAW self_ref keys (``#/texts/N``, ``#/tables/N``) into
+    ``element_uid_chunk_map`` IN PLACE from the ArcadeDB ``TextChunk.self_refs``
+    bridge.
+
+    Native HybridChunker leaves prose/table chunk ``artifact_id=None``, so the
+    ``_build_element_uid_chunk_map`` artifact-id join reaches ONLY image-derived
+    chunks; the ArcadeDB ``TextChunk`` vertices carry ``self_refs``, the
+    authoritative prose/table bridge. Seeding those here lets
+    ``_resolve_mention_chunks`` resolve prose/table field+entity refs on its
+    direct ``.get(ref)`` hop. Degrades to artifact-only on any DB miss.
+
+    Shared by BOTH seed call sites (the merge phase
+    ``_build_lineage_resolver_maps`` and the structure phase
+    ``derive_structure_links``) so the two can't diverge, mirroring the
+    ``_build_element_uid_chunk_map`` extraction precedent. The pure
+    ``_build_self_ref_chunk_map`` builder and its ``_seed_self_ref_chunk_map`` /
+    ``_load_self_ref_chunk_map_from_arcadedb`` halves stay independently testable.
+    """
+    _seed_self_ref_chunk_map(
+        element_uid_chunk_map,
+        _load_self_ref_chunk_map_from_arcadedb(document_id),
+    )
+
+
 def _build_lineage_resolver_maps(db, document_id):
     """Build the (identity_map, element_uid_chunk_map, chunk_page_map) needed
     to resolve self_refs -> concrete chunk ids IN THE MERGE PHASE.
@@ -1998,15 +2023,8 @@ def _build_lineage_resolver_maps(db, document_id):
         elements, text_chunks, image_chunks,
     )
 
-    # Seed the RAW self_ref keys (#/texts/N, #/tables/N) from the ArcadeDB
-    # TextChunk.self_refs bridge. Native HybridChunker prose/table chunks have
-    # artifact_id=None, so the join above reaches ONLY image-derived chunks;
-    # this lets _resolve_mention_chunks resolve prose/table field+entity refs
-    # on its direct .get(ref) hop. Degrades to artifact-only on any DB miss.
-    _seed_self_ref_chunk_map(
-        element_uid_chunk_map,
-        _load_self_ref_chunk_map_from_arcadedb(document_id),
-    )
+    # Seed prose/table self_refs from the ArcadeDB bridge (see augmenter).
+    _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id)
 
     chunk_page_map: dict[str, int] = {}
     for tc in text_chunks:
@@ -9853,17 +9871,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             elements, text_chunks, image_chunks,
         )
 
-        # PARITY with the merge phase (_build_lineage_resolver_maps): seed the
-        # RAW self_ref keys (#/texts/N, #/tables/N) from the ArcadeDB
-        # TextChunk.self_refs bridge so entity EXTRACTED_FROM lineage resolves
-        # prose/table refs to their real chunk too. Native HybridChunker leaves
-        # prose/table chunks artifact_id=None, so the artifact_id join above
-        # reaches ONLY image-derived chunks — the same latent imprecision the
-        # merge phase had. Degrades to artifact-only on any DB miss.
-        _seed_self_ref_chunk_map(
-            element_uid_chunk_map,
-            _load_self_ref_chunk_map_from_arcadedb(document_id),
-        )
+        # PARITY with the merge phase: seed prose/table self_refs from the
+        # ArcadeDB bridge so entity EXTRACTED_FROM lineage resolves them too.
+        _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id)
 
         # Try graph_json mentions path first (new pipeline)
         from app.models.ingest import DocumentGraphExtraction
