@@ -834,3 +834,304 @@ def test_build_lineage_resolver_maps_seeds_self_ref_keys(monkeypatch):
     # RAW self_ref keys seeded from ArcadeDB.
     assert element_uid_chunk_map["#/texts/99"] == ["chunk-text-99"]
     assert element_uid_chunk_map["#/tables/1"] == ["chunk-tbl-30", "chunk-tbl-31"]
+
+
+# ---------------------------------------------------------------------------
+# Fix K — the field SCALAR chunk_id must use the PRECISE per-field anchor
+#   (the row's own element_uid / evidence_id), NOT the COARSE batch self_refs
+#   union. The coarse union spans the whole batch (~18 refs); resolving it and
+#   taking resolved[0] picks an ARBITRARY chunk that only looks right on SA-2
+#   (one chunk per batch). The precise anchor is the row's element_uid.
+# ---------------------------------------------------------------------------
+def test_field_scalar_uses_precise_element_uid_not_coarse_union():
+    """A field row whose precise element_uid (#/texts/41 -> chunkA) is the TRUE
+    source, but whose COARSE batch self_refs union spans chunkA AND chunkB (with
+    chunkB FIRST in the union), must resolve its scalar chunk_id to chunkA — the
+    precise anchor — NOT chunkB (the arbitrary union resolved[0]).
+
+    Today this FAILS: _resolve_field_evidence_chunk_ids resolves the coarse
+    self_refs union and takes resolved[0] == chunkB."""
+    seeded_map = {
+        "#/texts/41": ["chunkA"],   # the field's OWN precise anchor
+        "#/texts/42": ["chunkB"],   # another row in the same coarse batch
+    }
+    row = FieldEvidenceRow(
+        chunk_id=None,
+        snippet="range is 43 km",
+        element_uid="#/texts/41",          # PRECISE per-field anchor -> chunkA
+        value="43 km",
+        # COARSE batch union spanning BOTH chunks, with chunkB's ref FIRST so the
+        # union's resolved[0] would be chunkB (the arbitrary, wrong pick).
+        self_refs=["#/texts/42", "#/texts/41"],
+    )
+    entity = MergedEntityRecord(
+        identity=_identity("SA-2"),
+        properties={"name": "SA-2"},
+        confidence=0.9,
+        pass_origins={"p"},
+        display_label="SA-2",
+        provenance=[
+            ExtractionProvenance(
+                instance_id="i1",
+                ontology_name="System",
+                identity_values={"name": "SA-2"},
+                element_uid="#/texts/41",
+                self_refs=["#/texts/42", "#/texts/41"],
+            )
+        ],
+        field_evidence={"range": [row]},
+    )
+
+    pipeline_mod._resolve_field_evidence_chunk_ids(
+        entity, seeded_map, {}, chunk_page_map={"chunkA": 12, "chunkB": 99},
+    )
+
+    # SCALAR is the PRECISE anchor's chunk, not the coarse union's first entry.
+    assert row.chunk_id == "chunkA"
+    assert row.chunk_id != "chunkB"
+    # page back-fills from the PRECISE chunk (12), not the coarse one (99).
+    assert row.page == 12
+
+
+def test_field_scalar_uses_evidence_id_when_no_element_uid():
+    """When the row carries no element_uid but DOES carry a precise evidence_id,
+    the scalar resolves from evidence_id first, not the coarse self_refs union."""
+    seeded_map = {
+        "#/texts/41": ["chunkA"],
+        "#/texts/42": ["chunkB"],
+    }
+    row = FieldEvidenceRow(
+        chunk_id=None,
+        snippet="x",
+        element_uid=None,
+        value="v",
+        evidence_id="#/texts/41",          # precise anchor -> chunkA
+        self_refs=["#/texts/42", "#/texts/41"],  # coarse union, chunkB first
+    )
+    entity = MergedEntityRecord(
+        identity=_identity("SA-2"),
+        properties={"name": "SA-2"},
+        confidence=0.9,
+        pass_origins={"p"},
+        display_label="SA-2",
+        provenance=[],
+        field_evidence={"range": [row]},
+    )
+    pipeline_mod._resolve_field_evidence_chunk_ids(
+        entity, seeded_map, {}, chunk_page_map={},
+    )
+    assert row.chunk_id == "chunkA"
+
+
+def test_field_scalar_falls_back_to_coarse_union_when_precise_anchor_unresolved():
+    """When the precise anchor (element_uid) does NOT resolve, the scalar falls
+    back to the coarse self_refs union (don't lose recall) before going to the
+    entity chunk-set. The first resolvable union ref is used."""
+    seeded_map = {
+        # element_uid #/texts/41 is NOT in the map -> precise anchor unresolved
+        "#/texts/42": ["chunkB"],
+    }
+    row = FieldEvidenceRow(
+        chunk_id=None,
+        snippet="x",
+        element_uid="#/texts/41",          # unresolved precise anchor
+        value="v",
+        self_refs=["#/texts/42"],          # coarse union DOES resolve -> chunkB
+    )
+    entity = MergedEntityRecord(
+        identity=_identity("SA-2"),
+        properties={"name": "SA-2"},
+        confidence=0.9,
+        pass_origins={"p"},
+        display_label="SA-2",
+        provenance=[],
+        field_evidence={"range": [row]},
+    )
+    pipeline_mod._resolve_field_evidence_chunk_ids(
+        entity, seeded_map, {}, chunk_page_map={},
+    )
+    assert row.chunk_id == "chunkB"
+
+
+# ---------------------------------------------------------------------------
+# Fix L — chunk_index determinism. Two halves:
+#   (a) the TextChunk vertex writer must PERSIST chunk_index into the vertex
+#       properties (today it's NULL on every vertex, so the chunk_index sort is
+#       a no-op on existing data);
+#   (b) _build_self_ref_chunk_map must be DETERMINISTIC even when chunk_index is
+#       NULL — secondary sort on chunk_id — so multi-chunk resolution is
+#       reproducible on existing run-* vertices that lack chunk_index.
+# ---------------------------------------------------------------------------
+def test_build_self_ref_chunk_map_deterministic_when_chunk_index_null():
+    """When chunk_index is None for every row (the live state of existing
+    ArcadeDB vertices), the multi-chunk list must STILL be deterministic —
+    ordered by chunk_id as the tiebreak — not arbitrary input order."""
+    rows = [
+        # chunk_index None for both; input order is reversed-by-chunk_id.
+        ("uuid-zzz", ["#/tables/1"], None),
+        ("uuid-aaa", ["#/tables/1"], None),
+        ("uuid-mmm", ["#/tables/1"], None),
+    ]
+    result = pipeline_mod._build_self_ref_chunk_map(rows)
+    # Deterministic: sorted by chunk_id when chunk_index is uniformly None.
+    assert result["#/tables/1"] == ["uuid-aaa", "uuid-mmm", "uuid-zzz"]
+
+
+def test_build_self_ref_chunk_map_chunk_index_wins_chunk_id_tiebreaks():
+    """chunk_index is the PRIMARY key; chunk_id only breaks ties within the same
+    chunk_index. A row with a real chunk_index sorts ahead of NULL-index rows."""
+    rows = [
+        ("uuid-b", ["#/tables/1"], 5),
+        ("uuid-a", ["#/tables/1"], 5),   # same index -> chunk_id tiebreak: a<b
+        ("uuid-z", ["#/tables/1"], 2),   # lower index -> first
+    ]
+    result = pipeline_mod._build_self_ref_chunk_map(rows)
+    assert result["#/tables/1"] == ["uuid-z", "uuid-a", "uuid-b"]
+
+
+def test_native_text_chunk_record_props_include_chunk_index():
+    """The native-chunking TextChunkRecord properties built at the vertex writer
+    must include chunk_index, so the persisted vertex has a non-NULL chunk_index
+    (the precondition for positional-correct multi-chunk-table selection on
+    future ingests). Unit-tests the record/props construction in isolation."""
+    from app.services.graph_store import TextChunkRecord
+
+    # Mirror the writer's properties dict construction (Fix L).
+    meta = {
+        "chunk_id": "cid-1",
+        "chunk_index": 7,
+        "modality": "text",
+        "page_number": 3,
+        "page_numbers": [3],
+        "self_refs": ["#/texts/5"],
+        "evidence_ids": ["#/texts/5"],
+        "section_path": "S",
+        "headings": [],
+        "chunk_metadata": None,
+    }
+    rec = pipeline_mod._build_native_text_chunk_record(
+        meta=meta, text="body", document_id="doc-1",
+        doc_classification="UNCLASSIFIED", embedding=[0.0],
+    )
+    assert isinstance(rec, TextChunkRecord)
+    assert rec.properties["chunk_index"] == 7
+    assert rec.properties["self_refs"] == ["#/texts/5"]
+
+
+# ---------------------------------------------------------------------------
+# Fix M — the identity_map-empty guard must tie to the ACTUAL post-resolution
+#   outcome, not merely an empty identity_map. After Fix F seeds #/texts/N keys
+#   directly into element_uid_chunk_map, prose/table refs resolve with an EMPTY
+#   identity_map — so an empty-identity_map alarm is a false positive. The WARN
+#   must fire only when records were actually committed with EMPTY
+#   source_chunk_ids despite having non-empty provenance.
+# ---------------------------------------------------------------------------
+def test_lineage_null_guard_silent_when_records_resolve_via_seeded_map(caplog):
+    """Empty identity_map but the Fix-F-seeded element_uid_chunk_map DOES resolve
+    the rel anchors -> records carry source_chunk_ids -> NO misleading WARN."""
+    import logging
+
+    from app.services.graph_store import RelationshipRecord
+
+    a = _identity("A")
+    b = LogicalIdentity(
+        entity_type="System", identity_field_names=("name",),
+        identity_tuple=("B",), scope="global", document_id=None,
+    )
+    edge = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="GUIDED_BY",
+        confidence=0.8, pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDED_BY",
+            self_refs=["#/texts/3"],
+            evidence_ids=["#/texts/3"],
+        )
+    ]
+    # Fix-F-seeded map: #/texts/3 resolves directly with EMPTY identity_map.
+    seeded_map = {"#/texts/3": ["chunkC"]}
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=seeded_map,
+        identity_map={},
+    )
+    assert records[0].properties["source_chunk_ids"] == ["chunkC"]
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod._warn_on_null_relationship_lineage(
+            records, rel_prov, document_id="doc-1",
+        )
+    # NO misleading "lineage will be NULL" alarm — records resolved fine.
+    assert not any(
+        "NULL source_chunk_ids" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_lineage_null_guard_fires_when_records_commit_empty_chunk_ids(caplog):
+    """When rel provenance rows are present but the committed records carry NO
+    source_chunk_ids (genuine lineage-NULL outcome), the guard MUST fire loudly."""
+    import logging
+
+    a = _identity("A")
+    b = LogicalIdentity(
+        entity_type="System", identity_field_names=("name",),
+        identity_tuple=("B",), scope="global", document_id=None,
+    )
+    edge = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="GUIDED_BY",
+        confidence=0.8, pass_origins={"p"},
+    )
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDED_BY",
+            self_refs=["#/texts/404"],   # unresolvable -> empty source_chunk_ids
+            evidence_ids=["#/texts/404"],
+        )
+    ]
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map={},   # nothing resolves
+        identity_map={},
+    )
+    assert "source_chunk_ids" not in records[0].properties
+
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod._warn_on_null_relationship_lineage(
+            records, rel_prov, document_id="doc-1",
+        )
+    assert any(
+        "NULL source_chunk_ids" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_lineage_null_guard_silent_when_no_provenance_rows(caplog):
+    """No provenance rows at all -> no edges expected to carry lineage -> silent
+    (an edge with no provenance is not a lineage failure)."""
+    import logging
+
+    a, b = _identity("A"), _identity("B")
+    edge = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="NEAR",
+        confidence=0.5, pass_origins={"p"},
+    )
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge],
+        relationship_provenance_rows=[],
+        entity_provenance_rows=[],
+        element_uid_chunk_map={},
+        identity_map={},
+    )
+    with caplog.at_level(logging.WARNING):
+        pipeline_mod._warn_on_null_relationship_lineage(
+            records, [], document_id="doc-1",
+        )
+    assert not any(
+        "NULL source_chunk_ids" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]

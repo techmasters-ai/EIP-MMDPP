@@ -1503,23 +1503,6 @@ def _import_graph_phase_domain_edges(
     else:
         identity_map, element_uid_chunk_map = {}, {}
 
-    # identity_map-empty GUARD: identity_map (self_ref → element_uid, loaded from
-    # docling_document.json _enrichments) is the bridge that turns the rel
-    # provenance's #/-style self_refs/evidence_ids into element_uids resolvable
-    # to chunks. When it is EMPTY but we DO have rel provenance rows, every
-    # #/-anchor silently fails to bridge → all source_chunk_ids resolve to []
-    # → NULL relationship lineage. This is the MinIO-miss / missing-enrichments
-    # failure mode (_load_identity_map degrades to {} on any miss). Surface it.
-    if (relationship_provenance_rows or []) and not identity_map:
-        logger.warning(
-            "_import_graph_phase_domain_edges: identity_map is EMPTY for "
-            "document_id=%s while %d relationship_provenance row(s) are present "
-            "— every #/-self_ref/evidence_id anchor will fail to bridge, so "
-            "committed relationship edges will carry NULL source_chunk_ids "
-            "(likely a MinIO miss / missing docling_document.json _enrichments).",
-            document_id, len(relationship_provenance_rows or []),
-        )
-
     rel_records = _build_relationship_records(
         edges=merged.edges,
         relationship_provenance_rows=relationship_provenance_rows,
@@ -1528,6 +1511,16 @@ def _import_graph_phase_domain_edges(
         identity_map=identity_map,
         upstream_refs=upstream_refs,
         identity_aliases=identity_aliases,
+    )
+
+    # Fix M: lineage-NULL guard tied to the ACTUAL post-resolution OUTCOME, not
+    # to an empty identity_map. After Fix F seeds #/texts/N / #/tables/N keys
+    # directly into element_uid_chunk_map, prose/table refs resolve on the DIRECT
+    # .get(ref) hop with an EMPTY identity_map — so "identity_map is empty" is no
+    # longer a reliable NULL-lineage signal. Warn only when records were actually
+    # built with EMPTY source_chunk_ids despite non-empty provenance rows.
+    _warn_on_null_relationship_lineage(
+        rel_records, relationship_provenance_rows, document_id,
     )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
@@ -1862,10 +1855,20 @@ def _build_self_ref_chunk_map(rows) -> dict[str, list[str]]:
     For each chunk, every Docling self_ref in its ``self_refs`` list is keyed to
     that chunk's id. When a single self_ref spans MULTIPLE chunks (e.g. a table
     `#/tables/1` rendered across two embedding chunks), the resulting list is
-    ordered by ``chunk_index`` ascending — so the scalar ``resolved[0]``
-    consumers (``_resolve_field_evidence_chunk_ids``) pick the LOWEST-index
-    chunk deterministically, while the union consumers (relationship /
-    entity ``source_chunk_ids``) still see every chunk.
+    ordered by ``(chunk_index, chunk_id)`` ascending — so the scalar
+    ``resolved[0]`` consumers (``_resolve_field_evidence_chunk_ids``) pick the
+    LOWEST-index chunk deterministically, while the union consumers
+    (relationship / entity ``source_chunk_ids``) still see every chunk.
+
+    Fix L: ``chunk_id`` is the SECONDARY sort key. Existing ArcadeDB TextChunk
+    vertices were written WITHOUT a persisted ``chunk_index`` (NULL), so the
+    chunk_index sort alone is a no-op on them and multi-chunk resolution was
+    non-deterministic. The ``chunk_id`` tiebreak guarantees REPRODUCIBLE
+    ordering even when chunk_index is uniformly NULL. (Positional-correct
+    multi-chunk-table selection — i.e. the table's FIRST chunk being the lowest
+    by reading order — additionally requires a non-NULL chunk_index, which the
+    writer now persists; pre-existing vertices need a re-ingest for that, but the
+    chunk_id tiebreak keeps the interim deterministic.)
 
     Pure (no DB): the thin DB wrapper ``_load_self_ref_chunk_map_from_arcadedb``
     fetches the rows and delegates here. ``self_refs`` may be None/empty — those
@@ -1892,10 +1895,13 @@ def _build_self_ref_chunk_map(rows) -> dict[str, list[str]]:
 
     self_ref_chunk_map: dict[str, list[str]] = {}
     for ref, entries in by_self_ref.items():
-        # Sort by chunk_index ascending, dedup chunk ids preserving that order.
+        # Sort by (chunk_index, chunk_id) ascending — chunk_index primary,
+        # chunk_id the deterministic tiebreak (Fix L: chunk_index is NULL→0 on
+        # existing vertices, so chunk_id makes multi-chunk order reproducible).
+        # Dedup chunk ids preserving that order.
         seen: set[str] = set()
         ordered: list[str] = []
-        for _idx, cid in sorted(entries, key=lambda e: e[0]):
+        for _idx, cid in sorted(entries, key=lambda e: (e[0], e[1])):
             if cid not in seen:
                 seen.add(cid)
                 ordered.append(cid)
@@ -1926,7 +1932,11 @@ def _load_self_ref_chunk_map_from_arcadedb(document_id) -> dict[str, list[str]]:
         rows = graph_store._client.query_sync(
             graph_store._database, "sql",
             "SELECT chunk_id, self_refs, chunk_index FROM TextChunk "
-            "WHERE document_id = :doc_id",
+            "WHERE document_id = :doc_id "
+            # Fix L: deterministic order — chunk_index primary, chunk_id tiebreak
+            # (chunk_index is NULL on pre-Fix-L vertices, so chunk_id keeps the
+            # multi-chunk self_ref resolution reproducible even before re-ingest).
+            "ORDER BY chunk_index, chunk_id",
             params={"doc_id": str(document_id)},
         )
     except Exception as exc:  # pragma: no cover - defensive, integration-tested
@@ -2061,12 +2071,26 @@ def _resolve_field_evidence_chunk_ids(
     """Resolve a RESOLVED chunk_id onto every ``_field_evidence`` row of an
     entity (mutates rows in place).
 
-    Per spec / Task 5 acceptance:
-      * a field whose own ``self_refs`` resolve to chunk C gets chunk_id == C;
-      * a field whose own self_refs DON'T resolve falls back to the ENTITY's
-        resolved chunk-set (never None when the entity has resolvable lineage);
-      * never all-document, never fabricated — if neither resolves, chunk_id
+    Per spec / Task 5 acceptance (Fix K — precise scalar anchor):
+      * the SCALAR ``chunk_id`` is the row's OWN PRECISE per-field anchor — its
+        ``element_uid`` if present, else its scalar ``evidence_id`` — resolved
+        through the same ``_resolve_mention_chunks`` resolver. The coarse batch
+        ``self_refs`` union (which spans the WHOLE extraction batch, ~18 refs)
+        is NOT used for the scalar; resolving the union and taking ``[0]`` picks
+        an arbitrary chunk that only happens to look right when the chunker
+        collapsed each batch into one chunk (SA-2). The precise anchor pins the
+        scalar to the field's exact source chunk reproducibly.
+      * only when the precise anchor resolves to NOTHING does the scalar fall
+        back to the coarse ``self_refs`` union (preserve recall — don't drop a
+        legitimately multi-chunk field), then to the ENTITY's resolved
+        chunk-set (never None when the entity has resolvable lineage);
+      * never all-document, never fabricated — if nothing resolves, chunk_id
         stays None.
+
+    NOTE: this fixes only the SCALAR. The full coarse ``self_refs`` union is
+    untouched on the row, so any consumer that legitimately wants the multi-chunk
+    LIST still has it; only the single ``chunk_id`` is pinned to the precise
+    anchor.
 
     Also back-fills ``page`` from chunk_page_map when the row has no page and a
     chunk resolved.
@@ -2082,14 +2106,28 @@ def _resolve_field_evidence_chunk_ids(
 
     for rows in field_evidence.values():
         for row in rows:
-            self_refs = getattr(row, "self_refs", None) or []
-            if not self_refs and getattr(row, "element_uid", None):
-                self_refs = [row.element_uid]
-            resolved, _ = _resolve_mention_chunks(
-                self_refs, element_uid_chunk_map, identity_map,
+            # PRECISE per-field anchor first: the row's own element_uid, else
+            # its scalar evidence_id. This is the field's EXACT source ref.
+            precise_anchor = (
+                getattr(row, "element_uid", None)
+                or getattr(row, "evidence_id", None)
             )
+            resolved: list[str] = []
+            if precise_anchor:
+                resolved, _ = _resolve_mention_chunks(
+                    [precise_anchor], element_uid_chunk_map, identity_map,
+                )
             if not resolved:
-                # Fall back to the entity's resolved chunk-set (precise, never
+                # Precise anchor didn't resolve — fall back to the coarse batch
+                # self_refs union (preserve recall) before the entity chunk-set.
+                coarse_refs = getattr(row, "self_refs", None) or []
+                if not coarse_refs and precise_anchor:
+                    coarse_refs = [precise_anchor]
+                resolved, _ = _resolve_mention_chunks(
+                    coarse_refs, element_uid_chunk_map, identity_map,
+                )
+            if not resolved:
+                # Final fallback: the entity's resolved chunk-set (precise, never
                 # all-document). Stays None when the entity also doesn't resolve.
                 resolved = entity_chunks
             if resolved:
@@ -2268,6 +2306,41 @@ def _build_relationship_records(
             provenance=rel_prov or None,
         ))
     return rel_records
+
+
+def _warn_on_null_relationship_lineage(
+    rel_records, relationship_provenance_rows, document_id,
+) -> None:
+    """Fix M — surface GENUINE relationship lineage-NULL outcomes (loud).
+
+    HARD lineage requirement: a committed relationship edge that has provenance
+    rows should carry resolved ``source_chunk_ids``. This guard is tied to the
+    ACTUAL post-resolution outcome — it fires only when relationship provenance
+    rows WERE present yet EVERY built record carries an EMPTY ``source_chunk_ids``
+    (a true NULL-lineage commit). It does NOT fire merely because ``identity_map``
+    is empty: after Fix F seeds the raw ``#/...`` self_ref keys directly into
+    ``element_uid_chunk_map``, prose/table refs resolve on the DIRECT ``.get(ref)``
+    hop with an empty ``identity_map``, so an empty-identity_map alarm is a false
+    positive. With no provenance rows there is nothing to bridge, so it is silent.
+    """
+    prov_count = len(relationship_provenance_rows or [])
+    if not prov_count:
+        return
+    any_resolved = any(
+        (rec.properties or {}).get("source_chunk_ids")
+        for rec in (rel_records or [])
+    )
+    if any_resolved:
+        return
+    logger.warning(
+        "_import_graph_phase_domain_edges: %d relationship_provenance row(s) "
+        "present for document_id=%s but ZERO committed relationship edges "
+        "resolved any source chunk — every edge carries NULL source_chunk_ids. "
+        "This is a real lineage failure (likely a MinIO miss / missing "
+        "docling_document.json _enrichments AND an unseeded self_ref bridge), "
+        "NOT just an empty identity_map.",
+        prov_count, document_id,
+    )
 
 
 def _load_identity_map(document_id: str) -> dict[str, str]:
@@ -6404,6 +6477,49 @@ def _build_native_chunk_meta(
     }
 
 
+def _build_native_text_chunk_record(
+    meta: dict,
+    text: str,
+    document_id: str,
+    doc_classification,
+    embedding,
+):
+    """Build the ArcadeDB ``TextChunkRecord`` for a native-HybridChunker chunk.
+
+    Extracted from the inline writer so the property set (notably ``chunk_index``
+    — Fix L) is unit-testable in isolation. The ``chunk_index`` MUST be persisted
+    into the vertex properties so the ``self_ref → chunk_id`` bridge's
+    ``ORDER BY chunk_index`` / lowest-index scalar selection works on freshly
+    ingested vertices (pre-Fix-L vertices have NULL chunk_index; see
+    ``_build_self_ref_chunk_map`` for the chunk_id determinism tiebreak that
+    covers them in the interim).
+    """
+    from app.services.graph_store import TextChunkRecord as _TCR
+
+    return _TCR(
+        chunk_id=str(meta["chunk_id"]),
+        text=text,
+        document_id=document_id,
+        properties={
+            "artifact_id": None,
+            # Fix L: persist chunk_index onto the vertex (was NULL on every
+            # existing vertex, making the chunk_index sort a no-op).
+            "chunk_index": meta["chunk_index"],
+            "modality": meta["modality"],
+            "page_number": meta["page_number"],
+            "classification": doc_classification,
+            "page_numbers": meta["page_numbers"],
+            "self_refs": meta["self_refs"],
+            "evidence_ids": meta["evidence_ids"],
+            "section_path": meta.get("section_path"),
+            "headings": meta.get("headings", []),
+            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
+            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
+        },
+        embedding=embedding,
+    )
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
@@ -6592,23 +6708,11 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     )
                     db.execute(stmt)
 
-                    text_chunk_records.append(_TCR(
-                        chunk_id=str(meta["chunk_id"]),
+                    text_chunk_records.append(_build_native_text_chunk_record(
+                        meta=meta,
                         text=text,
                         document_id=document_id,
-                        properties={
-                            "artifact_id": None,
-                            "modality": meta["modality"],
-                            "page_number": meta["page_number"],
-                            "classification": doc_classification,
-                            "page_numbers": meta["page_numbers"],
-                            "self_refs": meta["self_refs"],
-                            "evidence_ids": meta["evidence_ids"],
-                            "section_path": meta.get("section_path"),
-                            "headings": meta.get("headings", []),
-                            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
-                            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
-                        },
+                        doc_classification=doc_classification,
                         embedding=embedding,
                     ))
                     chunks_created += 1
