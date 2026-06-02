@@ -1855,6 +1855,110 @@ def _build_element_uid_chunk_map(elements, text_chunks, image_chunks) -> dict[st
     return element_uid_chunk_map
 
 
+def _build_self_ref_chunk_map(rows) -> dict[str, list[str]]:
+    """Build a ``self_ref -> [chunk_id]`` map from ArcadeDB TextChunk rows.
+
+    ``rows`` is an iterable of ``(chunk_id, self_refs, chunk_index)`` tuples.
+    For each chunk, every Docling self_ref in its ``self_refs`` list is keyed to
+    that chunk's id. When a single self_ref spans MULTIPLE chunks (e.g. a table
+    `#/tables/1` rendered across two embedding chunks), the resulting list is
+    ordered by ``chunk_index`` ascending — so the scalar ``resolved[0]``
+    consumers (``_resolve_field_evidence_chunk_ids``) pick the LOWEST-index
+    chunk deterministically, while the union consumers (relationship /
+    entity ``source_chunk_ids``) still see every chunk.
+
+    Pure (no DB): the thin DB wrapper ``_load_self_ref_chunk_map_from_arcadedb``
+    fetches the rows and delegates here. ``self_refs`` may be None/empty — those
+    chunks simply contribute nothing.
+
+    WHY this bridge exists: native HybridChunker leaves prose/table chunks with
+    ``artifact_id=None``, so the artifact_id join in
+    ``_build_element_uid_chunk_map`` reaches ONLY image-derived chunks. The
+    authoritative prose/table ``self_ref -> chunk_id`` mapping is persisted onto
+    the ArcadeDB TextChunk vertex ``self_refs`` property (see
+    ``_build_native_chunk_meta`` / ``_build_text_chunk_sql``); this rebuilds the
+    inverse so the merge/structure resolver can reach those chunks.
+    """
+    by_self_ref: dict[str, list[tuple[int, str]]] = {}
+    for chunk_id, self_refs, chunk_index in rows:
+        if not self_refs:
+            continue
+        cid = str(chunk_id)
+        idx = chunk_index if chunk_index is not None else 0
+        for ref in self_refs:
+            if not ref:
+                continue
+            by_self_ref.setdefault(str(ref), []).append((idx, cid))
+
+    self_ref_chunk_map: dict[str, list[str]] = {}
+    for ref, entries in by_self_ref.items():
+        # Sort by chunk_index ascending, dedup chunk ids preserving that order.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for _idx, cid in sorted(entries, key=lambda e: e[0]):
+            if cid not in seen:
+                seen.add(cid)
+                ordered.append(cid)
+        self_ref_chunk_map[ref] = ordered
+    return self_ref_chunk_map
+
+
+def _load_self_ref_chunk_map_from_arcadedb(document_id) -> dict[str, list[str]]:
+    """Load the ``self_ref -> [chunk_id]`` bridge from ArcadeDB TextChunk vertices.
+
+    Native HybridChunker prose/table chunks have ``artifact_id=None`` (only
+    image-derived chunks carry one), so the merge-phase artifact_id join cannot
+    reach them. The authoritative mapping IS persisted onto each ArcadeDB
+    TextChunk vertex's ``self_refs`` property (written via
+    ``_build_text_chunk_sql`` from ``_build_native_chunk_meta``); the vertex
+    ``chunk_id`` equals the Postgres ``TextChunk.id`` (both are
+    ``str(meta["chunk_id"])``), so the ids returned here are directly comparable
+    to the rest of the lineage maps.
+
+    Read-only. Reuses the same ``graph_store._client.query_sync`` mechanism used
+    by ``_load_chunks_for_derivation`` / ``_get_structural_document_rid`` in this
+    module. Degrades to ``{}`` on any failure (a missing graph store, an absent
+    ``self_refs`` property) so resolution falls back to the artifact_id-join map
+    rather than raising — never all-document.
+    """
+    try:
+        graph_store = get_graph_store()
+        rows = graph_store._client.query_sync(
+            graph_store._database, "sql",
+            "SELECT chunk_id, self_refs, chunk_index FROM TextChunk "
+            "WHERE document_id = :doc_id",
+            params={"doc_id": str(document_id)},
+        )
+    except Exception as exc:  # pragma: no cover - defensive, integration-tested
+        logger.warning(
+            "_load_self_ref_chunk_map_from_arcadedb: ArcadeDB read failed for "
+            "%s: %s; falling back to artifact_id-join lineage only",
+            document_id, exc,
+        )
+        return {}
+
+    tuples = [
+        (row.get("chunk_id"), row.get("self_refs"), row.get("chunk_index"))
+        for row in (rows or [])
+    ]
+    return _build_self_ref_chunk_map(tuples)
+
+
+def _seed_self_ref_chunk_map(element_uid_chunk_map, self_ref_chunk_map) -> None:
+    """Seed the RAW Docling self_ref keys (``#/texts/N``, ``#/tables/N``) from
+    the ArcadeDB bridge into ``element_uid_chunk_map`` IN PLACE.
+
+    ``_resolve_mention_chunks`` does a DIRECT ``element_uid_chunk_map.get(ref)``
+    on the raw self_ref BEFORE the identity_map hop, so seeding here makes
+    prose/table self_refs resolve on that first hop. Existing artifact_id-join
+    keys (image chunks) are NOT clobbered: a self_ref key only takes effect if
+    that exact ``#/...`` string isn't already present (it never is — those keys
+    are DocumentElement element_uids, a disjoint namespace).
+    """
+    for ref, chunk_ids in (self_ref_chunk_map or {}).items():
+        element_uid_chunk_map.setdefault(ref, list(chunk_ids))
+
+
 def _build_lineage_resolver_maps(db, document_id):
     """Build the (identity_map, element_uid_chunk_map, chunk_page_map) needed
     to resolve self_refs -> concrete chunk ids IN THE MERGE PHASE.
@@ -1892,6 +1996,16 @@ def _build_lineage_resolver_maps(db, document_id):
 
     element_uid_chunk_map = _build_element_uid_chunk_map(
         elements, text_chunks, image_chunks,
+    )
+
+    # Seed the RAW self_ref keys (#/texts/N, #/tables/N) from the ArcadeDB
+    # TextChunk.self_refs bridge. Native HybridChunker prose/table chunks have
+    # artifact_id=None, so the join above reaches ONLY image-derived chunks;
+    # this lets _resolve_mention_chunks resolve prose/table field+entity refs
+    # on its direct .get(ref) hop. Degrades to artifact-only on any DB miss.
+    _seed_self_ref_chunk_map(
+        element_uid_chunk_map,
+        _load_self_ref_chunk_map_from_arcadedb(document_id),
     )
 
     chunk_page_map: dict[str, int] = {}
@@ -9737,6 +9851,18 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # field/rel lineage and EXTRACTED_FROM lineage stay byte-identical.
         element_uid_chunk_map = _build_element_uid_chunk_map(
             elements, text_chunks, image_chunks,
+        )
+
+        # PARITY with the merge phase (_build_lineage_resolver_maps): seed the
+        # RAW self_ref keys (#/texts/N, #/tables/N) from the ArcadeDB
+        # TextChunk.self_refs bridge so entity EXTRACTED_FROM lineage resolves
+        # prose/table refs to their real chunk too. Native HybridChunker leaves
+        # prose/table chunks artifact_id=None, so the artifact_id join above
+        # reaches ONLY image-derived chunks — the same latent imprecision the
+        # merge phase had. Degrades to artifact-only on any DB miss.
+        _seed_self_ref_chunk_map(
+            element_uid_chunk_map,
+            _load_self_ref_chunk_map_from_arcadedb(document_id),
         )
 
         # Try graph_json mentions path first (new pipeline)

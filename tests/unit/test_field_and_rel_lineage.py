@@ -629,3 +629,194 @@ def test_build_lineage_resolver_maps_empty_db_no_nameerror(monkeypatch):
     assert identity_map == {}
     assert element_uid_chunk_map == {}
     assert chunk_page_map == {}
+
+
+# ---------------------------------------------------------------------------
+# (e) self_ref -> chunk_id BRIDGE from ArcadeDB TextChunk.self_refs.
+#
+#     Native HybridChunker gives prose/table chunks artifact_id=None, so the
+#     artifact_id join in _build_element_uid_chunk_map reaches ONLY the ~34
+#     image-derived chunks (zero text/table). The authoritative
+#     self_ref -> chunk_id mapping IS persisted onto the ArcadeDB TextChunk
+#     vertex `self_refs` property; seeding the RAW `#/...` self_ref keys into
+#     element_uid_chunk_map lets _resolve_mention_chunks resolve them on the
+#     DIRECT .get(ref) hop (before the identity_map hop).
+#
+#     A field whose own self_ref is `#/tables/1` (text/table-only provenance,
+#     no image self_ref) must resolve to its REAL chunk — NOT None, NOT an
+#     image-fallback chunk. A self_ref spanning MULTIPLE chunks must pick the
+#     LOWEST chunk_index deterministically for the scalar chunk_id.
+# ---------------------------------------------------------------------------
+
+
+def test_build_self_ref_chunk_map_pure_sorts_by_chunk_index():
+    """The pure builder takes rows (chunk_id, self_refs, chunk_index) and
+    returns self_ref -> [chunk_id] with each list ordered by chunk_index.
+
+    A table spanning two chunks (#/tables/1 -> c_idx30, c_idx31) lists the
+    chunk_index-30 id FIRST regardless of input row order, so the scalar
+    `resolved[0]` consumers pick the lowest-index chunk deterministically.
+    """
+    rows = [
+        # arbitrary order: c_idx31 row BEFORE c_idx30 row
+        ("uuidC31", ["#/tables/1"], 31),
+        ("uuidC30", ["#/tables/1"], 30),
+        ("uuidX", ["#/texts/99"], 21),
+        # a chunk carrying multiple self_refs contributes to each.
+        ("uuidM", ["#/texts/5", "#/texts/6"], 3),
+        # empty / None self_refs contribute nothing, no crash.
+        ("uuidEmpty", [], 99),
+        ("uuidNone", None, 100),
+    ]
+    result = pipeline_mod._build_self_ref_chunk_map(rows)
+
+    # multi-chunk table self_ref: lowest chunk_index FIRST.
+    assert result["#/tables/1"] == ["uuidC30", "uuidC31"]
+    # single-chunk text self_ref.
+    assert result["#/texts/99"] == ["uuidX"]
+    # one chunk feeding multiple self_refs.
+    assert result["#/texts/5"] == ["uuidM"]
+    assert result["#/texts/6"] == ["uuidM"]
+
+
+def test_field_table_self_ref_resolves_to_real_chunk_not_image_or_none():
+    """Flat-Face-shaped entity: its ONLY field self_ref is `#/tables/1` and its
+    ENTITY provenance is text/table-only (no image self_ref). With the
+    self_ref->chunk_id bridge seeded (table spans c_idx30 + c_idx31), the field
+    resolves to the REAL chunk (lowest chunk_index, c_idx30), NOT None and NOT
+    an image-description chunk; page back-fills to 7."""
+    UUID_C30 = "ac77ed0b-0000-0000-0000-000000000030"
+    UUID_C31 = "478f0d84-0000-0000-0000-000000000031"
+    UUID_IMG = "image-desc-chunk-id"
+
+    # element_uid_chunk_map seeded with the RAW self_ref keys from ArcadeDB,
+    # plus an image element_uid that the OLD artifact_id join could reach.
+    seeded_map = {
+        "#/tables/1": [UUID_C30, UUID_C31],  # table spans two chunks
+        "euid-image": [UUID_IMG],            # image-derived chunk (artifact join)
+    }
+    chunk_page_map = {UUID_C30: 7, UUID_C31: 7, UUID_IMG: 99}
+
+    row = FieldEvidenceRow(
+        chunk_id=None,
+        snippet="associated radar",
+        element_uid="#/tables/1",
+        value="Flat Face",
+        self_refs=["#/tables/1"],
+    )
+    entity = MergedEntityRecord(
+        identity=_identity("Flat Face"),
+        properties={"name": "Flat Face"},
+        confidence=0.9,
+        pass_origins={"p"},
+        display_label="Flat Face",
+        provenance=[
+            ExtractionProvenance(
+                instance_id="i1",
+                ontology_name="System",
+                identity_values={"name": "Flat Face"},
+                # ENTITY provenance is text/table-only — NO image self_ref.
+                element_uid="#/tables/1",
+                self_refs=["#/tables/1"],
+            )
+        ],
+        field_evidence={"associated_radar": [row]},
+    )
+
+    pipeline_mod._resolve_field_evidence_chunk_ids(
+        entity, seeded_map, {}, chunk_page_map=chunk_page_map,
+    )
+
+    # Resolves to a REAL chunk, the lowest-chunk_index one for the table.
+    assert row.chunk_id == UUID_C30
+    # NOT None, NOT the image-description chunk.
+    assert row.chunk_id is not None
+    assert row.chunk_id != UUID_IMG
+    # page back-fills to the table's page (7).
+    assert row.page == 7
+
+
+def test_field_multi_chunk_table_self_ref_deterministic_lowest_index():
+    """Determinism: even with the seeded list in arbitrary order, the field's
+    scalar chunk_id is the chunk_index-30 id (built sorted by chunk_index in the
+    pure builder, so resolved[0] is deterministic)."""
+    UUID_C30 = "uuid-c30"
+    UUID_C31 = "uuid-c31"
+    # Build via the pure builder with rows in REVERSED chunk_index order.
+    seeded_map = pipeline_mod._build_self_ref_chunk_map([
+        ("uuid-c31", ["#/tables/1"], 31),
+        ("uuid-c30", ["#/tables/1"], 30),
+    ])
+    row = FieldEvidenceRow(
+        chunk_id=None,
+        snippet="x",
+        element_uid="#/tables/1",
+        value="v",
+        self_refs=["#/tables/1"],
+    )
+    entity = MergedEntityRecord(
+        identity=_identity("Squat Eye"),
+        properties={"name": "Squat Eye"},
+        confidence=0.9,
+        pass_origins={"p"},
+        display_label="Squat Eye",
+        provenance=[
+            ExtractionProvenance(
+                instance_id="i1",
+                ontology_name="System",
+                identity_values={"name": "Squat Eye"},
+                element_uid="#/tables/1",
+                self_refs=["#/tables/1"],
+            )
+        ],
+        field_evidence={"f": [row]},
+    )
+    pipeline_mod._resolve_field_evidence_chunk_ids(
+        entity, seeded_map, {}, chunk_page_map={},
+    )
+    assert row.chunk_id == UUID_C30
+    assert row.chunk_id != UUID_C31
+
+
+def test_resolve_mention_chunks_unions_multi_chunk_table():
+    """The multi-chunk case must NOT lose the second chunk where the resolver
+    unions (relationship/entity source_chunk_ids). #/tables/1 -> both chunks,
+    in chunk_index order."""
+    seeded_map = {"#/tables/1": ["uuid-c30", "uuid-c31"]}
+    resolved, is_coarse = pipeline_mod._resolve_mention_chunks(
+        ["#/tables/1"], seeded_map, {},
+    )
+    assert resolved == ["uuid-c30", "uuid-c31"]
+    assert is_coarse is False
+
+
+def test_build_lineage_resolver_maps_seeds_self_ref_keys(monkeypatch):
+    """_build_lineage_resolver_maps must seed the RAW self_ref keys from the
+    ArcadeDB TextChunk.self_refs bridge into element_uid_chunk_map (so the
+    direct .get(ref) hop in _resolve_mention_chunks resolves prose/table refs),
+    WITHOUT clobbering the existing artifact_id-join (image) keys."""
+    monkeypatch.setattr(pipeline_mod, "_load_identity_map", lambda doc_id: {})
+    # Inject the ArcadeDB-sourced self_ref map (thin wrapper is mocked out).
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_load_self_ref_chunk_map_from_arcadedb",
+        lambda doc_id: {
+            "#/texts/99": ["chunk-text-99"],
+            "#/tables/1": ["chunk-tbl-30", "chunk-tbl-31"],
+        },
+    )
+
+    elements = [_Elem(artifact_id="art-1", element_uid="euid-A", element_order=0)]
+    text_chunks = [_Chunk(id="chunk-1", artifact_id="art-1", page_number=5)]
+    image_chunks = []
+    db = _StubDB([elements, text_chunks, image_chunks])
+
+    _, element_uid_chunk_map, _ = pipeline_mod._build_lineage_resolver_maps(
+        db, _uuid.uuid4(),
+    )
+
+    # artifact_id-join (image/text-with-artifact) keys still present.
+    assert element_uid_chunk_map["euid-A"] == ["chunk-1"]
+    # RAW self_ref keys seeded from ArcadeDB.
+    assert element_uid_chunk_map["#/texts/99"] == ["chunk-text-99"]
+    assert element_uid_chunk_map["#/tables/1"] == ["chunk-tbl-30", "chunk-tbl-31"]
