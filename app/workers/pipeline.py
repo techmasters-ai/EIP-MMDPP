@@ -4103,9 +4103,19 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         instance_id = raw.get("instance_id")
         field_name = raw.get("field_name")
         snippet = raw.get("supporting_snippet") or ""
+        # Field lineage is CHUNK lineage (element_uid → chunk), not prose.
+        # A row with a resolvable chunk anchor (element_uid or self_refs) is
+        # USEFUL even with an empty supporting_snippet — the service emits
+        # such rows in real runs. Only drop a row when it carries NEITHER a
+        # snippet NOR any chunk anchor (truly useless). instance_id +
+        # field_name remain genuinely required.
+        raw_element_uid = raw.get("element_uid")
+        has_element_uid = isinstance(raw_element_uid, str) and bool(raw_element_uid)
+        raw_self_refs = raw.get("self_refs")
+        has_self_refs = isinstance(raw_self_refs, list) and bool(raw_self_refs)
         if not (isinstance(instance_id, str) and instance_id
                 and isinstance(field_name, str) and field_name
-                and snippet):
+                and (snippet or has_element_uid or has_self_refs)):
             logger.warning(
                 "_parse_pass_response: dropping field_provenance row missing required fields: %r",
                 raw,
