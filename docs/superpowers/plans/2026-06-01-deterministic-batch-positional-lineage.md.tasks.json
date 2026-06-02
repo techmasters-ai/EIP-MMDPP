@@ -4,13 +4,13 @@
     {
       "id": 35,
       "subject": "Task 1: Positional stamp in delta normalizer (library patch 0006, TDD)",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Each normalized delta node, its property_evidence, and each relationship carry the batch's authoritative positional self_refs/chunk_indexes/page_numbers, with LLM citations preserved separately as cited_refs.\n\n**Files:** Create docker/docling-graph/patches/0006-positional-node-rel-provenance.patch; Create docker/docling-graph/tests/test_positional_provenance_stamp.py; Modify scripts/run_tests.sh.\n\n**Acceptance Criteria:**\n- Node+rel provenance carry positional self_refs/chunk_indexes/page_numbers + cited_refs; evidence_ids = explicit valid only (not batch pool).\n- Uncited node keeps positional batch lineage, cited_refs=[].\n- Test applies patch stack 0001-0006 to temp repo, 2-chunk batch, cited vs positional split; fails pre-patch passes post.\n- All 6 patches --fuzz=0 --dry-run clean.\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_positional_provenance_stamp.py -v\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/patches/0006-positional-node-rel-provenance.patch\", \"docker/docling-graph/tests/test_positional_provenance_stamp.py\", \"scripts/run_tests.sh\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_positional_provenance_stamp.py -v\", \"acceptanceCriteria\": [\"node+rel provenance carry positional self_refs/chunk_indexes/page_numbers + cited_refs\", \"evidence_ids = explicit valid only not batch pool\", \"uncited node keeps positional batch lineage cited_refs=[]\", \"test fails pre-patch passes post\", \"all 6 patches fuzz=0 dry-run clean\"]}\n```"
     },
     {
       "id": 36,
       "subject": "Task 2: KEYSTONE \u2014 delta-sourced entity + field provenance builder (TDD)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         35
       ],
@@ -19,7 +19,7 @@
     {
       "id": 37,
       "subject": "Task 3: Worker carries lists through parse \u2192 mentions (TDD)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         36
       ],
@@ -28,7 +28,7 @@
     {
       "id": 38,
       "subject": "Task 4: Worker resolution \u2014 fail to batch chunk-set, never all-document (TDD)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         37
       ],
@@ -37,7 +37,7 @@
     {
       "id": 39,
       "subject": "Task 5: Field chunk_id resolution + relationship source-chunk edge props (TDD)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         38
       ],
