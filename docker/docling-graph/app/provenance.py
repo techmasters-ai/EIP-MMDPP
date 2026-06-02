@@ -618,6 +618,64 @@ def build_relationship_provenance_from_delta_trace(
                 supporting_snippet=None,
             )
         )
+
+    # --- DTO-node relationship branch (bug #59) ----------------------------
+    # A relationships-ONLY DTO pass (e.g. system_links, whose
+    # SystemLinkRelationship items are is_entity=False with rel_type /
+    # from_ref_id / to_ref_id DTO fields) is classified by the delta catalog
+    # as COMPONENT NODES, not graph edges: those rows land in `nodes` with
+    # `properties["rel_type"]` set and NEVER in `relationships`. The loop above
+    # therefore yields nothing for such a pass, so no relationship provenance is
+    # built and committed edges carry no source_chunk_ids.
+    #
+    # The lineage data exists on each such node's own `provenance` dict
+    # (self_refs / page_numbers / evidence_ids — the SAME positional-batch shape
+    # the entity-node path reads via build_entity_provenance_from_delta_graph).
+    # Mirror the rel_type special-case in evidence_gate.summarize_pass_output
+    # (which counts each node carrying a non-empty rel_type as one edge): emit
+    # one row per such DTO node, taking relationship_type from
+    # node["properties"]["rel_type"].
+    #
+    # source/target instance ids are intentionally left None: the DTO node has
+    # no resolvable endpoint node in this graph, and the worker's
+    # _build_relationship_records keys provenance with a `__rel_type_fallback__`
+    # bucket on rel_type alone, so rel_type-only provenance still attaches
+    # source_chunk_ids downstream.
+    #
+    # The DTO branch runs ALWAYS-IN-ADDITION (not empty-only): it keys solely on
+    # node["properties"]["rel_type"]. In practice a pass is either DTO-style
+    # (rel_type nodes, empty relationships[]) or graph-edge-style (typed edges,
+    # rel_type-free nodes), never both, so this does NOT double-count: a
+    # graph-edge relationship's endpoint nodes do not carry rel_type, and a DTO
+    # node never appears in relationships[].
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        props = n.get("properties")
+        rel_type = props.get("rel_type") if isinstance(props, dict) else None
+        if not isinstance(rel_type, str) or not rel_type:
+            continue
+        prov = n.get("provenance") if isinstance(n.get("provenance"), dict) else {}
+        out.append(
+            provenance_cls(
+                relationship_type=rel_type,
+                source_instance_id=None,
+                target_instance_id=None,
+                evidence_ids=[
+                    eid for eid in (prov.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                self_refs=[
+                    r for r in (prov.get("self_refs") or [])
+                    if isinstance(r, str)
+                ],
+                page_numbers=sorted({
+                    p for p in (prov.get("page_numbers") or [])
+                    if isinstance(p, int)
+                }),
+                supporting_snippet=None,
+            )
+        )
     return out
 
 
