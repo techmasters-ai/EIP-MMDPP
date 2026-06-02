@@ -631,10 +631,13 @@ def build_relationship_provenance_from_delta_trace(
     # The lineage data exists on each such node's own `provenance` dict
     # (self_refs / page_numbers / evidence_ids — the SAME positional-batch shape
     # the entity-node path reads via build_entity_provenance_from_delta_graph).
-    # Mirror the rel_type special-case in evidence_gate.summarize_pass_output
-    # (which counts each node carrying a non-empty rel_type as one edge): emit
-    # one row per such DTO node, taking relationship_type from
-    # node["properties"]["rel_type"].
+    # Mirror the INTENT of the rel_type special-case in
+    # evidence_gate.summarize_pass_output (which counts each node carrying a
+    # non-empty rel_type as one edge) — though at a different stage/key: that
+    # path gates on the MODEL schema + reads raw pass_output `rel_type`, whereas
+    # here we read the post-normalization node `properties["rel_type"]` off
+    # _delta_merged_graph. Emit one row per such DTO node, taking
+    # relationship_type from node["properties"]["rel_type"].
     #
     # source/target instance ids are intentionally left None: the DTO node has
     # no resolvable endpoint node in this graph, and the worker's
@@ -647,7 +650,11 @@ def build_relationship_provenance_from_delta_trace(
     # (rel_type nodes, empty relationships[]) or graph-edge-style (typed edges,
     # rel_type-free nodes), never both, so this does NOT double-count: a
     # graph-edge relationship's endpoint nodes do not carry rel_type, and a DTO
-    # node never appears in relationships[].
+    # node never appears in relationships[]. NOTE: this is a naming convention,
+    # not an enforced invariant — if a future is_entity=True model ever declares
+    # a `rel_type` PROPERTY field, its node would emit here AND its typed edges
+    # in the relationships[] loop above → double-emit. Guard (skip rel_type nodes
+    # that are is_entity / at a relationships-only path) if that ever occurs.
     for n in nodes:
         if not isinstance(n, dict):
             continue
