@@ -324,31 +324,99 @@ def test_entity_recall_instance_emissions_never_flips_verdict():
 
 
 # ---------------------------------------------------------------------------
-# #6c compute_relationship_recall — rejection is NOT counted as loss
+# #6c compute_relationship_recall — committed-TOTAL domain edges (PRESENCE) vs
+# the DISTINCT MERGED-edge count (audit blob graph_json->'edges_accepted', i.e.
+# len(merged.edges) after the (from,type,to) cross-pass dedup). This MIRRORS
+# compute_entity_recall: the merged baseline is the post-dedup distinct edge
+# count, NOT the pre-dedup per-pass relationships_extracted emit sum. Healing
+# adds lineage to EXISTING edges (never creates new ones), so the numerator can
+# never approach the pre-dedup emit count — comparing committed against the
+# emit count false-FAILS a perfectly-healed doc (32 committed vs 77 emitted).
+# Recall measures edge PRESENCE (committed-total vs merged-distinct); precision
+# (a separate check) enforces lineage on every edge, so this is NOT redundant.
+# Fail-closed: committed>=merged PASS; 0<committed<merged FAIL; committed==0
+# while merged>0 LOUD FAIL. Rejected rels are reported, NOT counted as loss.
 # ---------------------------------------------------------------------------
-def test_relationship_recall_committed_present_passes():
-    ok, detail = gate.compute_relationship_recall(committed_edges=8, accepted=8, rejected=3)
+def test_relationship_recall_uses_merged_edge_denominator_not_emit_sum():
+    """The C1 fix: the denominator is the DISTINCT MERGED-edge count, NOT the
+    pre-dedup per-pass emit sum. A perfectly-healed doc (32 committed == 32
+    merged-distinct) PASSES — it must NOT be compared against the 77 pre-dedup
+    emit count (which would report 42% and false-FAIL)."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=32, merged_edges=32,
+                                                  rejected=0)
+    assert ok is True
+    assert "committed_edges=32" in detail
+    # the detail names the MERGED-distinct baseline, never relationships_extracted.
+    assert "merged" in detail.lower()
+    assert "recall=100%" in detail
+
+
+def test_relationship_recall_committed_equals_merged_passes():
+    """Boundary: committed == merged is full recall (every merged edge committed)."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=8, merged_edges=8,
+                                                  rejected=3)
     assert ok is True
     assert "rejected=3" in detail
+    assert "recall=100%" in detail
 
 
-def test_relationship_recall_collapse_fails():
-    """Accepted post-validation but 0 committed edges -> commit dropped to zero."""
-    ok, detail = gate.compute_relationship_recall(committed_edges=0, accepted=8, rejected=2)
+def test_relationship_recall_committed_exceeds_merged_passes():
+    """committed may exceed merged (prior runs' edges present) -> still full recall."""
+    ok, _ = gate.compute_relationship_recall(committed_edges=35, merged_edges=32,
+                                             rejected=0)
+    assert ok is True
+
+
+def test_relationship_recall_shortfall_below_merged_fails():
+    """0 < committed < merged -> FAIL. A merged edge that did not commit IS
+    lineage loss; the fail-closed gate FAILs (not WARN)."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=20, merged_edges=32,
+                                                  rejected=0)
     assert ok is False
-    assert "dropped to zero" in detail
+    assert "committed_edges=20" in detail
+    assert "32" in detail
 
 
-def test_relationship_recall_rejection_only_not_loss():
-    """All rels rejected, 0 accepted, 0 committed -> NOT a loss (valid rejection)."""
-    ok, _ = gate.compute_relationship_recall(committed_edges=0, accepted=0, rejected=12)
+def test_relationship_recall_collapse_to_zero_fails_loud():
+    """merged>0 but 0 committed -> LOUD keystone collapse (edge commit dropped)."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=0, merged_edges=8,
+                                                  rejected=2)
+    assert ok is False
+    assert "zero" in detail.lower() or "collapse" in detail.lower()
+
+
+def test_relationship_recall_rejection_not_counted_as_loss():
+    """All rels rejected pre-merge, 0 merged distinct edges, 0 committed -> NOT a
+    loss (valid rejection); rejected reported separately."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=0, merged_edges=0,
+                                                  rejected=12)
     assert ok is True
+    assert "rejected=12" in detail
 
 
-def test_relationship_recall_unknown_accepted_reports_only():
-    ok, detail = gate.compute_relationship_recall(committed_edges=0, accepted=None, rejected=0)
-    assert ok is True
+def test_relationship_recall_unknown_merged_requires_committed():
+    """Merged baseline unavailable (audit blob absent) -> still require committed>0
+    so a zeroed commit still fails; cannot prove full recall without the
+    denominator (mirrors entity recall's unknown-baseline branch)."""
+    assert gate.compute_relationship_recall(committed_edges=5, merged_edges=None,
+                                            rejected=0)[0] is True
+    assert gate.compute_relationship_recall(committed_edges=0, merged_edges=None,
+                                            rejected=0)[0] is False
+    _, detail = gate.compute_relationship_recall(committed_edges=5, merged_edges=None,
+                                                 rejected=0)
     assert "UNKNOWN" in detail
+
+
+def test_relationship_recall_does_not_reference_relationships_extracted_concept():
+    """Regression for C1: the recall detail must report against the MERGED-distinct
+    baseline, never the pre-dedup accepted/emit count. 32 committed of a 32-merged
+    baseline is full recall even though the run emitted 77 pre-dedup."""
+    ok, detail = gate.compute_relationship_recall(committed_edges=32, merged_edges=32,
+                                                  rejected=5)
+    assert ok is True
+    # the pre-dedup emit number (77) must NOT appear as a denominator here.
+    assert "77" not in detail
+    assert "merged" in detail.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -479,30 +547,41 @@ def test_relationship_edge_rows_scopes_by_document_ids_not_run(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# RELATIONSHIP recall floor — committed lineage-bearing edges vs accepted rels.
-# The old check only failed on committed==0; 3-of-77 passed green. The floor
-# fails on a large shortfall so "3 of 77 accepted" is not called full recall.
+# merged_edge_count — the merged-DISTINCT-edge baseline source. Mirrors
+# merged_node_count: it reads the audit blob's pre-computed post-dedup distinct
+# domain-edge count off ingest.document_graph_extractions. The blob stores the
+# count as the scalar graph_json->'edges_accepted' (= len(merged.edges) after
+# the (from,type,to) cross-pass dedup) — there is NO graph_json->'edges' array.
 # ---------------------------------------------------------------------------
-def test_relationship_recall_floor_fails_on_large_shortfall():
-    """3 committed of 77 accepted (~4%) is a massive shortfall -> FAIL. The old
-    check (committed>0) would have passed this green."""
-    ok, detail = gate.compute_relationship_recall(committed_edges=3, accepted=77, rejected=0)
-    assert ok is False
-    assert "3" in detail and "77" in detail
+def test_merged_edge_count_reads_edges_accepted_scalar(monkeypatch):
+    """merged_edge_count(doc) reads graph_json->'edges_accepted' (the post-dedup
+    distinct domain-edge count) off ingest.document_graph_extractions, scoped to
+    the document, analogous to merged_node_count's graph_json->'nodes' read."""
+    issued = []
+
+    def fake_pg(sql):
+        issued.append(sql)
+        return ["32"]
+
+    monkeypatch.setattr(gate, "pg", fake_pg)
+    assert gate.merged_edge_count("DOC-XYZ") == 32
+    assert issued, "expected a pg query"
+    sql = issued[0]
+    assert "edges_accepted" in sql
+    assert "document_graph_extractions" in sql
+    assert "DOC-XYZ" in sql
 
 
-def test_relationship_recall_floor_passes_at_or_above_threshold():
-    """Committed >= floor*accepted -> PASS. With a 50% floor, 40 of 77 passes."""
-    ok, _ = gate.compute_relationship_recall(committed_edges=40, accepted=77, rejected=0)
-    assert ok is True
+def test_merged_edge_count_none_when_no_row(monkeypatch):
+    """No blob row / pg failure -> None (baseline UNKNOWN), never silently 0."""
+    monkeypatch.setattr(gate, "pg", lambda sql: [])
+    assert gate.merged_edge_count("DOC-XYZ") is None
 
 
-def test_relationship_recall_floor_reports_committed_vs_accepted():
-    """The shortfall report surfaces committed vs accepted prominently."""
-    ok, detail = gate.compute_relationship_recall(committed_edges=3, accepted=77, rejected=2)
-    assert ok is False
-    assert "committed" in detail.lower()
-    assert "rejected=2" in detail
+def test_merged_edge_count_none_on_unparseable(monkeypatch):
+    """Non-int value -> None (UNKNOWN), not a crash."""
+    monkeypatch.setattr(gate, "pg", lambda sql: ["null"])
+    assert gate.merged_edge_count("DOC-XYZ") is None
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +634,51 @@ def test_source_pages_no_lineage_edges_is_na():
     assert "N/A" in detail or "no lineage" in detail.lower()
 
 
+# ---------------------------------------------------------------------------
+# L1 — source_pages=None on a lineage-bearing edge whose resolved chunks
+# genuinely lack a page is NOT a malformation (after Fix P the worker omits
+# source_pages when resolved chunks have no page). It is ONLY a real
+# inconsistency when the resolved chunks DO carry pages but source_pages is None.
+# ---------------------------------------------------------------------------
+def test_source_pages_none_on_pageless_chunk_edge_is_not_malformed():
+    """source_pages=None on an edge whose resolved chunks have NO page (not in
+    chunk_pages) -> NOT malformed -> PASS. The worker legitimately omits
+    source_pages when the resolved chunks lack a page (Fix P)."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1", "c2"],
+         "source_pages": None},
+    ]
+    # neither c1 nor c2 has a resolved page (pageless chunks) -> empty map.
+    ok, detail = gate.check_source_pages_shape(rows, {})
+    assert ok is True
+    assert "malformed_shape=0" in detail
+
+
+def test_source_pages_none_but_chunks_have_pages_is_inconsistent():
+    """source_pages=None while the resolved chunks DO carry pages is a real
+    inconsistency (the page was droppable but the chunks have it) -> FAIL."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1", "c2"],
+         "source_pages": None},
+    ]
+    chunk_pages = {"c1": 7, "c2": 7}
+    ok, detail = gate.check_source_pages_shape(rows, chunk_pages)
+    assert ok is False
+
+
+def test_source_pages_nested_still_malformed_even_when_pageless():
+    """A PRESENT-but-malformed source_pages (nested list-of-lists) is malformed
+    regardless of whether the resolved chunks have pages — only a MISSING/None
+    source_pages on pageless chunks is exempted by L1."""
+    rows = [
+        {"type": "ASSOCIATED_WITH", "source_chunk_ids": ["c1"],
+         "source_pages": [[6, 7]]},
+    ]
+    ok, detail = gate.check_source_pages_shape(rows, {})  # c1 pageless
+    assert ok is False
+    assert "malformed" in detail.lower()
+
+
 def test_drop_check_greps_worker_string_in_worker_containers(monkeypatch):
     """#7b drop-check must grep the WORKER container(s) for the WORKER string
     ('dropping provenance row missing required fields') — the old gate greped that
@@ -596,6 +720,7 @@ def test_drop_check_greps_worker_string_in_worker_containers(monkeypatch):
     monkeypatch.setattr(gate, "total_entities", lambda: 0)
     monkeypatch.setattr(gate, "committed_entity_field_evidence", lambda: [])
     monkeypatch.setattr(gate, "merged_node_count", lambda doc: None)
+    monkeypatch.setattr(gate, "merged_edge_count", lambda doc: None)
     monkeypatch.setattr(gate, "_pg_int_sum", lambda run, col: None)
     monkeypatch.setattr(gate, "relationship_edge_rows", lambda doc: [])
     monkeypatch.setattr(gate, "chunk_pages_for", lambda ids: {})
@@ -631,6 +756,63 @@ def test_drop_check_greps_worker_string_in_worker_containers(monkeypatch):
     assert "[FAIL]" in drop_line[0]
     assert "drops=2" in drop_line[0]
     assert "worker" in drop_line[0] and "docling-graph" in drop_line[0]
+
+
+def test_lineage_gate_rejection_count_sums_both_worker_containers(monkeypatch):
+    """M1 — the LINEAGE_GATE 'rejected' count must SUM across worker-graph-1 AND
+    the catch-all worker-1 (worker-1 also consumes the graph queue, so its
+    rejections are otherwise invisible — identical to the drop-check container
+    handling). Emit one LINEAGE_GATE rejection from EACH worker container; the
+    check must count BOTH (gate_rejections=2) and FAIL."""
+    import sys
+
+    GATE = "LINEAGE_GATE: rejected"
+
+    def fake_docker_logs(container, since, until):
+        if container == "eip-mmdpp-worker-graph-1":
+            return (f"INFO\n{GATE} 1/5 entities lacking resolvable lineage\n", 2)
+        if container == "eip-mmdpp-worker-1":
+            return (f"INFO catchall\n{GATE} 2/9 entities lacking resolvable lineage\n", 2)
+        if container == "eip-mmdpp-docling-graph-1":
+            return ("INFO dg\n", 1)
+        return ("INFO\n", 1)
+
+    monkeypatch.setattr(gate, "_docker_logs", fake_docker_logs)
+    monkeypatch.setattr(gate, "adb", lambda sql: [])
+    monkeypatch.setattr(gate, "count", lambda sql: 0)
+    monkeypatch.setattr(gate, "pg", lambda sql: [])
+    monkeypatch.setattr(gate, "resolve_doc", lambda run, fb: (fb, "test"))
+    monkeypatch.setattr(gate, "run_window", lambda run: ("2026-05-31T00:00:00+00:00",
+                                                         "2026-05-31T01:00:00+00:00"))
+    monkeypatch.setattr(gate, "total_entities", lambda: 0)
+    monkeypatch.setattr(gate, "committed_entity_field_evidence", lambda: [])
+    monkeypatch.setattr(gate, "merged_node_count", lambda doc: None)
+    monkeypatch.setattr(gate, "merged_edge_count", lambda doc: None)
+    monkeypatch.setattr(gate, "_pg_int_sum", lambda run, col: None)
+    monkeypatch.setattr(gate, "relationship_edge_rows", lambda doc: [])
+    monkeypatch.setattr(gate, "chunk_pages_for", lambda ids: {})
+    monkeypatch.setattr(sys, "argv", ["prog", "--run", "RUN-1", "--doc", "DOC-1"])
+
+    captured = {}
+    monkeypatch.setattr("builtins.print",
+                        lambda *a, **k: captured.setdefault("out", []).append(
+                            " ".join(str(x) for x in a)))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(sys, "exit", fake_exit)
+    try:
+        gate.main()
+    except SystemExit:
+        pass
+
+    out = "\n".join(captured.get("out", []))
+    gate_line = [ln for ln in out.splitlines() if "LINEAGE_GATE rejection" in ln]
+    assert gate_line, "expected a LINEAGE_GATE-rejection result line"
+    # both containers' rejections counted -> 2, and the check FAILs (nonzero).
+    assert "gate_rejections=2" in gate_line[0]
+    assert "[FAIL]" in gate_line[0]
 
 
 def test_committed_field_evidence_has_no_document_id_filter(monkeypatch):

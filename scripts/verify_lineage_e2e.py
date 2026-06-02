@@ -35,12 +35,18 @@ Three precision targets + three recall baselines + the trace, all run-scoped:
      committed entities (a None means the merge-phase resolution regressed).
   5. RELATIONSHIP PRECISION: committed ontology relationship edges carry a
      non-empty ``source_chunk_ids`` LIST. N/A-not-fail when 0 edges for the run.
-  6. ENTITY / FIELD / RELATIONSHIP RECALL baselines: ENTITY uses the DISTINCT
-     MERGED-node count (audit blob graph_json->'nodes' length) as the denominator
-     — NOT the per-pass instance sum, which double-counts an entity emitted by
-     several passes and reports a false low recall. committed>=merged is full
-     recall; committed<merged (a merged entity that didn't commit) FAILs;
-     committed==0 while merged>0 is a LOUD fail; valid rejection is not loss.
+  6. ENTITY / FIELD / RELATIONSHIP RECALL baselines: both ENTITY and RELATIONSHIP
+     use a DISTINCT MERGED count as the denominator (audit blob
+     graph_json->'nodes' length for entities; graph_json->'edges_accepted' ==
+     len(merged.edges) after the (from,type,to) dedup for relationships) — NOT the
+     pre-dedup per-pass emit sums (primary_entities_extracted / relationships_-
+     extracted), which straddle the merge dedup boundary and report a false low
+     recall (e.g. 32 committed edges vs 77 emitted ≈ 42%) on a perfectly-healed
+     doc. RELATIONSHIP recall measures edge PRESENCE (committed-total vs merged-
+     distinct); precision (#5) separately enforces lineage on every edge, so
+     presence is NOT redundant. committed>=merged is full recall; committed<merged
+     (a merged item that didn't commit) FAILs; committed==0 while merged>0 is a
+     LOUD fail; valid rejection is not loss.
   7. EXTRACTED_FROM-only, edge-anchored, run-scoped trace -> chunk + doc + page;
      plus run-windowed provenance-drop / LINEAGE_GATE-rejection warning checks.
   8. the traced page is chunk-sourced (it is the edge target chunk's page_number).
@@ -334,56 +340,72 @@ def compute_entity_recall(committed, merged, instance_emissions=None):
     )
 
 
-# Relationship-recall PROPORTIONAL floor: committed lineage-bearing domain edges
-# must be at least this fraction of the run's ACCEPTED relationships, else FAIL.
-# 0.50 is deliberately conservative: a >50% gap between accepted and
-# committed-with-lineage is a real recall regression that the gate must not call
-# "full recall". This is what makes "3 committed of 77 accepted" (~4%) FAIL
-# instead of passing green under the old committed==0-only check.
-RELATIONSHIP_RECALL_FLOOR = 0.50
+def compute_relationship_recall(committed_edges, merged_edges, rejected):
+    """RELATIONSHIP RECALL baseline (#6c): committed-TOTAL domain relationship
+    edges (edge PRESENCE) vs the DISTINCT MERGED-edge count the run intended to
+    commit. MIRRORS compute_entity_recall exactly (committed vs distinct merged).
 
+    C1 FIX — the denominator is the POST-DEDUP merged DISTINCT domain-edge count
+    (audit blob graph_json->'edges_accepted' == len(merged.edges) after the
+    (from_identity, rel_type, to_identity) cross-pass dedup; see
+    extraction_merge.derive_ontology_graph_merge + merged_edge_count), NOT the
+    PRE-dedup per-pass ``relationships_extracted`` emit sum. The merge collapses
+    ~77 EMITTED rels onto ~32 DISTINCT (from,type,to) triples; healing adds
+    lineage to EXISTING edges and NEVER creates new ones, so the committed
+    numerator can never approach the 77 emit count — comparing the two straddles
+    the merge dedup boundary and FALSE-FAILS a perfectly-healed doc (32/77≈42%).
+    The distinct merged-edge count is the same side of the dedup boundary as the
+    committed total, so committed==merged is exactly full recall.
 
-def compute_relationship_recall(committed_edges, accepted, rejected,
-                                floor=RELATIONSHIP_RECALL_FLOOR):
-    """RELATIONSHIP RECALL baseline (#6c): committed lineage-bearing domain edges
-    vs post-validation ACCEPTED rels, with a PROPORTIONAL FLOOR.
+    H1 — recall measures edge PRESENCE: the numerator is the committed-TOTAL
+    domain-edge count, NOT a lineage-bearing subset. Precision (a SEPARATE check)
+    already enforces a non-empty source_chunk_ids on EVERY committed domain edge,
+    so making recall lineage-bearing would merely duplicate precision. Recall-as-
+    presence answers a DISTINCT question (did every merged relationship reach
+    ArcadeDB?), so the two are complementary, not redundant.
 
     Rejected rels are reported SEPARATELY and NOT counted as loss (valid rejection
-    is not recall loss). The old check only failed on committed==0, so 3 committed
-    of 77 accepted passed GREEN — that is not full recall. The floor closes that
-    hole: PASS requires committed_edges >= floor * accepted (default 50%). A large
-    shortfall FAILs and the detail surfaces committed-vs-accepted prominently.
+    is not recall loss).
 
-      * accepted unknown (None) -> denominator missing; at minimum REPORT
-        committed prominently and don't fail on the absent baseline.
-      * accepted == 0           -> nothing accepted -> vacuous PASS (0 >= 0).
-      * accepted  > 0 and committed == 0 -> LOUD fail (commit dropped to zero).
-      * accepted  > 0 and committed < floor*accepted -> FAIL (large shortfall).
+    Semantics (fail-closed — a merged edge that did not commit IS lineage loss):
+      * committed==0 while merged>0  -> LOUD FAIL (keystone edge-commit collapse).
+      * committed >= merged          -> PASS (full recall: every merged edge got
+        committed; committed may exceed merged when prior runs' edges are present,
+        since domain edges carry document_ids but no run_id constraint here).
+      * 0 < committed < merged       -> FAIL (a merged edge did not commit = real
+        recall loss; the gate is fail-closed).
+      * merged unknown (None)        -> require committed>0 so a zeroed commit
+        still fails (cannot prove full recall without the denominator).
+      * merged==0 and committed==0   -> vacuous-but-honest PASS (nothing to lose).
     Returns (ok, detail)."""
     rej = rejected or 0
-    if accepted is None:
-        return True, (
-            f"committed_edges={committed_edges} accepted_baseline=UNKNOWN "
-            f"rejected={rej} (reported; cannot apply the recall floor without the "
-            f"accepted denominator — committed reported prominently)"
+    if merged_edges is None:
+        ok = committed_edges > 0
+        return ok, (
+            f"committed_edges={committed_edges} merged_edge_baseline=UNKNOWN "
+            f"(audit blob edges_accepted unavailable) rejected={rej}; PASS requires "
+            f"committed>0 (rejection reported, NOT counted as recall loss)"
         )
-    if accepted > 0 and committed_edges == 0:
+    if merged_edges > 0 and committed_edges == 0:
         return False, (
-            f"committed_edges=0 but {accepted} rels accepted post-validation — "
-            f"edge commit dropped to zero (rejected={rej}, not counted as loss)"
+            f"committed_edges=0 but {merged_edges} merged distinct domain edges "
+            f"expected — KEYSTONE EDGE-COMMIT COLLAPSE (committed dropped to zero; "
+            f"rejected={rej}, not counted as loss)"
         )
-    need = floor * accepted
-    pct = (committed_edges / accepted * 100.0) if accepted else 0.0
-    ok = committed_edges >= need
+    ratio = (committed_edges / merged_edges * 100.0) if merged_edges else 0.0
+    # committed >= merged is full recall; committed < merged loses a merged edge
+    # (lineage loss) -> FAIL. merged==0,committed==0 -> vacuous pass.
+    ok = committed_edges >= merged_edges
     verdict = "" if ok else (
-        f" — SHORTFALL: committed {committed_edges} << accepted {accepted} "
-        f"(need >= {need:.0f} = {int(floor * 100)}% of accepted)"
+        f" — SHORTFALL: committed {committed_edges} < merged-distinct "
+        f"{merged_edges} (a merged edge did not commit)"
     )
     return ok, (
-        f"committed_edges={committed_edges} accepted={accepted} "
-        f"recall={pct:.0f}% rejected={rej} "
-        f"(PASS requires committed >= {int(floor * 100)}% of accepted; "
-        f"rejection reported separately, NOT counted as recall loss){verdict}"
+        f"committed_edges={committed_edges} merged(distinct edges_accepted)="
+        f"{merged_edges} recall={ratio:.0f}% rejected={rej} "
+        f"(PASS requires committed>=merged-distinct; LOUD fail iff committed==0 "
+        f"while merged>0; rejection reported separately, NOT counted as recall "
+        f"loss){verdict}"
     )
 
 
@@ -403,12 +425,17 @@ def check_source_pages_shape(rel_edge_rows, chunk_pages):
 
     A row is checked only when it is lineage-bearing (non-empty source_chunk_ids).
     For each such row:
-      * source_pages must be a list of plain ints (NOT a list-of-lists / nested)
-        -> malformed shape FAILs.
+      * source_pages PRESENT must be a list of plain ints (NOT a list-of-lists /
+        nested) -> malformed shape FAILs (regardless of the chunks' pages).
       * the SET of source_pages must be a SUBSET of the resolved chunks' pages
         (every source_page must correspond to a resolved chunk's page) -> an
         extra/foreign page FAILs as inconsistent. (Resolved-chunk pages missing
         from chunk_pages are tolerated — the gate may not have every page.)
+      * L1 — source_pages MISSING/None is NOT a malformation when the resolved
+        chunks genuinely lack a page (after Fix P the worker omits source_pages
+        for page-less chunks; see the gate-header note). It is ONLY a real
+        inconsistency (-> FAIL) when the resolved chunks DO carry pages but
+        source_pages is None (the page was available but dropped).
     No lineage-bearing edges -> N/A (nothing to shape check). Returns (ok, detail)."""
     rows = [r for r in rel_edge_rows if isinstance(r, dict)]
     lineage = [
@@ -427,11 +454,27 @@ def check_source_pages_shape(rel_edge_rows, chunk_pages):
     for r in lineage:
         sp = r.get("source_pages")
         if sp is None:
-            # No source_pages on a lineage-bearing edge: cannot prove the page
-            # was chunk-sourced -> count as malformed (missing shape).
-            malformed += 1
-            if len(examples) < 3:
-                examples.append(f"source_pages=None scids={r.get('source_chunk_ids')}")
+            # L1 — a MISSING/None source_pages is NOT a malformation when the
+            # edge's resolved chunks genuinely lack a page: after Fix P the worker
+            # legitimately OMITS source_pages when the resolved chunks have no
+            # page_number (it is now derived from the resolved chunks, not written
+            # unconditionally). Only when the resolved chunks DO carry pages is a
+            # None source_pages a real inconsistency (the page was available but
+            # dropped) -> FAIL. (A PRESENT-but-malformed source_pages is handled
+            # below regardless of chunk pages.)
+            resolved_pages_for_none = {
+                chunk_pages[c] for c in r["source_chunk_ids"]
+                if c in chunk_pages and isinstance(chunk_pages.get(c), int)
+                and not isinstance(chunk_pages.get(c), bool)
+            }
+            if resolved_pages_for_none:
+                inconsistent += 1
+                if len(examples) < 3:
+                    examples.append(
+                        f"source_pages=None but resolved chunk pages exist="
+                        f"{sorted(resolved_pages_for_none)} scids="
+                        f"{r.get('source_chunk_ids')}")
+            # else: pageless resolved chunks -> legitimately omitted, NOT malformed.
             continue
         checked += 1
         if not isinstance(sp, list) or any(not isinstance(p, int) or isinstance(p, bool)
@@ -593,6 +636,42 @@ def merged_node_count(doc):
     denominator as 0. (document_id is the table PK — exactly one row per doc.)"""
     rows = pg(
         "SELECT jsonb_array_length(graph_json->'nodes') "
+        f"FROM ingest.document_graph_extractions WHERE document_id = '{doc}'"
+    )
+    if not rows:
+        return None
+    val = rows[0].strip()
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def merged_edge_count(doc):
+    """Return the number of DISTINCT MERGED domain relationship edges for the run's
+    document — the audit blob's POST-DEDUP edge count: graph_json->'edges_accepted'
+    off ingest.document_graph_extractions. This equals ``len(merged.edges)`` AFTER
+    the (from_identity, rel_type, to_identity) cross-pass dedup (see
+    extraction_merge.derive_ontology_graph_merge: edge_dedup keyed by that triple,
+    then _serialize_for_audit emits edges_accepted = len(merged.edges)). It is the
+    count of distinct merged domain relationships the run intended to commit and is
+    the CORRECT denominator for relationship recall — exactly analogous to
+    merged_node_count's graph_json->'nodes' length for entity recall, and on the
+    SAME side of the merge dedup boundary as the committed-edge total.
+
+    NOTE the blob stores the merged edge population as this SCALAR count (there is
+    NO graph_json->'edges' array — only nodes[]/mentions[] arrays plus the
+    edges_accepted/edges_rejected scalars). merged.edges are DOMAIN relationship
+    edges only (the LLM / system_links / walker-reachable rels); structural edges
+    are built by a separate derive_structural_edges path and are NOT in this count,
+    so this denominator already excludes structural edges (matching the
+    STRUCTURAL_EDGE_TYPES exclusion the committed-edge precision query applies).
+
+    Returns None when the query yields nothing (no blob row / pg failure) so the
+    caller marks the recall baseline UNKNOWN rather than treating a missing
+    denominator as 0. (document_id is the table PK — exactly one row per doc.)"""
+    rows = pg(
+        "SELECT (graph_json->>'edges_accepted') "
         f"FROM ingest.document_graph_extractions WHERE document_id = '{doc}'"
     )
     if not rows:
@@ -859,8 +938,13 @@ def main():
     #       only. LOUD fail iff committed==0 while merged>0; FAIL iff committed<merged.
     #    6b FIELD: resolved field-evidence rows vs total (the key signal is 0
     #       null chunk_ids from #4); reported here for completeness.
-    #    6c RELATIONSHIP: committed edges vs post-validation ACCEPTED; rejected
-    #       reported separately (NOT counted as loss).
+    #    6c RELATIONSHIP: committed-TOTAL domain edges (edge PRESENCE) vs the
+    #       DISTINCT MERGED-edge count (audit blob edges_accepted == len(merged.edges)
+    #       after the (from,type,to) dedup) — MIRRORS 6a's merged nodes[] baseline.
+    #       NOT the pre-dedup relationships_extracted emit sum (which straddles the
+    #       merge dedup boundary and false-fails a healed doc). rejected reported
+    #       separately (NOT counted as loss). LOUD fail iff committed==0 while
+    #       merged>0; FAIL iff committed<merged.
     # ------------------------------------------------------------------
     merged_entities = merged_node_count(doc)
     # OLD denominator — now a REPORTED diagnostic only (per-pass instance emissions,
@@ -877,24 +961,34 @@ def main():
                     f"resolved={fe_resolved}/{fe_total} field-evidence rows "
                     f"(verdict carried by FIELD precision #4; this is a report row)"))
 
-    # accepted_rels / rejected_rels read above (hoisted for the precision NA guard).
-    # Denominator = the run's ACCEPTED relationship count
-    # (pipeline_pass_outputs.relationships_extracted, e.g. 77 for SA-2). committed
-    # is the DOC-scoped domain edge count; a >50% gap (e.g. 3 of 77) FAILS the
-    # proportional floor instead of passing green under the old committed==0 check.
-    rr_ok, rr_detail = compute_relationship_recall(len(rel_rows), accepted_rels, rejected_rels)
-    results.append(("RELATIONSHIP recall (DOC-scoped committed edges vs accepted, proportional floor; rejection NOT counted as loss)",
+    # Denominator = the DISTINCT MERGED domain-edge count (audit blob
+    # graph_json->'edges_accepted' == len(merged.edges) after the (from,type,to)
+    # cross-pass dedup; see merged_edge_count) — the SAME side of the merge dedup
+    # boundary as the committed total, EXACTLY as entity recall uses the merged
+    # nodes[] count. NOT the PRE-dedup per-pass relationships_extracted emit sum
+    # (~77 for SA-2): the merge collapses ~77 emitted rels onto ~32 distinct
+    # triples and healing never creates new edges, so committed-vs-emit straddles
+    # the dedup boundary and FALSE-FAILS a healed doc (32/77≈42%). Numerator is the
+    # committed-TOTAL doc-scoped domain edges (edge PRESENCE) — precision (#5)
+    # separately enforces lineage on every edge, so presence is NOT redundant.
+    merged_edges = merged_edge_count(doc)
+    rr_ok, rr_detail = compute_relationship_recall(len(rel_rows), merged_edges, rejected_rels)
+    results.append(("RELATIONSHIP recall (committed-total domain edges vs DISTINCT merged edges_accepted; LOUD fail on collapse, FAIL on shortfall; rejection NOT counted as loss)",
                     rr_ok, rr_detail))
 
     # ------------------------------------------------------------------
-    # 6d. source_pages SHAPE — every lineage-bearing domain edge's source_pages
-    #     must be a FLAT list of ints AND consistent with the resolved chunks'
-    #     pages. Committed edges were observed malformed as a list-of-lists
-    #     ([[6,7]]) AND inconsistent (resolved chunks both page 7 yet source_pages
-    #     claimed [[6,7]]). This malformation originates WORKER-SIDE (the only
-    #     source_pages write is app/workers/pipeline.py: props["source_pages"] =
-    #     list(pages)); the host gate cannot heal it, so it DETECTS and FAILs on
-    #     it here (worker origin reported separately for a worker-side fix).
+    # 6d. source_pages SHAPE — every lineage-bearing domain edge's source_pages,
+    #     WHEN PRESENT, must be a FLAT list of ints AND consistent with the
+    #     resolved chunks' pages. Committed edges were observed malformed as a
+    #     list-of-lists ([[6,7]]) AND inconsistent (resolved chunks both page 7 yet
+    #     source_pages claimed [[6,7]]). source_pages now originates WORKER-SIDE
+    #     DERIVED FROM the resolved chunks' page_numbers (Fix P, app/workers/
+    #     pipeline.py — it replaced the old unconditional ``props["source_pages"] =
+    #     list(pages)`` write), so the worker legitimately OMITS source_pages when
+    #     the resolved chunks have no page (L1: a None source_pages on page-less
+    #     chunks is NOT a malformation). The host gate cannot heal a malformed
+    #     PRESENT value; it DETECTs and FAILs on it here (worker origin reported
+    #     separately for a worker-side fix).
     # ------------------------------------------------------------------
     sp_chunk_ids = []
     for r in rel_rows:
@@ -955,12 +1049,19 @@ def main():
     dg, dg_lines = _docker_logs("eip-mmdpp-docling-graph-1", since, until)
     wg, wg_lines = _docker_logs("eip-mmdpp-worker-graph-1", since, until)
     wc, wc_lines = _docker_logs("eip-mmdpp-worker-1", since, until)
-    wl, wl_lines = wg, wg_lines  # LINEAGE_GATE rejections are a worker-graph string
+    # LINEAGE_GATE rejections are a WORKER string (_apply_strict_lineage_gate in
+    # app/workers/pipeline.py). worker-graph-1 is the dedicated graph worker, but
+    # worker-1 is the catch-all that ALSO consumes the graph queue (MEMORY:
+    # catch-all worker trap), so a merge it grabs emits the rejection there and the
+    # old worker-graph-only scan was BLIND to it. Sum across BOTH worker containers
+    # — identical to the drop-check container handling above. The scanned-line
+    # count is likewise the SUM so the no-evidence guard reflects both streams.
+    wl_lines = wg_lines + wc_lines
 
     worker_drops = wg.count(WORKER_DROP) + wc.count(WORKER_DROP)
     dg_drops = dg.count(DG_DROP)
     drops = worker_drops + dg_drops
-    gate_rejects = wl.count("LINEAGE_GATE: rejected")
+    gate_rejects = wg.count("LINEAGE_GATE: rejected") + wc.count("LINEAGE_GATE: rejected")
 
     # provenance-drop warnings (worker string in worker containers + docling-graph
     # string in docling-graph). FAIL-CLOSED on no log evidence across ALL scanned
@@ -986,22 +1087,24 @@ def main():
                         f"log lines (docling-graph={dg_lines} worker-graph={wg_lines} "
                         f"worker={wc_lines}) in window [{window_desc}]"))
 
-    # LINEAGE_GATE rejections (worker-graph)
+    # LINEAGE_GATE rejections (worker-graph + catch-all worker — both consume the
+    # graph queue, so both can emit the worker rejection string).
     wl_no_evidence = window_degraded or wl_lines == 0
     if wl_no_evidence:
         reason = ("DEGRADED window (run not found)" if window_degraded
-                  else "in-window log stream EMPTY")
-        results.append(("zero LINEAGE_GATE rejections (run window)",
+                  else "in-window log streams EMPTY")
+        results.append(("zero LINEAGE_GATE rejections (run window; worker-graph + worker)",
                         False,
                         f"gate_rejections={gate_rejects} / scanned {wl_lines} log "
-                        f"lines — NO LOG EVIDENCE, cannot confirm zero rejections "
+                        f"lines (worker-graph={wg_lines} worker={wc_lines}) — NO LOG "
+                        f"EVIDENCE, cannot confirm zero rejections "
                         f"({reason}) [{window_desc}]"))
     else:
-        results.append(("zero LINEAGE_GATE rejections (run window)",
+        results.append(("zero LINEAGE_GATE rejections (run window; worker-graph + worker)",
                         gate_rejects == 0,
                         f"gate_rejections={gate_rejects} / scanned {wl_lines} log "
-                        f"lines in window (nonzero = entities lacked lineage) "
-                        f"[{window_desc}]"))
+                        f"lines (worker-graph={wg_lines} worker={wc_lines}) in window "
+                        f"(nonzero = entities lacked lineage) [{window_desc}]"))
 
     # ------------------------------------------------------------------
     # 8. page is chunk-sourced. #7a reads page as @in.page_number — the page of
