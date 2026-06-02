@@ -35,8 +35,12 @@ Three precision targets + three recall baselines + the trace, all run-scoped:
      committed entities (a None means the merge-phase resolution regressed).
   5. RELATIONSHIP PRECISION: committed ontology relationship edges carry a
      non-empty ``source_chunk_ids`` LIST. N/A-not-fail when 0 edges for the run.
-  6. ENTITY / FIELD / RELATIONSHIP RECALL baselines: committed vs extracted; a
-     drop to zero while passes extracted is a LOUD fail, valid rejection is not.
+  6. ENTITY / FIELD / RELATIONSHIP RECALL baselines: ENTITY uses the DISTINCT
+     MERGED-node count (audit blob graph_json->'nodes' length) as the denominator
+     — NOT the per-pass instance sum, which double-counts an entity emitted by
+     several passes and reports a false low recall. committed>=merged is full
+     recall; committed<merged (a merged entity that didn't commit) FAILs;
+     committed==0 while merged>0 is a LOUD fail; valid rejection is not loss.
   7. EXTRACTED_FROM-only, edge-anchored, run-scoped trace -> chunk + doc + page;
      plus run-windowed provenance-drop / LINEAGE_GATE-rejection warning checks.
   8. the traced page is chunk-sourced (it is the edge target chunk's page_number).
@@ -218,33 +222,52 @@ def compute_relationship_precision(rel_edge_rows):
     )
 
 
-def compute_entity_recall(committed, extracted):
-    """ENTITY RECALL baseline (#6a): committed entity vertices vs the
-    LLM-EXTRACTED / pre-gate count (sum of pipeline_pass_outputs
-    primary_entities_extracted).
+def compute_entity_recall(committed, merged, instance_emissions=None):
+    """ENTITY RECALL baseline (#6a): committed entity vertices vs the number of
+    DISTINCT MERGED entities the run intended to commit.
 
-    LOUD FAIL when committed==0 while extracted>0 (a keystone regression that
-    drops ALL rows must NOT pass vacuously). When the extracted baseline is
-    unknown (extracted is None), require committed>0 so a zeroed commit still
-    fails. Otherwise PASS (committed>0 OR nothing was extracted to commit).
+    The correct denominator is ``merged`` — the audit blob's nodes[] length
+    (DocumentGraphExtraction.graph_json->'nodes'), i.e. the count of distinct
+    merged identities AFTER cross-pass dedup. It is NOT the sum of
+    pipeline_pass_outputs.primary_entities_extracted: that sum counts per-pass
+    entity INSTANCES, where the SAME real entity is emitted by several passes
+    (e.g. SNR-75 appears in radar_identity AND radar_power_rf), so it is an
+    inflated denominator that reports a false low recall (27 committed vs 133
+    instances => spurious "20%"). ``instance_emissions`` (the old per-pass sum)
+    is accepted only as a REPORTED diagnostic and never drives the verdict.
+
+    Semantics (fail-closed — a merged entity that did not commit IS lineage loss):
+      * committed==0 while merged>0  -> LOUD FAIL (keystone recall collapse).
+      * committed >= merged          -> PASS (full recall: every merged entity
+        got committed; committed may exceed merged when prior runs' vertices are
+        present, since entity vertices carry no run_id).
+      * 0 < committed < merged       -> FAIL (a merged entity did not commit =
+        real recall loss; the gate is fail-closed).
+      * merged unknown (None)        -> require committed>0 so a zeroed commit
+        still fails (cannot prove full recall without the denominator).
+      * merged==0 and committed==0   -> vacuous-but-honest PASS (nothing to lose).
     Returns (ok, detail)."""
-    if extracted is None:
+    inst = ("" if instance_emissions is None
+            else f" per_pass_instance_emissions={instance_emissions} (NOT distinct)")
+    if merged is None:
         ok = committed > 0
         return ok, (
-            f"committed_entities={committed} extracted_baseline=UNKNOWN "
-            f"(pipeline_pass_outputs unavailable); PASS requires committed>0"
+            f"committed_entities={committed} merged_baseline=UNKNOWN "
+            f"(audit blob nodes[] unavailable); PASS requires committed>0{inst}"
         )
-    if extracted > 0 and committed == 0:
+    if merged > 0 and committed == 0:
         return False, (
-            f"committed_entities=0 but passes extracted {extracted} — "
-            f"KEYSTONE RECALL COLLAPSE (committed dropped to zero)"
+            f"committed_entities=0 but {merged} merged entities expected — "
+            f"KEYSTONE RECALL COLLAPSE (committed dropped to zero){inst}"
         )
-    ratio = (committed / extracted * 100.0) if extracted else 0.0
-    # extracted==0 and committed==0 is a vacuous-but-honest pass: nothing to lose.
-    ok = not (extracted > 0 and committed == 0)
+    ratio = (committed / merged * 100.0) if merged else 0.0
+    # committed >= merged is full recall; committed < merged loses a merged
+    # entity (lineage loss) -> FAIL. merged==0,committed==0 -> vacuous pass.
+    ok = committed >= merged
     return ok, (
-        f"committed_entities={committed} extracted(pre-gate sum)={extracted} "
-        f"recall={ratio:.0f}% (LOUD fail iff committed==0 while extracted>0)"
+        f"committed_entities={committed} merged(distinct nodes[])={merged} "
+        f"recall={ratio:.0f}% (PASS requires committed>=merged; LOUD fail iff "
+        f"committed==0 while merged>0){inst}"
     )
 
 
@@ -378,6 +401,29 @@ def _pg_int_sum(run_id, column):
     rows = pg(
         f"SELECT COALESCE(SUM({column}), 0) FROM ingest.pipeline_pass_outputs "
         f"WHERE pipeline_run_id = '{run_id}'"
+    )
+    if not rows:
+        return None
+    val = rows[0].strip()
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def merged_node_count(doc):
+    """Return the number of DISTINCT MERGED entities for the run's document —
+    the audit blob's nodes[] length: jsonb_array_length(graph_json->'nodes') off
+    ingest.document_graph_extractions. This is the count of distinct merged
+    identities the run intended to commit (post cross-pass dedup), and is the
+    CORRECT denominator for entity recall (NOT the per-pass instance sum).
+
+    Returns None when the query yields nothing (no blob row / pg failure) so the
+    caller marks the recall baseline UNKNOWN rather than treating a missing
+    denominator as 0. (document_id is the table PK — exactly one row per doc.)"""
+    rows = pg(
+        "SELECT jsonb_array_length(graph_json->'nodes') "
+        f"FROM ingest.document_graph_extractions WHERE document_id = '{doc}'"
     )
     if not rows:
         return None
@@ -565,17 +611,23 @@ def main():
     # ------------------------------------------------------------------
     # 6. PER-TARGET RECALL baselines — so valid rejection isn't misread as loss
     #    and a keystone collapse can't pass vacuously.
-    #    6a ENTITY: committed entity vertices vs LLM-extracted (pre-gate) sum from
-    #       pipeline_pass_outputs.primary_entities_extracted. LOUD fail iff
-    #       committed==0 while extracted>0.
+    #    6a ENTITY: committed entity vertices vs the DISTINCT MERGED entity count
+    #       (audit blob graph_json->'nodes' length). NOT the per-pass instance sum
+    #       (SUM(primary_entities_extracted)): that double-counts an entity emitted
+    #       by multiple passes (SNR-75 in radar_identity AND radar_power_rf) and
+    #       reports a false low recall. The old sum is kept as a labeled diagnostic
+    #       only. LOUD fail iff committed==0 while merged>0; FAIL iff committed<merged.
     #    6b FIELD: resolved field-evidence rows vs total (the key signal is 0
     #       null chunk_ids from #4); reported here for completeness.
     #    6c RELATIONSHIP: committed edges vs post-validation ACCEPTED; rejected
     #       reported separately (NOT counted as loss).
     # ------------------------------------------------------------------
-    extracted_entities = _pg_int_sum(run, "primary_entities_extracted")
-    er_ok, er_detail = compute_entity_recall(total, extracted_entities)
-    results.append(("ENTITY recall (committed vs LLM-extracted pre-gate sum; LOUD fail on collapse)",
+    merged_entities = merged_node_count(doc)
+    # OLD denominator — now a REPORTED diagnostic only (per-pass instance emissions,
+    # NOT distinct merged entities); does NOT drive the pass/fail verdict.
+    instance_emissions = _pg_int_sum(run, "primary_entities_extracted")
+    er_ok, er_detail = compute_entity_recall(total, merged_entities, instance_emissions)
+    results.append(("ENTITY recall (committed vs DISTINCT merged nodes[]; LOUD fail on collapse, FAIL on shortfall)",
                     er_ok, er_detail))
 
     # 6b field recall — report only (the precision check #4 carries the verdict).

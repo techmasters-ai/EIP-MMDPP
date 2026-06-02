@@ -13,7 +13,8 @@ Covered:
     evaluate_field_precision        — FIELD chunk_id-None counting (#4)
   * compute_relationship_precision — RELATIONSHIP source_chunk_ids presence (#5)
   * compute_entity_recall /
-    compute_relationship_recall     — per-target recall, LOUD on collapse (#6)
+    compute_relationship_recall     — per-target recall, LOUD on collapse (#6);
+    ENTITY denominator = DISTINCT merged nodes[] (not the per-pass instance sum)
   * trace_first_complete           — EXTRACTED_FROM edge-anchored trace pick (#7a)
 
 The module imports clean (stdlib only), so a plain import suffices.
@@ -212,31 +213,79 @@ def test_relationship_precision_zero_edges_is_na_not_fail():
 
 
 # ---------------------------------------------------------------------------
-# #6a compute_entity_recall — LOUD fail on keystone collapse
+# #6a compute_entity_recall — denominator is the DISTINCT MERGED-node count
+# (audit blob graph_json->'nodes' length), NOT the per-pass instance sum.
+# Fail-closed: committed>=merged PASS; 0<committed<merged FAIL; committed==0
+# while merged>0 LOUD FAIL. The per-pass instance sum, when supplied, is a
+# REPORTED diagnostic only and must never flip the verdict.
 # ---------------------------------------------------------------------------
-def test_entity_recall_committed_present_passes():
-    ok, detail = gate.compute_entity_recall(committed=22, extracted=137)
+def test_entity_recall_committed_meets_merged_passes():
+    """The bug scenario, corrected: 27 committed >= 23 DISTINCT merged -> full
+    recall PASS. (The old code compared 27 vs 133 per-pass instances and reported
+    a spurious ~20% — that 133 is now only a labeled diagnostic.)"""
+    ok, detail = gate.compute_entity_recall(committed=27, merged=23,
+                                            instance_emissions=133)
     assert ok is True
-    assert "committed_entities=22" in detail and "extracted(pre-gate sum)=137" in detail
+    assert "committed_entities=27" in detail
+    assert "merged(distinct nodes[])=23" in detail
+    assert "recall=117%" in detail  # 27/23
+    # the old per-pass sum is reported but explicitly flagged NOT distinct
+    assert "per_pass_instance_emissions=133" in detail
+    assert "NOT distinct" in detail
+
+
+def test_entity_recall_committed_equals_merged_passes():
+    """Boundary: committed == merged is full recall (every merged node committed)."""
+    ok, detail = gate.compute_entity_recall(committed=23, merged=23)
+    assert ok is True
+    assert "recall=100%" in detail
 
 
 def test_entity_recall_collapse_to_zero_fails_loud():
-    """The recall-gate-collapse scenario: passes extracted 137, committed 0."""
-    ok, detail = gate.compute_entity_recall(committed=0, extracted=137)
+    """The recall-gate-collapse scenario: 23 merged entities expected, committed 0
+    -> LOUD keystone fail (every merged identity failed to commit = lineage loss)."""
+    ok, detail = gate.compute_entity_recall(committed=0, merged=23)
     assert ok is False
     assert "KEYSTONE RECALL COLLAPSE" in detail
 
 
-def test_entity_recall_zero_extracted_zero_committed_is_honest_pass():
-    """Nothing extracted, nothing committed -> not a regression (0==0)."""
-    ok, _ = gate.compute_entity_recall(committed=0, extracted=0)
+def test_entity_recall_shortfall_below_merged_fails():
+    """0 < committed < merged -> FAIL. DECISION: a merged entity that did not
+    commit IS lineage loss, so the fail-closed gate FAILs (not WARN). e.g. 20
+    committed of 23 merged means 3 distinct merged identities never reached
+    ArcadeDB — a real recall regression."""
+    ok, detail = gate.compute_entity_recall(committed=20, merged=23)
+    assert ok is False
+    assert "committed_entities=20" in detail
+    assert "merged(distinct nodes[])=23" in detail
+    assert "recall=87%" in detail  # 20/23
+
+
+def test_entity_recall_zero_merged_zero_committed_is_honest_pass():
+    """Nothing merged, nothing committed -> not a regression (0>=0)."""
+    ok, _ = gate.compute_entity_recall(committed=0, merged=0)
     assert ok is True
 
 
 def test_entity_recall_unknown_baseline_requires_committed():
-    """Extracted baseline unavailable -> still require committed>0 (no vacuous pass)."""
-    assert gate.compute_entity_recall(committed=5, extracted=None)[0] is True
-    assert gate.compute_entity_recall(committed=0, extracted=None)[0] is False
+    """Merged baseline unavailable (audit blob absent) -> still require committed>0
+    (no vacuous pass without the denominator)."""
+    assert gate.compute_entity_recall(committed=5, merged=None)[0] is True
+    assert gate.compute_entity_recall(committed=0, merged=None)[0] is False
+
+
+def test_entity_recall_instance_emissions_never_flips_verdict():
+    """The per-pass instance sum is REPORT-ONLY: a huge instance count must NOT
+    turn a full-recall PASS into a fail. committed>=merged still PASSES even when
+    instance_emissions dwarfs committed (the exact false-20% bug being fixed)."""
+    ok, detail = gate.compute_entity_recall(committed=27, merged=23,
+                                            instance_emissions=999)
+    assert ok is True
+    assert "per_pass_instance_emissions=999" in detail
+    # and a real shortfall still FAILs regardless of the diagnostic number
+    bad_ok, _ = gate.compute_entity_recall(committed=10, merged=23,
+                                           instance_emissions=2)
+    assert bad_ok is False
 
 
 # ---------------------------------------------------------------------------
