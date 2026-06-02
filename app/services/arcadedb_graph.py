@@ -256,6 +256,14 @@ def _build_upsert_relationship_script(
         doc_id_param_key = "doc_id"
         params[doc_id_param_key] = provenance.document_id
 
+    # Lineage: tag every domain edge with the PipelineRun that produced it.
+    # Mirror the document_id handling — bind the param only when provenance
+    # carries a pipeline_run_id, so we never emit a spurious NULL binding.
+    run_id_param_key = None
+    if provenance and provenance.pipeline_run_id:
+        run_id_param_key = "run_id"
+        params[run_id_param_key] = provenance.pipeline_run_id
+
     for i, record in enumerate(records):
         from_where_parts: list[str] = []
         for k, v in record.from_identity.items():
@@ -305,6 +313,11 @@ def _build_upsert_relationship_script(
         from_clause = " AND ".join(from_where_parts)
         to_clause = " AND ".join(to_where_parts)
 
+        # pipeline_run_id SET fragment, shared by both branches. Empty when
+        # provenance carries no run id (matches the document_id null-handling
+        # style — no clause rather than a NULL binding).
+        run_id_set = f", pipeline_run_id = :{run_id_param_key}" if run_id_param_key else ""
+
         if doc_id_param_key:
             # Union doc_id only when the edge exists AND doc_id is not
             # already in the list, preventing duplicate entries on
@@ -312,13 +325,13 @@ def _build_upsert_relationship_script(
             update_sql = (
                 f"  UPDATE {rtype} "
                 f"SET document_ids = document_ids || [:{doc_id_param_key}], "
-                f"updated_at = sysdate(){extra} "
+                f"updated_at = sysdate(){run_id_set}{extra} "
                 f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid "
                 f"AND NOT (document_ids CONTAINS :{doc_id_param_key})"
             )
         else:
             update_sql = (
-                f"  UPDATE {rtype} SET updated_at = sysdate(){extra} "
+                f"  UPDATE {rtype} SET updated_at = sysdate(){run_id_set}{extra} "
                 f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid"
             )
 
@@ -332,7 +345,7 @@ def _build_upsert_relationship_script(
             f"FROM $src_{i}[0] TO $dst_{i}[0] "
             f"SET extraction_confidence = :{conf_key}, "
             f"document_ids = {doc_ids_expr}, "
-            f"created_at = sysdate(), updated_at = sysdate(){extra} "
+            f"created_at = sysdate(), updated_at = sysdate(){run_id_set}{extra} "
             f"RETURN @rid;\n"
             f"}} ELSE {{\n"
             f"{update_sql};\n"
