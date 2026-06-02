@@ -447,6 +447,9 @@ class ExtractionRelationshipProvenance(BaseModel):
 
     Built from delta-IR relationship.provenance (via context._delta_merged_graph),
     which the Pydantic-to-graph converter does NOT preserve on edges.
+
+    NOTE: hand-mirrored in app/services/extraction_merge.py::
+    ExtractionRelationshipProvenance — keep both field sets in sync.
     """
     relationship_type: str
     source_instance_id: Optional[str] = None

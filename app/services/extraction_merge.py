@@ -202,8 +202,8 @@ class ExtractionProvenance:
 class ExtractionRelationshipProvenance:
     """Worker-side mirror of docling-graph ExtractionRelationshipProvenance.
 
-    Wire contract: field set MUST stay byte-for-byte equivalent to the
-    docling-graph schemas.ExtractionRelationshipProvenance.
+    Wire contract: field set MUST stay byte-for-byte equivalent to
+    docker/docling-graph/app/schemas.py::ExtractionRelationshipProvenance.
     """
     relationship_type: str
     source_instance_id: str | None = None
