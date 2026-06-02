@@ -352,3 +352,103 @@ def test_trace_page_zero_is_valid():
     ok, _, page = gate.trace_first_complete(rows)
     assert ok is True
     assert page == 0
+
+
+# ---------------------------------------------------------------------------
+# RELATIONSHIP-precision edge classification (Bug 2 fix): the structural set
+# must exclude domain semantic rels and INCLUDE the doc-anchor / derive
+# structural edges that legitimately carry no source_chunk_ids. The old gate
+# omitted HAS_IMAGE / NEAR_TEXT / CONTAINS, so it over-counted them as domain
+# edges (HAS_IMAGE 34 + NEAR_TEXT 136 = the spurious 170).
+# ---------------------------------------------------------------------------
+def test_structural_set_includes_chunk_and_provenance_edges():
+    for et in ("CONTAINS_TEXT", "SAME_PAGE", "HAS_PROVENANCE",
+               "EXTRACTED_FROM", "NEXT_CHUNK", "HAS_ALIAS"):
+        assert et in gate.STRUCTURAL_EDGE_TYPES, et
+
+
+def test_structural_set_includes_document_anchor_edges():
+    """The doc-anchor walker edges are structural (built via
+    create_structural_edge_sync, pass_origins={'document_anchors'})."""
+    for et in ("HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "CHILD_OF",
+               "HAS_IMAGE", "NEAR_TEXT"):
+        assert et in gate.STRUCTURAL_EDGE_TYPES, et
+
+
+def test_structural_set_includes_previously_missing_overcounted_edges():
+    """Regression for the spurious 170: HAS_IMAGE, NEAR_TEXT, CONTAINS, and the
+    MENTIONED_IN derive edge MUST be classified structural (excluded)."""
+    for et in ("HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN"):
+        assert et in gate.STRUCTURAL_EDGE_TYPES, et
+
+
+def test_structural_set_excludes_domain_semantic_rels():
+    """Domain (LLM / system_links) relationship types must NOT be classified
+    structural — they carry source_chunk_ids and are the ones we count."""
+    for et in ("ASSOCIATED_WITH", "CUES", "DETECTS", "TRACKS", "GUIDES",
+               "LAUNCHES", "ENGAGES", "HAS_COMPONENT", "HAS_SUBSYSTEM"):
+        assert et not in gate.STRUCTURAL_EDGE_TYPES, et
+
+
+def test_ontology_edge_types_filters_structural(monkeypatch):
+    """_ontology_edge_types() returns schema edge classes minus the structural
+    set — so domain rels survive and structural/anchor edges are dropped."""
+    schema_edges = [
+        {"name": "ASSOCIATED_WITH"}, {"name": "CUES"},        # domain
+        {"name": "HAS_IMAGE"}, {"name": "NEAR_TEXT"},          # anchor (drop)
+        {"name": "EXTRACTED_FROM"}, {"name": "MENTIONED_IN"},  # derive  (drop)
+        {"name": "CONTAINS_TEXT"},                              # chunk   (drop)
+    ]
+    monkeypatch.setattr(gate, "adb", lambda sql: schema_edges)
+    domain = set(gate._ontology_edge_types())
+    assert domain == {"ASSOCIATED_WITH", "CUES"}
+
+
+def test_relationship_edge_rows_scopes_by_document_ids(monkeypatch):
+    """Domain edges carry document_ids (NOT a scalar pipeline_run_id, which is
+    NULL on every committed domain edge), so the rows query must filter on
+    `document_ids CONTAINS '<doc>'`. Counts only the domain edge types."""
+    issued = []
+
+    def fake_adb(sql):
+        issued.append(sql)
+        if "schema:types" in sql:
+            return [{"name": "ASSOCIATED_WITH"}, {"name": "CUES"},
+                    {"name": "HAS_IMAGE"}, {"name": "EXTRACTED_FROM"}]
+        if "ASSOCIATED_WITH" in sql:
+            return [{"source_chunk_ids": None}] * 22
+        if "CUES" in sql:
+            return [{"source_chunk_ids": None}] * 7
+        return []
+
+    monkeypatch.setattr(gate, "adb", fake_adb)
+    rows = gate.relationship_edge_rows("DOC123")
+    # 22 ASSOCIATED_WITH + 7 CUES = 29 domain edges; structural ones excluded.
+    assert len(rows) == 29
+    types = {r["type"] for r in rows}
+    assert types == {"ASSOCIATED_WITH", "CUES"}
+    # every per-type query scopes by document_ids, never pipeline_run_id.
+    per_type = [s for s in issued if "schema:types" not in s]
+    assert per_type, "expected per-edge-type queries"
+    for sql in per_type:
+        assert "document_ids CONTAINS 'DOC123'" in sql
+        assert "pipeline_run_id" not in sql
+
+
+def test_committed_field_evidence_has_no_document_id_filter(monkeypatch):
+    """Global entity vertices (RADAR_SYSTEM / MISSILE_SYSTEM / …) carry no
+    document_id property, so the field-evidence read must NOT filter on it —
+    the old `WHERE document_id = ...` matched zero rows and the check
+    fail-closed on 0 evidence. It now reads every entity-type vertex (matching
+    total_entities() and the working spot-check)."""
+    issued = []
+
+    def fake_adb(sql):
+        issued.append(sql)
+        return [{"fe": {"nominal_rf_mhz": [{"chunk_id": "c1"}]}}]
+
+    monkeypatch.setattr(gate, "adb", fake_adb)
+    blobs = gate.committed_entity_field_evidence()
+    assert len(blobs) == len(gate.ENTITY_TYPES)
+    assert all("document_id" not in s for s in issued)
+    assert all("_field_evidence" in s for s in issued)

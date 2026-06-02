@@ -65,15 +65,48 @@ ENTITY_TYPES = ["RADAR_SYSTEM", "MISSILE_SYSTEM", "FIRE_CONTROL_SYSTEM", "WEAPON
 # entity (SNR-75) tops out around 26/102 (~25%), so 50% cleanly separates the two.
 FANOUT_FAIL_FRACTION = 0.50
 
-# Structural (infrastructure) edge types — NOT ontology relationship edges. The
-# relationship-precision check enumerates ArcadeDB edge classes and excludes
-# these so it only inspects domain relationship edges (which carry
-# source_chunk_ids). Mirrors app/services/arcadedb_schema.py::_STRUCTURAL_EDGE_TYPES.
-STRUCTURAL_EDGE_TYPES = frozenset([
-    "CONTAINS_TEXT", "CONTAINS_IMAGE", "SAME_PAGE", "SAME_SECTION", "SAME_ARTIFACT",
-    "NEXT_CHUNK", "HAS_PROVENANCE", "EXTRACTED_FROM", "HAS_ALIAS",
-    "HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "CHILD_OF", "MENTIONED_IN",
-])
+# Structural (infrastructure) edge types — NOT domain ontology relationship
+# edges. The relationship-precision check enumerates ArcadeDB edge classes and
+# excludes these so it only inspects DOMAIN relationship edges (the LLM /
+# system_links-extracted semantic rels — ASSOCIATED_WITH, CUES, DETECTS, …),
+# which alone carry source_chunk_ids. Structural edges are built by the chunk /
+# provenance / derive-rules path and the docling document-anchor walker via
+# create_structural_edge_sync (NOT the ontology relationship path), so they
+# legitimately do NOT carry source_chunk_ids and must be excluded here.
+#
+# AUTHORITATIVE SOURCE for the classification (no guessed/hardcoded list):
+#   1. app/services/arcadedb_schema.py::_STRUCTURAL_EDGE_TYPES — the chunk /
+#      provenance / derive-rules structural edge classes (CONTAINS_TEXT,
+#      SAME_PAGE, HAS_PROVENANCE, EXTRACTED_FROM, MENTIONED_IN-family, plus the
+#      HAS_SECTION/HAS_FIGURE/HAS_TABLE/CHILD_OF doc-anchor subset). Imported
+#      directly below so this gate can never drift from the schema. A mirrored
+#      literal is the fallback for when the app package isn't importable (the
+#      gate is meant to run standalone via curl).
+#   2. The remaining document-anchor edge types emitted by the
+#      `document_anchors` walker (app/services/docling_anchors.py — every edge
+#      carries pass_origins={"document_anchors"}, written via
+#      create_structural_edge_sync; see also derive_document_anchors in
+#      app/workers/pipeline.py). _STRUCTURAL_EDGE_TYPES omits HAS_IMAGE and
+#      NEAR_TEXT (and the chunk-containment CONTAINS edge), even though they are
+#      structural anchor edges of the SAME family as the HAS_SECTION/HAS_FIGURE
+#      entries it DOES list — that omission is exactly what made the old gate
+#      over-count (HAS_IMAGE=34 + NEAR_TEXT=136 = the spurious 170). They are
+#      added here so the structural set is complete.
+#   MENTIONED_IN is in the ontology relationship_types registry but is a
+#   derive-rules structural edge (DOCUMENT target, built by
+#   derive_structural_edges), so it is also excluded.
+try:  # authoritative — keep this gate in lock-step with the schema constant
+    from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES as _SCHEMA_STRUCTURAL
+except Exception:  # standalone fallback — mirror of arcadedb_schema._STRUCTURAL_EDGE_TYPES
+    _SCHEMA_STRUCTURAL = [
+        "CONTAINS_TEXT", "CONTAINS_IMAGE", "SAME_PAGE", "SAME_SECTION",
+        "SAME_ARTIFACT", "NEXT_CHUNK", "HAS_PROVENANCE", "EXTRACTED_FROM",
+        "HAS_ALIAS", "HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "CHILD_OF",
+    ]
+# Document-anchor + derive structural edges NOT present in the schema constant
+# (docling_anchors.py document_anchors walker + derive_rules structural edges).
+_ANCHOR_STRUCTURAL = ["HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN"]
+STRUCTURAL_EDGE_TYPES = frozenset(list(_SCHEMA_STRUCTURAL) + _ANCHOR_STRUCTURAL)
 
 
 # ===========================================================================
@@ -456,16 +489,24 @@ def total_entities():
     return sum(count(f"SELECT count(*) AS count FROM `{t}`") for t in ENTITY_TYPES)
 
 
-def committed_entity_field_evidence(doc):
+def committed_entity_field_evidence():
     """Read the ``_field_evidence`` JSON property off every committed entity
-    vertex of the document. Entity vertices carry document_id (scalar) but no
-    run_id, so this is doc-scoped. Returns a list of raw _field_evidence values
-    (dict / str / None)."""
+    vertex. Returns a list of raw _field_evidence values (dict / str / None).
+
+    SCOPE — global entities are NOT doc-scoped by a column. The ontology entity
+    types in ENTITY_TYPES (RADAR_SYSTEM / MISSILE_SYSTEM / ...) all declare
+    identity_scope='global' (ontology_bundles/air_defense_v3 entity definitions;
+    see arcadedb_graph.py global_entity_types filter), so their vertices carry
+    NO ``document_id`` property — only document-scoped anchor types (SECTION /
+    FIGURE / IMAGE / TEXT_BLOCK) do. The old ``WHERE document_id = '{doc}'``
+    filter therefore matched ZERO rows on every global entity, making the
+    FIELD-precision check read 0 _field_evidence rows and fail-closed even when
+    ~18 entities carry resolved field evidence. This now reads the SAME global
+    entity set as total_entities() (no document_id filter) — matching the
+    end-of-run spot-check that finds the non-null _field_evidence rows."""
     blobs = []
     for t in ENTITY_TYPES:
-        rows = adb(
-            f"SELECT `_field_evidence` AS fe FROM `{t}` WHERE document_id = '{doc}'"
-        )
+        rows = adb(f"SELECT `_field_evidence` AS fe FROM `{t}`")
         for r in rows:
             blobs.append(r.get("fe"))
     return blobs
@@ -481,17 +522,28 @@ def _ontology_edge_types():
     return [n for n in names if n not in STRUCTURAL_EDGE_TYPES]
 
 
-def relationship_edge_rows(run):
-    """Run-scoped ontology relationship edge rows with their source_chunk_ids.
+def relationship_edge_rows(doc):
+    """Doc-scoped DOMAIN relationship edge rows with their source_chunk_ids.
 
-    Domain relationship edges carry pipeline_run_id + source_chunk_ids (LIST) per
-    arcadedb_schema._COMMON_EDGE_PROPS. Enumerate the non-structural edge types,
-    pull this run's rows from each. Returns a list of dicts {type, source_chunk_ids}."""
+    Domain relationship edges declare pipeline_run_id + source_chunk_ids (LIST)
+    per arcadedb_schema._COMMON_EDGE_PROPS, but the commit path populates the
+    edge's ``document_ids`` LIST (the doc this edge was extracted from) rather
+    than the scalar pipeline_run_id — pipeline_run_id is NULL on every committed
+    domain edge. So scope by ``document_ids CONTAINS '<doc>'`` (the field these
+    edges actually carry), mirroring how the FIELD-precision check scopes the
+    global entity vertices that likewise carry no run_id. Enumerate ONLY the
+    non-structural (domain) edge types and pull this doc's rows from each.
+    Returns a list of dicts {type, source_chunk_ids}.
+
+    (source_chunk_ids is currently NULL on these committed domain edges — the
+    population fix is the in-flight D2 work — so the precision check still FAILs
+    after this; that is expected. This function's job is only to count the
+    RIGHT edges, not to make the check pass.)"""
     out = []
     for etype in _ontology_edge_types():
         rows = adb(
             f"SELECT '{etype}' AS etype, source_chunk_ids AS source_chunk_ids "
-            f"FROM `{etype}` WHERE pipeline_run_id = '{run}'"
+            f"FROM `{etype}` WHERE document_ids CONTAINS '{doc}'"
         )
         for r in rows:
             out.append({"type": etype, "source_chunk_ids": r.get("source_chunk_ids")})
@@ -588,20 +640,26 @@ def main():
     #    else None). A None means the resolution regressed. Fail-closed when there
     #    are 0 rows (no evidence the resolver ran).
     # ------------------------------------------------------------------
-    fe_blobs = committed_entity_field_evidence(doc)
+    fe_blobs = committed_entity_field_evidence()
     fe_total, fe_nulls, fe_entities = count_field_evidence_nulls(fe_blobs)
     field_ok, field_detail = evaluate_field_precision(fe_total, fe_nulls, fe_entities)
     results.append(("FIELD precision (0 _field_evidence rows with null chunk_id)",
                     field_ok, f"doc={doc} {field_detail}"))
 
     # ------------------------------------------------------------------
-    # 5. RELATIONSHIP PRECISION — committed ontology relationship edges carry a
+    # 5. RELATIONSHIP PRECISION — committed DOMAIN relationship edges carry a
     #    non-empty source_chunk_ids LIST (resolved in the merge phase from the
-    #    rel's positional self_refs). N/A-not-fail when there are 0 edges for the
-    #    run: relationships depend on the system_links pass extracting any, so an
-    #    absent edge set is a noted gap, NOT a lineage regression.
+    #    rel's positional self_refs). Counts ONLY domain (LLM / system_links)
+    #    relationship edge types — structural / derive-rules / doc-anchor edges
+    #    (HAS_COMPONENT, HAS_SECTION, HAS_FIGURE, HAS_IMAGE, NEAR_TEXT,
+    #    EXTRACTED_FROM, MENTIONED_IN, …) are excluded via STRUCTURAL_EDGE_TYPES
+    #    because they are built by a different path and legitimately carry no
+    #    source_chunk_ids (the old gate counted them, yielding the spurious 170).
+    #    N/A-not-fail when there are 0 domain edges for the doc: relationships
+    #    depend on the system_links pass extracting any, so an absent edge set is
+    #    a noted gap, NOT a lineage regression.
     # ------------------------------------------------------------------
-    rel_rows = relationship_edge_rows(run)
+    rel_rows = relationship_edge_rows(doc)
     rel_status, rel_ok, rel_detail = compute_relationship_precision(rel_rows)
     rel_label = "RELATIONSHIP precision (committed edges carry non-empty source_chunk_ids)"
     if rel_status == "NA":
