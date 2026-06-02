@@ -522,28 +522,34 @@ def _ontology_edge_types():
     return [n for n in names if n not in STRUCTURAL_EDGE_TYPES]
 
 
-def relationship_edge_rows(doc):
-    """Doc-scoped DOMAIN relationship edge rows with their source_chunk_ids.
+def relationship_edge_rows(run):
+    """RUN-SCOPED DOMAIN relationship edge rows with their source_chunk_ids.
 
-    Domain relationship edges declare pipeline_run_id + source_chunk_ids (LIST)
-    per arcadedb_schema._COMMON_EDGE_PROPS, but the commit path populates the
-    edge's ``document_ids`` LIST (the doc this edge was extracted from) rather
-    than the scalar pipeline_run_id — pipeline_run_id is NULL on every committed
-    domain edge. So scope by ``document_ids CONTAINS '<doc>'`` (the field these
-    edges actually carry), mirroring how the FIELD-precision check scopes the
-    global entity vertices that likewise carry no run_id. Enumerate ONLY the
-    non-structural (domain) edge types and pull this doc's rows from each.
-    Returns a list of dicts {type, source_chunk_ids}.
+    RUN-SCOPING IS THE CORRECT DISCRIMINATOR HERE. Domain relationship edges are
+    GLOBAL and accumulate across runs — they are append/upsert and never purged,
+    so 30+ prior graph_only runs on the same document leave their edges in place.
+    Scoping by ``document_ids CONTAINS '<doc>'`` (the old behaviour) therefore
+    counts ALL of those cross-run edges (e.g. 32 when only ~3-20 belong to the
+    current run) and scores STALE pre-fix edges, which carry pipeline_run_id=NULL
+    and an empty source_chunk_ids — producing a false FAIL for the run under test.
+    Only edges scoped to THIS run reflect the current build's lineage.
 
-    (source_chunk_ids is currently NULL on these committed domain edges — the
-    population fix is the in-flight D2 work — so the precision check still FAILs
-    after this; that is expected. This function's job is only to count the
-    RIGHT edges, not to make the check pass.)"""
+    After the upstream Fix H, every edge a run upserts carries
+    ``pipeline_run_id = run``, so ``WHERE pipeline_run_id = '<run>'`` captures
+    EXACTLY the edges this run committed. This mirrors the run-scoping the
+    HARD EXTRACTED_FROM check uses for the very same reason (EXTRACTED_FROM is
+    likewise append-only/global, so its count is run-scoped by pipeline_run_id).
+
+    Enumerate ONLY the non-structural (domain) edge types — the structural /
+    derive-rules / doc-anchor edge classes are excluded via STRUCTURAL_EDGE_TYPES
+    (see _ontology_edge_types) because they legitimately carry no
+    source_chunk_ids — and pull this run's rows from each. Returns a list of
+    dicts {type, source_chunk_ids}."""
     out = []
     for etype in _ontology_edge_types():
         rows = adb(
             f"SELECT '{etype}' AS etype, source_chunk_ids AS source_chunk_ids "
-            f"FROM `{etype}` WHERE document_ids CONTAINS '{doc}'"
+            f"FROM `{etype}` WHERE pipeline_run_id = '{run}'"
         )
         for r in rows:
             out.append({"type": etype, "source_chunk_ids": r.get("source_chunk_ids")})
@@ -655,11 +661,15 @@ def main():
     #    EXTRACTED_FROM, MENTIONED_IN, …) are excluded via STRUCTURAL_EDGE_TYPES
     #    because they are built by a different path and legitimately carry no
     #    source_chunk_ids (the old gate counted them, yielding the spurious 170).
-    #    N/A-not-fail when there are 0 domain edges for the doc: relationships
+    #    RUN-SCOPED by pipeline_run_id (NOT doc-scoped): domain relationship edges
+    #    are global and accumulate across runs, so a doc scope counts stale
+    #    cross-run edges (32 vs the ~3-20 this run built) and scores pre-fix
+    #    NULL-run edges — a false FAIL. Mirrors the EXTRACTED_FROM run-scoping (#1).
+    #    N/A-not-fail when there are 0 domain edges for the run: relationships
     #    depend on the system_links pass extracting any, so an absent edge set is
     #    a noted gap, NOT a lineage regression.
     # ------------------------------------------------------------------
-    rel_rows = relationship_edge_rows(doc)
+    rel_rows = relationship_edge_rows(run)
     rel_status, rel_ok, rel_detail = compute_relationship_precision(rel_rows)
     rel_label = "RELATIONSHIP precision (committed edges carry non-empty source_chunk_ids)"
     if rel_status == "NA":

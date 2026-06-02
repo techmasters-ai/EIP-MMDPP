@@ -404,10 +404,17 @@ def test_ontology_edge_types_filters_structural(monkeypatch):
     assert domain == {"ASSOCIATED_WITH", "CUES"}
 
 
-def test_relationship_edge_rows_scopes_by_document_ids(monkeypatch):
-    """Domain edges carry document_ids (NOT a scalar pipeline_run_id, which is
-    NULL on every committed domain edge), so the rows query must filter on
-    `document_ids CONTAINS '<doc>'`. Counts only the domain edge types."""
+def test_relationship_edge_rows_scopes_by_pipeline_run_id(monkeypatch):
+    """RELATIONSHIP-precision edges must be RUN-SCOPED by pipeline_run_id, NOT
+    doc-scoped by document_ids.
+
+    Domain relationship edges are GLOBAL and accumulate across runs (30+ prior
+    graph_only runs on the same doc), so `document_ids CONTAINS '<doc>'`
+    over-counts stale cross-run edges and scores pre-fix NULL-run edges, producing
+    a false FAIL. After the upstream Fix H every edge a run upserts carries
+    pipeline_run_id = run, so run-scoping captures EXACTLY this run's committed
+    edges — mirroring the EXTRACTED_FROM run-scoping in the same gate. The
+    domain-edge-type restriction (structural edges excluded) is preserved."""
     issued = []
 
     def fake_adb(sql):
@@ -422,17 +429,17 @@ def test_relationship_edge_rows_scopes_by_document_ids(monkeypatch):
         return []
 
     monkeypatch.setattr(gate, "adb", fake_adb)
-    rows = gate.relationship_edge_rows("DOC123")
+    rows = gate.relationship_edge_rows("RUN-ABC")
     # 22 ASSOCIATED_WITH + 7 CUES = 29 domain edges; structural ones excluded.
     assert len(rows) == 29
     types = {r["type"] for r in rows}
     assert types == {"ASSOCIATED_WITH", "CUES"}
-    # every per-type query scopes by document_ids, never pipeline_run_id.
+    # every per-type query scopes by the run id, never by document_ids.
     per_type = [s for s in issued if "schema:types" not in s]
     assert per_type, "expected per-edge-type queries"
     for sql in per_type:
-        assert "document_ids CONTAINS 'DOC123'" in sql
-        assert "pipeline_run_id" not in sql
+        assert "pipeline_run_id = 'RUN-ABC'" in sql
+        assert "document_ids CONTAINS" not in sql
 
 
 def test_committed_field_evidence_has_no_document_id_filter(monkeypatch):
