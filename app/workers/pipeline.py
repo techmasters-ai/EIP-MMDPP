@@ -1457,6 +1457,7 @@ def _import_graph_phase_domain_edges(
     db=None,
     document_id=None,
     upstream_refs=None,
+    identity_aliases=None,
 ) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
@@ -1526,6 +1527,7 @@ def _import_graph_phase_domain_edges(
         element_uid_chunk_map=element_uid_chunk_map,
         identity_map=identity_map,
         upstream_refs=upstream_refs,
+        identity_aliases=identity_aliases,
     )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
@@ -1973,6 +1975,7 @@ def _build_relationship_records(
     element_uid_chunk_map,
     identity_map,
     upstream_refs=None,
+    identity_aliases=None,
 ):
     """Build the RelationshipRecord list, attaching per-edge provenance AND
     resolved source-chunk lineage onto ``record.properties``.
@@ -1984,7 +1987,14 @@ def _build_relationship_records(
 
       * DTO ``from_ref_id`` / ``to_ref_id`` rows (system_links et al.) resolve
         BOTH refs through ``upstream_refs`` (ref_id → LogicalIdentity, the SAME
-        map ``_resolve_relationship`` uses) to a precise triple.
+        map ``_resolve_relationship`` uses) to a precise triple. ``upstream_refs``
+        holds the RAW pre-canonicalization identities, while each committed edge's
+        ``from_identity``/``to_identity`` were ALIAS-CANONICALIZED in
+        ``_resolve_relationship`` via ``_resolve_identity_alias``. So the resolved
+        src/tgt are canonicalized with the SAME ``identity_aliases`` map BEFORE the
+        precise key is formed — otherwise an aliased endpoint (e.g. designation
+        alias ``PAC-3`` → canonical ``MIM-104F``) would key on the pre-alias
+        identity, miss the canonicalized edge key, and silently orphan the edge.
       * Typed-edge passes resolve ``source/target_instance_id`` through
         ``_instance_to_identity_map`` (unchanged path).
 
@@ -2003,9 +2013,11 @@ def _build_relationship_records(
     ``__rel_type_fallback__`` bucket keyed on rel_type alone and emits a WARN
     (previously silent) so the coarse smear is observable.
     """
+    from app.services.extraction_merge import _resolve_identity_alias
     from app.services.graph_store import RelationshipRecord
 
     upstream_refs = upstream_refs or {}
+    identity_aliases = identity_aliases or {}
     id_to_identity = _instance_to_identity_map(entity_provenance_rows)
     _FALLBACK = "__rel_type_fallback__"
 
@@ -2055,6 +2067,14 @@ def _build_relationship_records(
                 )
 
         if src_identity is not None and tgt_identity is not None:
+            # Both upstream_refs values (DTO ref path) and id_to_identity values
+            # (typed-edge path) are RAW pre-canonicalization identities, whereas
+            # each MergedEdgeRecord.from_identity/to_identity was already
+            # alias-canonicalized in _resolve_relationship. Canonicalize BOTH
+            # endpoints with the SAME identity_aliases map so the precise triple
+            # key matches the committed edge key (no-op when no aliases exist).
+            src_identity = _resolve_identity_alias(src_identity, identity_aliases)
+            tgt_identity = _resolve_identity_alias(tgt_identity, identity_aliases)
             key: tuple = (src_identity, rt, tgt_identity)
         else:
             key = (_FALLBACK, rt)
@@ -8470,6 +8490,12 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             entity_provenance_rows=all_entity_provenance,
             db=db, document_id=document_id,
             upstream_refs=merged_upstream_refs,
+            # identity_aliases is the SAME canonicalization map merge_and_resolve
+            # used to rewrite each MergedEdgeRecord's from/to identities. The
+            # upstream_refs above are the RAW pre-alias identities, so the
+            # per-edge lineage builder must canonicalize them with this map to
+            # match the committed (already-canonicalized) edge keys.
+            identity_aliases=merged.identity_aliases,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(

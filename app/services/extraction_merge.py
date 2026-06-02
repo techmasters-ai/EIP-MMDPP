@@ -437,6 +437,13 @@ class MergedExtraction:
     # merge_and_resolve. _apply_post_merge_yield_updates reads this
     # uniformly for typed-edge and system_links passes.
     per_pass_edge_metrics: dict[str, PerPassEdgeMetrics] = field(default_factory=dict)
+    # old_identity -> final_identity map produced by cross-pass identity
+    # canonicalization (Mechanism A1). The SAME map _resolve_relationship used
+    # to canonicalize MergedEdgeRecord.from_identity/to_identity. Exposed so the
+    # worker can canonicalize the RAW (pre-alias) upstream_refs identities when
+    # building per-edge relationship lineage, keeping the precise triple key in
+    # sync with the already-canonicalized edge keys. Empty in the common case.
+    identity_aliases: dict[LogicalIdentity, LogicalIdentity] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1624,6 +1631,7 @@ def merge_and_resolve(
         pipeline_run_id=pipeline_run_id,
         document_id=document_id,
         per_pass_edge_metrics=per_pass_edge_metrics,
+        identity_aliases=identity_aliases,
     )
 
 

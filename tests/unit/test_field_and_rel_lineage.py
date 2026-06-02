@@ -300,6 +300,67 @@ def test_relationship_records_per_edge_from_ref_id_no_smear():
     assert by_to["C"].properties["source_chunk_ids"] == ["chunkY"]
 
 
+def test_relationship_records_per_edge_survives_identity_alias_canonicalization():
+    """The committed edge's from/to identities are ALIAS-CANONICALIZED (built via
+    ``_resolve_identity_alias`` in ``_resolve_relationship``), but the
+    ``upstream_refs`` values are the RAW, pre-canonicalization identities. When an
+    endpoint is an alias (e.g. designation alias ``PAC-3`` → canonical ``MIM-104F``),
+    the precise triple key built from RAW upstream_refs (PAC-3, rel, B) would MISS
+    the canonicalized edge key (MIM-104F, rel, B) → edge silently orphaned to None.
+
+    ``_build_relationship_records`` must apply the SAME ``identity_aliases``
+    canonicalization to the resolved src/tgt identities BEFORE keying, so the
+    precise per-edge match survives alias resolution (each edge gets ONLY its own
+    chunk, no smear, no orphan)."""
+    # RAW upstream_refs identity for E_A is the alias PAC-3 (pre-canonicalization).
+    pac3 = _identity("PAC-3")
+    mim104f = _identity("MIM-104F")  # canonical
+    b, c = _identity("B"), _identity("C")
+    identity_aliases = {pac3: mim104f}
+
+    # Edges are POST-canonical: from_identity is MIM-104F (as committed by merge).
+    edge_ab = MergedEdgeRecord(
+        from_identity=mim104f, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ac = MergedEdgeRecord(
+        from_identity=mim104f, to_identity=c, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    # upstream_refs hold the RAW pre-alias identity for E_A.
+    upstream_refs = {"E_A": pac3, "E_B": b, "E_C": c}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+            self_refs=["#/texts/100", "#/texts/200"],  # coarse batch union
+        ),
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_C",
+            evidence_ids=["#/texts/200"],   # -> chunkY
+            self_refs=["#/texts/100", "#/texts/200"],  # coarse batch union
+        ),
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ac],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+        identity_aliases=identity_aliases,
+    )
+
+    by_to = {rec.to_identity["name"]: rec for rec in records}
+    # MIM-104F->B gets ONLY chunkX (precise match survives canonicalization).
+    assert by_to["B"].properties["source_chunk_ids"] == ["chunkX"]
+    # MIM-104F->C gets ONLY chunkY.
+    assert by_to["C"].properties["source_chunk_ids"] == ["chunkY"]
+
+
 def test_relationship_record_refless_row_falls_back_and_warns(caplog):
     """A provenance row with NO from_ref_id/to_ref_id (and no resolvable
     instance ids) lands in the __rel_type_fallback__ bucket AND emits a WARN
