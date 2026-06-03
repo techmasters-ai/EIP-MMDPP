@@ -762,9 +762,20 @@ def build_pool_from_multi_channel_state(
     import unicodedata
     import numpy as np
     from app.services.extraction_candidate_scoring import merge_candidates
+    from app.services.extraction_lexical_search import section_hit_counts
     from app.services.graph_store import GraphEntityResult
 
     cap = top_n_override if top_n_override is not None else cfg.top_n_candidates
+
+    # SECTION signal (router-scoring): normalise anchors ONCE and compute the
+    # anchor-vs-heading hit counts over the pre-fetched rows. Empty anchors →
+    # sec_hits keyed-but-zero, byte-identical to the old section_meta={} literal.
+    normalised_anchors = [
+        unicodedata.normalize("NFC", a).casefold()
+        for a in (identity_anchors or [])
+        if a
+    ]
+    sec_hits = section_hit_counts(state.rows, normalised_anchors)
 
     # If no identity anchors, re-run merge as-is (same dense inputs, same lex/pat).
     # This is useful for relaxed_dense (larger cap) without C8.
@@ -813,6 +824,12 @@ def build_pool_from_multi_channel_state(
                             score=score,
                             score_type="vector",
                             properties={
+                                # vertex_id is the merge candidate_key (preferred
+                                # over self_ref). Carrying it here aligns the
+                                # bucket key with the lexical/pattern/section
+                                # hit-count keys (which key by vertex_id), so
+                                # those channels actually attach to this chunk.
+                                "vertex_id": row.get("vertex_id"),
                                 "self_ref": row["self_ref"],
                                 "chunk_text": row.get("chunk_text", ""),
                                 "page_number": row.get("page_number"),
@@ -843,17 +860,13 @@ def build_pool_from_multi_channel_state(
         field_dense=field_dense_to_use,
         lexical_hits=state.lex_hits,
         pattern_hits=state.pat_hits,
-        section_meta={},
+        section_meta=sec_hits,
         table_meta={},
     )
 
-    # C8 lexical sub-channel on merged pool (if anchors present)
+    # C8 lexical sub-channel on merged pool (if anchors present).
+    # ``normalised_anchors`` already computed above for the section signal.
     if identity_anchors:
-        normalised_anchors = [
-            unicodedata.normalize("NFC", a).casefold()
-            for a in identity_anchors
-            if a
-        ]
         for mc in merged_pool:
             haystack = unicodedata.normalize("NFC", mc.chunk_text or "").casefold()
             anchor_hit_count = sum(1 for a in normalised_anchors if a in haystack)
@@ -898,6 +911,7 @@ async def search_extraction_chunks_multi_channel_full(
     from app.services.extraction_lexical_search import (
         lexical_hit_counts,
         pattern_hit_counts,
+        section_hit_counts,
     )
 
     # ------------------------------------------------------------------
@@ -957,6 +971,22 @@ async def search_extraction_chunks_multi_channel_full(
         1 for v in pat_hits.values() if v.get("pattern_hits", 0) > 0
     )
 
+    # ------------------------------------------------------------------
+    # 4b. SECTION — anchor-vs-heading hit counts (router-scoring section
+    #     signal). Normalise the identity anchors ONCE (NFC + casefold) and
+    #     reuse the normalised list both here (section haystack = chunk
+    #     headings) and below for the C8 lexical sub-channel (haystack =
+    #     chunk body). When no anchors are supplied, sec_hits is {} (the
+    #     section_meta read in merge_candidates then yields section_hits=0,
+    #     byte-identical to the old section_meta={} literal).
+    # ------------------------------------------------------------------
+    normalised_anchors = [
+        unicodedata.normalize("NFC", a).casefold()
+        for a in (identity_anchors or [])
+        if a
+    ]
+    sec_hits = section_hit_counts(rows, normalised_anchors)
+
     # Capture state for E2 fallback ladder BEFORE any mutation (C8 may mutate
     # merged_pool but the underlying entity_dense / field_dense are not mutated).
     state = MultiChannelState(
@@ -970,14 +1000,14 @@ async def search_extraction_chunks_multi_channel_full(
 
     # ------------------------------------------------------------------
     # 5. C4 — merge all channels into a unified MergedCandidate pool.
-    #    section_meta={} and table_meta={} — Phase D deferred.
+    #    section_meta=sec_hits (real data); table_meta={} — Phase D deferred.
     # ------------------------------------------------------------------
     merged_pool: list[MergedCandidate] = merge_candidates(
         entity_dense=entity_dense,
         field_dense=field_dense,
         lexical_hits=lex_hits,
         pattern_hits=pat_hits,
-        section_meta={},
+        section_meta=sec_hits,
         table_meta={},
     )
 
@@ -1034,6 +1064,12 @@ async def search_extraction_chunks_multi_channel_full(
                             score=score,
                             score_type="vector",
                             properties={
+                                # vertex_id is the merge candidate_key (preferred
+                                # over self_ref). Carrying it here aligns the
+                                # bucket key with the lexical/pattern/section
+                                # hit-count keys (which key by vertex_id), so
+                                # those channels actually attach to this chunk.
+                                "vertex_id": row.get("vertex_id"),
                                 "self_ref": row["self_ref"],
                                 "chunk_text": row.get("chunk_text", ""),
                                 "page_number": row.get("page_number"),
@@ -1058,7 +1094,7 @@ async def search_extraction_chunks_multi_channel_full(
                         field_dense=field_dense_with_anchor,
                         lexical_hits=lex_hits,
                         pattern_hits=pat_hits,
-                        section_meta={},
+                        section_meta=sec_hits,
                         table_meta={},
                     )
         except Exception as exc:
@@ -1069,11 +1105,7 @@ async def search_extraction_chunks_multi_channel_full(
             )
 
         # --- 6b. Lexical sub-channel: tag chunks containing anchor names. ---
-        normalised_anchors = [
-            unicodedata.normalize("NFC", a).casefold()
-            for a in identity_anchors
-            if a
-        ]
+        # ``normalised_anchors`` already computed once at step 4b above.
         for mc in merged_pool:
             haystack = unicodedata.normalize("NFC", mc.chunk_text or "").casefold()
             anchor_hit_count = sum(
@@ -1261,6 +1293,11 @@ async def search_extraction_chunks_dense_multi_query(
                     score=score,
                     score_type="vector",
                     properties={
+                        # vertex_id is the merge candidate_key (preferred over
+                        # self_ref). Carrying it here aligns the bucket key with
+                        # the lexical/pattern/section hit-count keys (which key
+                        # by vertex_id), so those channels attach to this chunk.
+                        "vertex_id": row.get("vertex_id"),
                         "self_ref": row["self_ref"],
                         "chunk_text": row.get("chunk_text", ""),
                         "page_number": row.get("page_number"),

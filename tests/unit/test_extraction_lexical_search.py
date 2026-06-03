@@ -31,6 +31,7 @@ from app.services.extraction_query_builder import FieldRetrievalQuery
 from app.services.extraction_lexical_search import (
     lexical_hit_counts,
     pattern_hit_counts,
+    section_hit_counts,
 )
 
 
@@ -325,3 +326,131 @@ class TestPatternHitCounts:
         assert all(entry["pattern_hits"] == 1 for entry in result.values())
         # The function should not raise and should return all rows
         assert len(result) == 100
+
+
+# ---------------------------------------------------------------------------
+# SECTION — section_hit_counts (router-scoring section signal, v1)
+#
+# Mirrors lexical_hit_counts: NFC+casefold substring matching, but the haystack
+# is the chunk's HEADING hierarchy (section_path / headings projected in Part 1)
+# rather than chunk_text, and the needles are the type-matched committed entity
+# names ("anchors"). Returns {candidate_key: {"section_hits": int}}.
+# ---------------------------------------------------------------------------
+
+def _srow(
+    self_ref: str,
+    *,
+    headings: list[str] | None = None,
+    section_path: str | None = None,
+    vertex_id: str | None = None,
+    chunk_text: str = "",
+) -> dict:
+    """Minimal ExtractionChunk row carrying heading projection fields."""
+    row: dict = {"self_ref": self_ref, "chunk_text": chunk_text}
+    if headings is not None:
+        row["headings"] = headings
+    if section_path is not None:
+        row["section_path"] = section_path
+    if vertex_id is not None:
+        row["vertex_id"] = vertex_id
+    return row
+
+
+class TestSectionHitCounts:
+    def test_anchor_present_in_headings_counts_one(self):
+        rows = [_srow("r1", headings=["Chapter 2", "SNR-75 Fire Control"])]
+        result = section_hit_counts(rows, ["SNR-75", "V-75"])
+        assert result["r1"]["section_hits"] == 1
+
+    def test_anchor_absent_from_headings_counts_zero(self):
+        rows = [_srow("r2", headings=["Chapter 2", "General Description"])]
+        result = section_hit_counts(rows, ["SNR-75", "V-75"])
+        assert result["r2"]["section_hits"] == 0
+
+    def test_case_insensitive_match(self):
+        rows = [_srow("r3", headings=["snr-75 fire control radar"])]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert result["r3"]["section_hits"] == 1
+
+    def test_cyrillic_nfc_decomposed_vs_composed_parity(self):
+        # Heading stored decomposed (NFD); anchor supplied composed (NFC).
+        # Both must match after the shared _nfc normalisation.
+        composed = "Й"  # U+0419 (NFC)
+        decomposed = unicodedata.normalize("NFD", composed)  # U+0418 U+0306
+        assert composed != decomposed  # byte-level differ pre-normalisation
+        rows = [_srow("r4", headings=[f"Section {decomposed}"])]
+        result = section_hit_counts(rows, [f"Section {composed}"])
+        assert result["r4"]["section_hits"] == 1
+
+    def test_empty_headings_counts_zero(self):
+        rows = [_srow("r5", headings=[])]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert result["r5"]["section_hits"] == 0
+
+    def test_missing_heading_fields_counts_zero(self):
+        # Legacy row: no headings AND no section_path columns at all.
+        rows = [{"self_ref": "r5b", "chunk_text": "body text mentions SNR-75"}]
+        result = section_hit_counts(rows, ["SNR-75"])
+        # chunk_text is NOT the section haystack — section matching is heading-only.
+        assert result["r5b"]["section_hits"] == 0
+
+    def test_multiple_anchors_each_counted(self):
+        rows = [_srow("r6", headings=["SNR-75 and V-75 deployment"])]
+        result = section_hit_counts(rows, ["SNR-75", "V-75"])
+        assert result["r6"]["section_hits"] == 2
+
+    def test_same_anchor_listed_twice_counts_per_anchor(self):
+        # Mirrors lexical_hit_counts: each anchor entry that matches contributes.
+        rows = [_srow("r6b", headings=["SNR-75 fire control"])]
+        result = section_hit_counts(rows, ["SNR-75", "SNR-75"])
+        assert result["r6b"]["section_hits"] == 2
+
+    def test_section_path_field_used_as_haystack(self):
+        # A row with no `headings` list but a `section_path` breadcrumb string.
+        rows = [_srow("r7", section_path="Chapter 2 > SNR-75 Fire Control")]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert result["r7"]["section_hits"] == 1
+
+    def test_headings_and_section_path_both_searched(self):
+        rows = [_srow(
+            "r7b",
+            headings=["Chapter 2"],
+            section_path="Chapter 2 > SNR-75 Fire Control",
+        )]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert result["r7b"]["section_hits"] >= 1
+
+    def test_candidate_key_prefers_vertex_id(self):
+        rows = [_srow("r8", headings=["SNR-75"], vertex_id="run1:chunk_8")]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert "run1:chunk_8" in result
+        assert "r8" not in result
+        assert result["run1:chunk_8"]["section_hits"] == 1
+
+    def test_candidate_key_falls_back_to_self_ref(self):
+        rows = [_srow("r9", headings=["SNR-75"])]
+        result = section_hit_counts(rows, ["SNR-75"])
+        assert "r9" in result
+
+    def test_empty_rows_returns_empty_dict(self):
+        assert section_hit_counts([], ["SNR-75"]) == {}
+
+    def test_empty_anchors_zeroes_every_row(self):
+        rows = [_srow("r10", headings=["SNR-75 fire control"])]
+        result = section_hit_counts(rows, [])
+        assert result["r10"]["section_hits"] == 0
+
+    def test_blank_and_none_anchors_ignored(self):
+        # Defensive: empty-string / None anchors must not match everything.
+        rows = [_srow("r11", headings=["General Description"])]
+        result = section_hit_counts(rows, ["", None, "  "])
+        assert result["r11"]["section_hits"] == 0
+
+    def test_likely_sections_accepted_optional_arg(self):
+        # v1 matches anchors; likely_sections is accepted but reserved for a
+        # later flag. Passing it must not raise and must not change v1 results.
+        rows = [_srow("r12", headings=["SNR-75 fire control"])]
+        result = section_hit_counts(
+            rows, ["SNR-75"], likely_sections=("fire control",),
+        )
+        assert result["r12"]["section_hits"] == 1

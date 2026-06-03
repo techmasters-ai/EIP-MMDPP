@@ -28,6 +28,10 @@ import re
 import unicodedata
 from typing import Sequence
 
+from app.services.extraction_chunk_index import (
+    read_chunk_headings,
+    read_chunk_section_path,
+)
 from app.services.extraction_query_builder import FieldRetrievalQuery
 
 
@@ -146,6 +150,96 @@ def lexical_hit_counts(
             "negative_hits": negative_hits,
             "supported_fields": supported_fields,
         }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# SECTION — section-heading anchor search (router-scoring section signal, v1)
+# ---------------------------------------------------------------------------
+
+def section_hit_counts(
+    rows: list[dict],
+    anchors: Sequence[str],
+    likely_sections: Sequence[str] = (),
+) -> dict[str, dict]:
+    """Return per-chunk SECTION-heading anchor hit counts.
+
+    Mirrors :func:`lexical_hit_counts` exactly in normalisation and keying, but
+    the haystack is the chunk's HEADING hierarchy (the ``section_path`` /
+    ``headings`` projection added in router-scoring Part 1) rather than the
+    chunk body text, and the needles are the ``anchors`` — the already
+    type-matched committed entity names supplied by the caller.
+
+    Parameters
+    ----------
+    rows:
+        List of ExtractionChunk row dicts (from
+        ``fetch_extraction_chunks_for_run``). Each must have ``self_ref``
+        (str); may carry ``vertex_id`` (str | None) for the candidate key and
+        ``section_path`` (str | None) / ``headings`` (list) projected in Part
+        1. Legacy rows (indexed before Part 1) lack the heading columns — the
+        ``read_chunk_*`` accessors None/[]-coalesce, yielding an empty haystack
+        and therefore ``section_hits == 0``.
+    anchors:
+        Committed entity names to match against each chunk's heading haystack.
+        Blank / ``None`` entries are skipped (they would otherwise match every
+        chunk). Each anchor that appears in the haystack contributes 1 to the
+        count; the SAME anchor listed twice contributes twice (mirrors
+        ``lexical_hit_counts`` per-alias counting).
+    likely_sections:
+        Accepted but UNUSED in v1 (reserved for a later flag that will also
+        boost chunks from sections named in the pass's ``likely_sections``).
+        Passing it must not change v1 results.
+
+    Returns
+    -------
+    dict[str, dict]
+        Keyed by candidate_key (``vertex_id`` preferred, ``self_ref``
+        fallback). Each value has:
+        - ``section_hits`` (int) — number of ``anchors`` found in the chunk's
+          heading haystack.
+
+    Pure: no DB / no network. Consumed by C4 ``merge_candidates`` as the
+    ``section_meta`` argument.
+    """
+    # ``likely_sections`` is reserved for a later flag (v1 matches anchors).
+    # Reference it so linters don't flag the parameter as dead and so the
+    # intent (accepted-but-optional) is explicit.
+    _ = likely_sections
+
+    # Pre-normalise anchors once (NFC + casefold), dropping blanks / Nones so
+    # an empty needle can't substring-match every heading.
+    norm_anchors = [
+        _nfc(a).casefold()
+        for a in anchors
+        if a and a.strip()
+    ]
+
+    result: dict[str, dict] = {}
+
+    for row in rows:
+        key = _candidate_key(row)
+
+        # Build the section haystack from the chunk's heading projection.
+        # ``read_chunk_headings`` returns list[str] (outermost -> innermost);
+        # ``read_chunk_section_path`` returns the joined breadcrumb or None.
+        # Search BOTH so a row carrying only one of the two columns still
+        # matches. Join with newlines so distinct heading levels can't form
+        # an accidental cross-boundary substring.
+        heading_parts = list(read_chunk_headings(row))
+        section_path = read_chunk_section_path(row)
+        if section_path:
+            heading_parts.append(section_path)
+        haystack = _nfc("\n".join(heading_parts)).casefold()
+
+        section_hits = 0
+        if haystack:
+            for anchor in norm_anchors:
+                if anchor in haystack:
+                    section_hits += 1
+
+        result[key] = {"section_hits": section_hits}
 
     return result
 

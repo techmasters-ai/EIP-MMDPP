@@ -1547,3 +1547,97 @@ class TestF1NoGraphIdFields:
 
         result = active_fields([], template_cls, cfg)
         assert result == list(template_cls.model_fields.keys())
+
+
+# ===========================================================================
+# SAFETY — section_weight default 0.0 keeps the section term INERT.
+#
+# Router-scoring section-signal piece. section_hit_counts now wires REAL data,
+# so section_norm becomes non-zero in the pool. The HARD requirement is that
+# final_score and ordering stay byte-identical to "no section signal" because
+# the DEFAULT section_weight is 0.0 (0.0 * section_norm == 0.0).
+# ===========================================================================
+
+
+class TestSectionWeightInertAtDefault:
+    def test_default_section_weight_is_zero(self):
+        """The model default itself must be 0.0 (the safety pin)."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        assert RetrievalProfile().section_weight == 0.0
+
+    def test_section_term_byte_identical_with_default_weight(self):
+        """final_score is byte-identical between a candidate set WITH non-zero
+        section_hits and the SAME set with section_hits zeroed, when
+        section_weight is the (new) default 0.0.
+
+        This is the 0.0 * section_norm == 0.0 proof: the section term cannot
+        move a single score even though section_norm is now non-zero.
+        """
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # Default profile: section_weight defaults to 0.0 now.
+        cfg = RetrievalProfile()
+        assert cfg.section_weight == 0.0
+
+        # Candidates carry a spread of OTHER signals so the pool exercises every
+        # term, plus a spread of section_hits (non-zero → section_norm > 0).
+        def _pair(key, **kw):
+            with_section = _make_scored_candidate(key, **kw)
+            kw_no_sec = dict(kw)
+            kw_no_sec["section_hits"] = 0
+            without_section = _make_scored_candidate(key, **kw_no_sec)
+            return with_section, without_section
+
+        specs = [
+            dict(reranker_score=0.9, alias_hits=2, pattern_hits=1, section_hits=5),
+            dict(reranker_score=0.5, alias_hits=0, pattern_hits=3, section_hits=2),
+            dict(reranker_score=0.1, alias_hits=4, negative_hits=1, section_hits=1),
+            dict(reranker_score=0.3, section_hits=9),
+            dict(alias_hits=1, section_hits=4),  # unscorable (no reranker_score)
+        ]
+        with_pool = []
+        without_pool = []
+        for i, kw in enumerate(specs):
+            w, wo = _pair(f"c{i}", **kw)
+            with_pool.append(w)
+            without_pool.append(wo)
+
+        res_with = score_candidates(with_pool, cfg)
+        res_without = score_candidates(without_pool, cfg)
+
+        keys_with = [mc.candidate_key for mc, _ in res_with]
+        keys_without = [mc.candidate_key for mc, _ in res_without]
+        scores_with = [s for _, s in res_with]
+        scores_without = [s for _, s in res_without]
+
+        # Ordering byte-identical.
+        assert keys_with == keys_without
+        # Scores byte-identical (exact equality, not approx) — section term is 0.
+        assert scores_with == scores_without
+
+    def test_nonzero_section_weight_DOES_move_score(self):
+        """Counter-proof: with a non-zero section_weight (calibration), the same
+        non-zero section_hits DO change the score — confirming the inertness in
+        the test above is owed to the weight being 0.0, not to dead code.
+        """
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg_zero = RetrievalProfile(section_weight=0.0)
+        cfg_hot = RetrievalProfile(section_weight=0.5)
+
+        cands = [
+            _make_scored_candidate("a", reranker_score=0.5, section_hits=4),
+            _make_scored_candidate("b", reranker_score=0.5, section_hits=0),
+        ]
+        s_zero = {mc.candidate_key: sc for mc, sc in score_candidates(
+            [dict(c) for c in cands], cfg_zero)}
+        s_hot = {mc.candidate_key: sc for mc, sc in score_candidates(
+            [dict(c) for c in cands], cfg_hot)}
+
+        # With weight 0.0 the two candidates tie on the section term.
+        assert s_zero["a"] == s_zero["b"]
+        # With weight 0.5 the section-bearing candidate scores strictly higher.
+        assert s_hot["a"] > s_hot["b"]

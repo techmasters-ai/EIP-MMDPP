@@ -91,13 +91,31 @@ class TestNewFieldDefaults:
         assert _profile().pattern_weight == pytest.approx(0.15)
 
     def test_section_weight_default(self):
-        assert _profile().section_weight == pytest.approx(0.10)
+        # Router-scoring section-signal piece: default flipped 0.10 -> 0.0.
+        # section_norm becomes non-zero once section_hit_counts wires real data;
+        # keeping the term inert REQUIRES the weight default be 0.0 until
+        # calibration sets it. See test_section_term_inert_at_default_weight.
+        assert _profile().section_weight == pytest.approx(0.0)
 
     def test_table_boost_default(self):
         assert _profile().table_boost == pytest.approx(0.08)
 
     def test_negative_weight_default(self):
         assert _profile().negative_weight == pytest.approx(0.20)
+
+    # decomposed-lexical weights + flag (declared now; CONSUMED in the next
+    # piece). Safe defaults keep them inert: all weights 0.0, flag False.
+    def test_field_label_weight_default(self):
+        assert _profile().field_label_weight == pytest.approx(0.0)
+
+    def test_anchor_text_weight_default(self):
+        assert _profile().anchor_text_weight == pytest.approx(0.0)
+
+    def test_anchor_section_weight_default(self):
+        assert _profile().anchor_section_weight == pytest.approx(0.0)
+
+    def test_lexical_decomposed_default(self):
+        assert _profile().lexical_decomposed is False
 
     # subset-schema extraction (opt-in)
     def test_subset_schema_extraction_default(self):
@@ -140,6 +158,18 @@ class TestNewFieldsRoundtrip:
         assert p.section_weight == pytest.approx(0.05)
         assert p.table_boost == pytest.approx(0.12)
         assert p.negative_weight == pytest.approx(0.15)
+
+    def test_decomposed_lexical_fields_roundtrip(self):
+        p = _profile(
+            field_label_weight=0.11,
+            anchor_text_weight=0.13,
+            anchor_section_weight=0.17,
+            lexical_decomposed=True,
+        )
+        assert p.field_label_weight == pytest.approx(0.11)
+        assert p.anchor_text_weight == pytest.approx(0.13)
+        assert p.anchor_section_weight == pytest.approx(0.17)
+        assert p.lexical_decomposed is True
 
     def test_subset_schema_extraction_opt_in(self):
         p = _profile(subset_schema_extraction=True)
@@ -257,8 +287,102 @@ class TestManifestIntegration:
             assert rp.rerank_weight == pytest.approx(1.0)
             assert rp.lexical_weight == pytest.approx(0.20)
             assert rp.pattern_weight == pytest.approx(0.15)
-            assert rp.section_weight == pytest.approx(0.10)
+            # section_weight default flipped 0.10 -> 0.0 (inert-by-default).
+            assert rp.section_weight == pytest.approx(0.0)
             assert rp.table_boost == pytest.approx(0.08)
             assert rp.negative_weight == pytest.approx(0.20)
+            # decomposed-lexical weights + flag (declared, inert by default).
+            assert rp.field_label_weight == pytest.approx(0.0)
+            assert rp.anchor_text_weight == pytest.approx(0.0)
+            assert rp.anchor_section_weight == pytest.approx(0.0)
+            assert rp.lexical_decomposed is False
             # subset schema
             assert rp.subset_schema_extraction is False
+
+
+# ---------------------------------------------------------------------------
+# 7. A manifest CARRYING the new keys loads under extra="forbid"
+# ---------------------------------------------------------------------------
+
+class TestManifestCarryingNewKeysLoads:
+    """The new fields are OPTIONAL but must be ACCEPTED when a manifest sets
+    them — declaring them under extra='forbid' means an explicit key in a
+    retrieval block validates instead of raising.
+    """
+
+    def test_retrieval_profile_block_with_new_keys_validates(self):
+        # Shape of a manifest `retrieval:` block that pins the new knobs.
+        block = {
+            "min_similarity": 0.35,
+            "top_n_candidates": 50,
+            "top_k": 15,
+            "section_weight": 0.0,
+            "field_label_weight": 0.1,
+            "anchor_text_weight": 0.2,
+            "anchor_section_weight": 0.3,
+            "lexical_decomposed": True,
+        }
+        rp = _profile(**block)
+        assert rp.section_weight == pytest.approx(0.0)
+        assert rp.field_label_weight == pytest.approx(0.1)
+        assert rp.anchor_text_weight == pytest.approx(0.2)
+        assert rp.anchor_section_weight == pytest.approx(0.3)
+        assert rp.lexical_decomposed is True
+
+    def test_full_manifest_with_new_keys_model_validates(self):
+        """End-to-end: a BundleManifest whose pass carries the new retrieval
+        keys validates through model_validate (the real loader path)."""
+        from app.services.ontology_bundles import BundleManifest
+
+        raw = {
+            "bundle_key": "synthetic_section_signal",
+            "manifest_schema_version": "1.0.0",
+            "ontology_name": "synthetic",
+            "ontology_version": "1.0.0",
+            "extraction_profile_version": "1.0.0",
+            "passes": [
+                {
+                    # Identity pass required by BundleManifest (the initial
+                    # dispatcher only queues identity passes). No retrieval
+                    # block — identity passes bypass the router.
+                    "name": "synthetic_identity",
+                    "phase": "identity",
+                    "required": False,
+                    "kind": "entities",
+                    "input_mode": "document_only",
+                    "module": "extraction_schemas.synthetic_identity",
+                    "template_class": "SyntheticIdentityPass",
+                    "primary_entity_types": ["WIDGET"],
+                    "bridge_entity_types": [],
+                    "extracted_relationship_types": [],
+                    "depends_on": [],
+                },
+                {
+                    "name": "synthetic_field_group",
+                    "phase": "field_group",
+                    "required": False,
+                    "kind": "entities",
+                    "input_mode": "document_only",
+                    "module": "extraction_schemas.synthetic",
+                    "template_class": "SyntheticPass",
+                    "primary_entity_types": ["WIDGET"],
+                    "bridge_entity_types": [],
+                    "extracted_relationship_types": [],
+                    "depends_on": [],
+                    "retrieval": {
+                        "section_weight": 0.0,
+                        "field_label_weight": 0.1,
+                        "anchor_text_weight": 0.2,
+                        "anchor_section_weight": 0.3,
+                        "lexical_decomposed": True,
+                    },
+                },
+            ],
+        }
+        m = BundleManifest.model_validate(raw)
+        fg = next(p for p in m.passes if p.name == "synthetic_field_group")
+        rp = fg.retrieval
+        assert rp is not None
+        assert rp.section_weight == pytest.approx(0.0)
+        assert rp.field_label_weight == pytest.approx(0.1)
+        assert rp.lexical_decomposed is True

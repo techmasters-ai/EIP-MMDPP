@@ -606,3 +606,135 @@ async def test_end_to_end_one_select_zero_hnsw():
     from app.services.graph_store import GraphEntityResult
     for r in entity_results:
         assert isinstance(r, GraphEntityResult)
+
+
+# ---------------------------------------------------------------------------
+# SECTION wiring — real section_meta flows into MergedCandidate.section_hits
+#
+# Router-scoring section-signal piece. search_extraction_chunks_multi_channel_full
+# now computes section_hit_counts(rows, normalised_anchors) and passes it as the
+# REAL section_meta to merge_candidates (replacing the {} literal). A chunk whose
+# HEADINGS contain an anchor name must surface with section_hits >= 1.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_channel_full_wires_real_section_meta_into_section_hits():
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_multi_channel_full,
+    )
+    from app.services.ontology_bundles import RetrievalProfile
+
+    # The matching chunk: headings carry the anchor "SNR-75"; aligned embedding
+    # so the entity-dense channel surfaces it into the merged pool (buckets).
+    match_vec = _norm(_vec(1.0, 0.0))
+    other_vec = _norm(_vec(0.0, 1.0))
+    rows = [
+        _row(
+            "#/texts/match",
+            match_vec,
+            vertex_id="run-A:chunk_match",
+            chunk_text="body text without the needle",
+            headings=["Chapter 2", "SNR-75 Fire Control Radar"],
+            section_path="Chapter 2 > SNR-75 Fire Control Radar",
+        ),
+        _row(
+            "#/texts/other",
+            other_vec,
+            vertex_id="run-A:chunk_other",
+            chunk_text="unrelated body",
+            headings=["Appendix A", "General Description"],
+        ),
+    ]
+    store = _fake_store(rows)
+    signals = _make_retrieval_signals(entity_query="radar fire control")
+    cfg = RetrievalProfile(top_n_candidates=10)
+
+    # embed_texts is called twice: (1) dense multi-query [entity_query] (query=True),
+    # (2) anchors [SNR-75] (query=True). Return the match vector each time so the
+    # matching chunk lands in the dense + anchor-dense pool.
+    def _embed_side_effect(texts, query=False):
+        return [match_vec for _ in texts]
+
+    with patch(
+        "app.services.extraction_chunk_search.embed_texts",
+        MagicMock(side_effect=_embed_side_effect),
+    ):
+        pool, _diag, _state = await search_extraction_chunks_multi_channel_full(
+            signals,
+            "run-A",
+            cfg,
+            store=store,
+            identity_anchors=["SNR-75"],
+        )
+
+    by_key = {mc.candidate_key: mc for mc in pool}
+    assert "run-A:chunk_match" in by_key, (
+        f"matching chunk must be in the merged pool; got {list(by_key)}"
+    )
+    assert by_key["run-A:chunk_match"].section_hits >= 1, (
+        "section_hit_counts must have flowed into MergedCandidate.section_hits "
+        "for the chunk whose headings contain the anchor"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_pool_from_state_wires_real_section_meta():
+    """The pool-builder reuse path (E2 fallback ladder) also supplies real
+    section_meta — section_hits is set from the chunk's headings."""
+    from app.services.extraction_chunk_search import (
+        build_pool_from_multi_channel_state,
+        MultiChannelState,
+    )
+    from app.services.graph_store import GraphEntityResult
+    from app.services.ontology_bundles import RetrievalProfile
+
+    match_vec = _norm(_vec(1.0, 0.0))
+    row = _row(
+        "#/texts/match",
+        match_vec,
+        vertex_id="run-A:chunk_match",
+        chunk_text="body text without the needle",
+        headings=["SNR-75 Fire Control Radar"],
+    )
+
+    # Pre-seed the dense channel so the chunk is already in buckets.
+    entity_dense = [
+        GraphEntityResult(
+            node_id="run-A:chunk_match",
+            name="#/texts/match",
+            entity_type="ExtractionChunk",
+            extraction_confidence=0.9,
+            score=0.9,
+            score_type="vector",
+            properties={
+                "vertex_id": "run-A:chunk_match",
+                "self_ref": "#/texts/match",
+                "chunk_text": "body text without the needle",
+                "headings": ["SNR-75 Fire Control Radar"],
+            },
+        )
+    ]
+    state = MultiChannelState(
+        rows=[row],
+        entity_dense=entity_dense,
+        field_dense={},
+        lex_hits={},
+        pat_hits={},
+        raw_row_count=1,
+    )
+    cfg = RetrievalProfile(top_n_candidates=10)
+
+    # identity_anchors triggers section_hit_counts; embed_texts only called for
+    # the anchor dense sub-channel here (state reuse skips the query re-embed).
+    with patch(
+        "app.services.extraction_chunk_search.embed_texts",
+        MagicMock(side_effect=lambda texts, query=False: [match_vec for _ in texts]),
+    ):
+        pool = build_pool_from_multi_channel_state(
+            state, cfg, identity_anchors=["SNR-75"],
+        )
+
+    by_key = {mc.candidate_key: mc for mc in pool}
+    assert "run-A:chunk_match" in by_key
+    assert by_key["run-A:chunk_match"].section_hits >= 1

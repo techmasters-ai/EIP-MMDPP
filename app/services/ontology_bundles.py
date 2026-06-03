@@ -178,9 +178,18 @@ class RetrievalProfile(BaseModel):
         description="Boost weight for pattern-match channel hit.",
     )
     section_weight: float = Field(
-        default=0.10,
+        default=0.0,
         ge=0.0,
-        description="Boost weight awarded when the chunk is from a matching section.",
+        description=(
+            "Boost weight awarded when the chunk is from a matching section. "
+            "Router-scoring section-signal piece: default flipped 0.10 -> 0.0. "
+            "Before the section matcher wired real data, ``section_norm`` was "
+            "always 0, so ``section_weight * section_norm`` (0.10 * 0) "
+            "contributed nothing. Now that ``section_hit_counts`` makes "
+            "``section_norm`` non-zero, keeping the term INERT (byte-identical "
+            "final_score) REQUIRES the default be 0.0. Calibration raises it "
+            "once shadow data justifies the section boost."
+        ),
     )
     table_boost: float = Field(
         default=0.08,
@@ -191,6 +200,56 @@ class RetrievalProfile(BaseModel):
         default=0.20,
         ge=0.0,
         description="Penalty weight subtracted for negative-signal indicators.",
+    )
+
+    # ------------------------------------------------------------------
+    # Decomposed-lexical weights + flag (DECLARED here; CONSUMED in the
+    # next router-scoring piece — the 3-weight C5 lexical decomposition).
+    #
+    # Declaring them now under ``extra="forbid"`` is harmless: a manifest may
+    # set them, and the scoring formula does not read them yet. All three
+    # weights default to 0.0 and the flag defaults to False, so the future
+    # decomposition stays inert until calibration enables it. Splitting the
+    # single ``lexical_weight`` term into field-label / anchor-text /
+    # anchor-section sub-terms lets the router weight an alias hit differently
+    # depending on WHERE it matched (schema field label vs committed-entity
+    # name in body text vs that same name in the section heading).
+    # ------------------------------------------------------------------
+    field_label_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Decomposed-lexical sub-weight for alias hits that matched a "
+            "schema field LABEL. Inert until lexical_decomposed=True (next "
+            "piece)."
+        ),
+    )
+    anchor_text_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Decomposed-lexical sub-weight for committed-entity ANCHOR names "
+            "that matched in the chunk body text. Inert until "
+            "lexical_decomposed=True (next piece)."
+        ),
+    )
+    anchor_section_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Decomposed-lexical sub-weight for committed-entity ANCHOR names "
+            "that matched in the chunk SECTION heading. Inert until "
+            "lexical_decomposed=True (next piece)."
+        ),
+    )
+    lexical_decomposed: bool = Field(
+        default=False,
+        description=(
+            "When True (next piece), the C5 lexical term is split into "
+            "field_label / anchor_text / anchor_section sub-terms using the "
+            "weights above instead of the single ``lexical_weight``. Default "
+            "False preserves the legacy single-weight lexical term."
+        ),
     )
 
     # ------------------------------------------------------------------
