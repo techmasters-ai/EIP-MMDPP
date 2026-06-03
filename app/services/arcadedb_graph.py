@@ -239,6 +239,48 @@ def _build_upsert_node_script(
     return script, params
 
 
+def _is_all_int_list(value: Any) -> bool:
+    """True iff ``value`` is a non-empty list of plain ints (no bools).
+
+    bool is a subclass of int in Python but represents a different SQL type,
+    so it is explicitly excluded. An empty list is False — it never triggers
+    the nesting bug and is fine to bind normally.
+    """
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in value)
+    )
+
+
+def _sql_list_set_fragment(
+    field: str,
+    value: Any,
+    params: dict[str, Any],
+    pk: str,
+) -> str:
+    """Return a ``field = ...`` SET fragment for a list-valued edge property.
+
+    All-int lists (e.g. ``source_pages``, ``page_numbers``) are emitted as an
+    INLINE SQL int-list literal — ``field = [1, 2, 3]`` — and NOT bound. This
+    is the ArcadeDB-nesting workaround: deserializing an all-numeric JSON array
+    yields a Java primitive ``long[]``; binding that to a schema-declared LIST
+    column coerces it into a NESTED one-element list (``[[1,2,3]]``), which
+    silently breaks ``WHERE field CONTAINS n`` membership filters. The values
+    are pipeline-derived ints, so ``str(int(x))`` is injection-safe.
+
+    All other values (string lists, scalars, empty lists) are bound to ``pk``
+    as a normal ``field = :pk`` param — strings deserialize to ``List<String>``
+    and stay flat, so they MUST NOT be inlined.
+
+    Mutates ``params`` only on the binding path.
+    """
+    if _is_all_int_list(value):
+        return f"{field} = [{', '.join(str(int(x)) for x in value)}]"
+    params[pk] = value
+    return f"{field} = :{pk}"
+
+
 def _build_upsert_relationship_script(
     records: list[RelationshipRecord],
     provenance: ProvenanceMetadata | None,
@@ -282,9 +324,11 @@ def _build_upsert_relationship_script(
 
         extra_parts: list[str] = []
         for k, v in record.properties.items():
-            pk = f"p_{k}_{i}"
-            params[pk] = v
-            extra_parts.append(f"{k} = :{pk}")
+            # All-int list props (source_pages) are inlined as SQL literals to
+            # dodge the ArcadeDB bound-numeric-array nesting bug; everything
+            # else (incl. string lists like source_chunk_ids / source_self_refs)
+            # stays a bound param. See _sql_list_set_fragment.
+            extra_parts.append(_sql_list_set_fragment(k, v, params, f"p_{k}_{i}"))
         if record.provenance is not None:
             prov_key = f"provenance_{i}"
             params[prov_key] = json.dumps(record.provenance)
@@ -832,21 +876,26 @@ class ArcadeDBGraphStore:
     ) -> None:
         # HAS_PROVENANCE links entities to their source Document.
         # Distinct from EXTRACTED_FROM which links entities to specific chunks.
+        params = {
+            "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
+        }
+        # page_numbers is an int-list: inline as a SQL literal to avoid the
+        # bound-numeric-array nesting bug. _sql_list_set_fragment binds (and
+        # adds page_numbers to params) only when it isn't an all-int list.
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
-            "page_numbers = :page_numbers, "
+            f"{page_set}, "
             "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
             "created_at = sysdate()"
         )
-        params = {
-            "document_id": provenance.document_id,
-            "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
-            "upload_datetime": provenance.upload_datetime,
-            "document_datetime": provenance.document_datetime,
-        }
         await self._client.command(self._database, "sql", sql, params)
 
     async def upsert_nodes_batch(
@@ -879,17 +928,21 @@ class ArcadeDBGraphStore:
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
             "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
             "upload_datetime": provenance.upload_datetime,
             "document_datetime": provenance.document_datetime,
         }
+        # page_numbers is constant across all edges in the batch: build its SET
+        # fragment once (inline int-list literal, see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET document_id = :document_id, "
                 f"pipeline_run_id = :pipeline_run_id, "
-                f"page_numbers = :page_numbers, "
+                f"{page_set}, "
                 f"upload_datetime = :upload_datetime, "
                 f"document_datetime = :document_datetime, "
                 f"created_at = sysdate()"
@@ -2228,21 +2281,25 @@ class ArcadeDBGraphStore:
     def _create_provenance_edge_sync(
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
+        params = {
+            "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
+        }
+        # page_numbers is an int-list: inline as a SQL literal to avoid the
+        # bound-numeric-array nesting bug (see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
-            "page_numbers = :page_numbers, "
+            f"{page_set}, "
             "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
             "created_at = sysdate()"
         )
-        params = {
-            "document_id": provenance.document_id,
-            "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
-            "upload_datetime": provenance.upload_datetime,
-            "document_datetime": provenance.document_datetime,
-        }
         self._client.command_sync(self._database, "sql", sql, params)
 
     def upsert_nodes_batch_sync(
@@ -2456,17 +2513,21 @@ class ArcadeDBGraphStore:
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
             "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
             "upload_datetime": provenance.upload_datetime,
             "document_datetime": provenance.document_datetime,
         }
+        # page_numbers is constant across all edges in the batch: build its SET
+        # fragment once (inline int-list literal, see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET document_id = :document_id, "
                 f"pipeline_run_id = :pipeline_run_id, "
-                f"page_numbers = :page_numbers, "
+                f"{page_set}, "
                 f"upload_datetime = :upload_datetime, "
                 f"document_datetime = :document_datetime, "
                 f"created_at = sysdate()"

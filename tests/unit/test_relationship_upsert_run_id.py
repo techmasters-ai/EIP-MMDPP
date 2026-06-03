@@ -234,6 +234,180 @@ def test_source_chunk_ids_set_in_update_branch():
 
 
 # ---------------------------------------------------------------------------
+# All-int list edge properties (source_pages) must serialize as INLINE SQL
+# list literals, NOT bound params.
+#
+# Confirmed ArcadeDB bug: deserializing an all-numeric JSON array (e.g. [6,7])
+# yields a Java primitive array (long[]); binding that to a schema-declared
+# LIST column via ``SET field = :param`` coerces it into a NESTED one-element
+# list → [[6,7]]. ``WHERE source_pages CONTAINS 6`` then matches 0 rows.
+# String lists deserialize to List<String> and stay flat, so source_chunk_ids
+# / source_self_refs / document_ids MUST remain bound params. The fix emits
+# all-int lists as inline SQL int-list literals (values are pipeline ints —
+# str(int(x)) is injection-safe).
+# ---------------------------------------------------------------------------
+
+
+def _create_branch(script: str) -> str:
+    return script.split("} ELSE {")[0]
+
+
+def test_source_pages_inline_literal_in_both_branches():
+    """source_pages (all-int list) must appear as an inline SQL literal
+    ``source_pages = [1, 2, 3]`` in BOTH the CREATE and UPDATE branches."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={
+        "source_pages": [1, 2, 3],
+        "source_chunk_ids": ["c1", "c2"],
+    })
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, params = _build_upsert_relationship_script([rec], provenance=prov)
+
+    create_branch = _create_branch(script)
+    update_branch = _update_branch(script)
+
+    assert "source_pages = [1, 2, 3]" in create_branch, (
+        f"inline source_pages literal missing from CREATE branch:\n{create_branch}"
+    )
+    assert "source_pages = [1, 2, 3]" in update_branch, (
+        f"inline source_pages literal missing from UPDATE branch:\n{update_branch}"
+    )
+
+
+def test_source_pages_not_bound_param():
+    """source_pages must NOT be bound as a p_source_pages_* param (that is the
+    code path that triggers the [[...]] nesting bug)."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={
+        "source_pages": [1, 2, 3],
+        "source_chunk_ids": ["c1", "c2"],
+    })
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, params = _build_upsert_relationship_script([rec], provenance=prov)
+
+    offenders = [k for k in params if k.startswith("p_source_pages_")]
+    assert not offenders, (
+        f"source_pages must be inlined, not bound; found param key(s): {offenders}"
+    )
+    # And the inline literal must not reference any :param placeholder.
+    assert ":p_source_pages" not in script, (
+        f"source_pages still referenced via bound param in script:\n{script}"
+    )
+
+
+def test_source_chunk_ids_stays_bound_param():
+    """String lists (source_chunk_ids) MUST stay bound params — they
+    deserialize flat and must NOT be inlined."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={
+        "source_pages": [1, 2, 3],
+        "source_chunk_ids": ["c1", "c2"],
+    })
+    prov = _make_provenance(pipeline_run_id="run-123")
+    script, params = _build_upsert_relationship_script([rec], provenance=prov)
+
+    chunk_keys = [k for k in params if k.startswith("p_source_chunk_ids_")]
+    assert chunk_keys, (
+        f"source_chunk_ids must remain a bound param; params keys: {list(params.keys())}"
+    )
+    chunk_key = chunk_keys[0]
+    assert params[chunk_key] == ["c1", "c2"]
+    assert f":{chunk_key}" in script, (
+        f"source_chunk_ids bound param :{chunk_key} not referenced in script:\n{script}"
+    )
+    # The string values must never appear inlined as a SQL literal.
+    assert "['c1', 'c2']" not in script and '["c1", "c2"]' not in script, (
+        f"source_chunk_ids string list was inlined — must stay bound:\n{script}"
+    )
+
+
+def test_single_int_list_inlined():
+    """A single-int list [7] must inline as ``= [7]``."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={"source_pages": [7]})
+    script, params = _build_upsert_relationship_script([rec], provenance=None)
+
+    assert "source_pages = [7]" in script, (
+        f"single-int list not inlined as [7]:\n{script}"
+    )
+    assert not any(k.startswith("p_source_pages_") for k in params)
+
+
+def test_empty_int_list_does_not_trigger_inline_bug():
+    """An empty list must not crash; it doesn't trigger the nesting bug.
+    Whichever path is chosen, the emitted value must be a flat ``[]`` and
+    page-membership semantics are unaffected."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={"source_pages": []})
+    script, params = _build_upsert_relationship_script([rec], provenance=None)
+
+    # Either inlined as [] or bound as a param holding []; never nested.
+    bound = [k for k in params if k.startswith("p_source_pages_")]
+    if bound:
+        assert params[bound[0]] == []
+    else:
+        assert "source_pages = []" in script, (
+            f"empty source_pages not represented as flat []:\n{script}"
+        )
+
+
+def test_bool_list_not_treated_as_int_list():
+    """[True] must NOT be inlined as an int list — bool is a subclass of int
+    but represents a different SQL type; it must stay a bound param."""
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    rec = _make_record(properties={"flag_list": [True, False]})
+    script, params = _build_upsert_relationship_script([rec], provenance=None)
+
+    bound = [k for k in params if k.startswith("p_flag_list_")]
+    assert bound, (
+        f"bool list must stay a bound param, not inlined; params: {list(params.keys())}"
+    )
+    assert params[bound[0]] == [True, False]
+    # Must not have been inlined as an int literal.
+    assert "flag_list = [1, 0]" not in script and "flag_list = [True" not in script, (
+        f"bool list was incorrectly inlined:\n{script}"
+    )
+
+
+def test_sql_list_set_fragment_helper_int_list_inlines():
+    """The shared helper inlines an all-int list and does not bind it."""
+    from app.services.arcadedb_graph import _sql_list_set_fragment
+
+    params: dict = {}
+    frag = _sql_list_set_fragment("source_pages", [4, 5, 6], params, "p_source_pages_0")
+    assert frag == "source_pages = [4, 5, 6]"
+    assert params == {}
+
+
+def test_sql_list_set_fragment_helper_string_list_binds():
+    """The shared helper binds a string list as a param."""
+    from app.services.arcadedb_graph import _sql_list_set_fragment
+
+    params: dict = {}
+    frag = _sql_list_set_fragment(
+        "source_chunk_ids", ["c1", "c2"], params, "p_source_chunk_ids_0"
+    )
+    assert frag == "source_chunk_ids = :p_source_chunk_ids_0"
+    assert params == {"p_source_chunk_ids_0": ["c1", "c2"]}
+
+
+def test_sql_list_set_fragment_helper_bool_list_binds():
+    """The shared helper does NOT treat a bool list as an int list."""
+    from app.services.arcadedb_graph import _sql_list_set_fragment
+
+    params: dict = {}
+    frag = _sql_list_set_fragment("flag_list", [True], params, "p_flag_list_0")
+    assert frag == "flag_list = :p_flag_list_0"
+    assert params == {"p_flag_list_0": [True]}
+
+
+# ---------------------------------------------------------------------------
 # Live ArcadeDB integration (opt-in; skips cleanly when DB unreachable).
 # Proves the chosen SQL actually overwrites lineage on a second upsert of the
 # same (edge, doc) without duplicating the doc id.
@@ -336,3 +510,73 @@ def test_live_reupsert_overwrites_lineage_no_doc_dup():
             "DELETE FROM ReupE; DELETE FROM ReupV; "
             "DROP TYPE ReupE IF EXISTS UNSAFE; "
             "DROP TYPE ReupV IF EXISTS UNSAFE")
+
+
+def test_live_source_pages_stays_flat_and_contains_matches():
+    """Live: a real upsert through _build_upsert_relationship_script must store
+    source_pages FLAT ([1,2,3], not [[1,2,3]]) on a schema-declared LIST column,
+    and ``WHERE source_pages CONTAINS 1`` must match. This is the bug under
+    test: bound numeric arrays nest; inline literals stay flat."""
+    import json
+    import urllib.request
+
+    import pytest
+
+    if not _arcadedb_reachable():
+        pytest.skip("ArcadeDB not reachable at localhost:2480")
+
+    from app.services.arcadedb_graph import _build_upsert_relationship_script
+
+    def cmd(language: str, command: str, params: dict | None = None):
+        body = {"language": language, "command": command}
+        if params is not None:
+            body["params"] = params
+        req = urllib.request.Request(
+            "http://localhost:2480/api/v1/command/eip_knowledge_graph",
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Basic cm9vdDplaXBfYXJjYWRlZGJfc2VjcmV0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    # Throwaway vertex types + an edge type with a LIST-typed source_pages
+    # column to reproduce the production schema shape exactly.
+    cmd("sqlscript",
+        "CREATE VERTEX TYPE SpV IF NOT EXISTS; "
+        "CREATE EDGE TYPE SpE IF NOT EXISTS; "
+        "CREATE PROPERTY SpE.source_pages IF NOT EXISTS LIST")
+    try:
+        cmd("sqlscript",
+            "DELETE FROM SpE; DELETE FROM SpV; "
+            "CREATE VERTEX SpV SET id='R1'; CREATE VERTEX SpV SET id='M1'")
+
+        rec = _make_record(
+            from_type="SpV",
+            to_type="SpV",
+            rel_type="SpE",
+            properties={"source_pages": [1, 2, 3]},
+        )
+        script, params = _build_upsert_relationship_script([rec], provenance=None)
+        cmd("sqlscript", script, params)
+
+        rows = cmd("sql", "SELECT source_pages FROM SpE")["result"]
+        assert len(rows) == 1, f"expected exactly one edge, got: {rows}"
+        assert rows[0]["source_pages"] == [1, 2, 3], (
+            f"source_pages stored NESTED (bug) instead of flat: {rows[0]}"
+        )
+
+        hit = cmd("sql", "SELECT count(*) AS n FROM SpE "
+                         "WHERE source_pages CONTAINS 1")["result"]
+        assert hit[0]["n"] == 1, (
+            f"WHERE source_pages CONTAINS 1 matched 0 rows — page-membership "
+            f"filter broken by nested list: {hit}"
+        )
+    finally:
+        cmd("sqlscript",
+            "DELETE FROM SpE; DELETE FROM SpV; "
+            "DROP TYPE SpE IF EXISTS UNSAFE; "
+            "DROP TYPE SpV IF EXISTS UNSAFE")
