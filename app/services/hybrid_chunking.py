@@ -35,7 +35,7 @@ Failure semantics (fail-loud):
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -43,6 +43,8 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from docling_core.types.doc import DoclingDocument
+
+from app.services.docling_anchors import _build_section_path_string
 
 
 # Large tokenizer max length used only for counting/splitting operations.
@@ -143,6 +145,19 @@ class MergedChunk:
         page_no: First ``prov[0].page_no`` if resolvable; else ``None``.
         token_count: ``tokenizer.count_tokens(text)``.  Used for
             ``BuildIndexDiagnostics.mean_token_count`` in Task 3.
+        section_path: The chunk's section hierarchy joined as a single
+            breadcrumb string (``"A > B > C"``), or ``None`` when the chunk
+            has no headings.  Sourced from ``chunk.meta.headings`` and built
+            with the same ``_build_section_path_string`` helper the embedding
+            path uses (``pipeline.py``), so the worker router and the
+            embedding lineage agree on the section title.  This is the
+            SECTION signal: the section matcher tests an entity anchor against
+            this title.
+        headings: The raw section-heading hierarchy (``list[str]``, outermost
+            → innermost) as exposed by ``chunk.meta.headings``.  Empty list
+            when the chunk descends from no heading.  Stored alongside
+            ``section_path`` so callers can match against individual heading
+            levels without re-splitting the joined string.
     """
 
     chunk_index: int
@@ -150,6 +165,11 @@ class MergedChunk:
     source_refs: list[str]
     page_no: str | None
     token_count: int
+    # Router-scoring Part 1 — section signal projection. Default to None / []
+    # so callers (and tests) constructing a MergedChunk without the section
+    # fields keep working; the chunker populates them from chunk.meta.headings.
+    section_path: str | None = None
+    headings: list[str] = field(default_factory=list)
 
 
 def build_hybrid_chunks_for_extraction(
@@ -205,6 +225,18 @@ def build_hybrid_chunks_for_extraction(
         source_refs = [item.self_ref for item in chunk.meta.doc_items]
         page_no = _resolve_first_page_no(chunk)
         token_count = tokenizer.count_tokens(text=text)
+        # SECTION signal (router-scoring Part 1): HybridChunker exposes the
+        # section heading hierarchy for each chunk via chunk.meta.headings
+        # (list[str], outermost → innermost). Project it onto the value object
+        # exactly like the embedding path does (pipeline.py:~6641-6646),
+        # reusing _build_section_path_string so the worker router and the
+        # embedding lineage agree on the same section title. Empty/missing →
+        # headings == [] and section_path is None.
+        headings: list[str] = []
+        for h in (getattr(getattr(chunk, "meta", None), "headings", None) or []):
+            if isinstance(h, str) and h.strip():
+                headings.append(h.strip())
+        section_path = _build_section_path_string(tuple(headings))
         out.append(
             MergedChunk(
                 chunk_index=idx,
@@ -212,6 +244,8 @@ def build_hybrid_chunks_for_extraction(
                 source_refs=source_refs,
                 page_no=page_no,
                 token_count=token_count,
+                section_path=section_path,
+                headings=headings,
             )
         )
     return out

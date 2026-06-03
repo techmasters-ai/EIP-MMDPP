@@ -69,6 +69,15 @@ if TYPE_CHECKING:
 #  each call, bypassing the patch.)
 from app.services.embedding import embed_texts  # noqa: E402
 
+# Router-scoring Part 1 — SECTION signal. None/[]-coalescing accessors for the
+# section_path / headings columns projected onto candidate rows below. Imported
+# at module scope (extraction_chunk_index does NOT import this module, so no
+# cycle); keeps the property-dict construction free of inline imports.
+from app.services.extraction_chunk_index import (  # noqa: E402
+    read_chunk_headings,
+    read_chunk_section_path,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -324,13 +333,18 @@ async def search_extraction_chunks_direct(
     # ``read_chunk_token_count``). The accessors coalesce missing/None
     # values to legacy defaults (-1 / [] / 0); the projection here lets
     # them see the REAL merged-mode values when present.
+    # Router-scoring Part 1 — SECTION signal: ``section_path`` / ``headings``
+    # are projected so candidates carry the section title (read via
+    # ``read_chunk_section_path`` / ``read_chunk_headings``). Legacy rows lack
+    # the columns; the accessors None/[]-coalesce.
     rows = await store._client.query(
         store._database,
         "sql",
         (
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "
-            "chunk_index, source_refs, token_count "
+            "chunk_index, source_refs, token_count, "
+            "section_path, headings "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -437,6 +451,11 @@ async def search_extraction_chunks_direct(
                 "chunk_index": row.get("chunk_index"),
                 "source_refs": row.get("source_refs"),
                 "token_count": row.get("token_count"),
+                # Router-scoring Part 1 — SECTION signal. Read via the
+                # None/[]-coalescing accessors so legacy rows (no columns)
+                # carry None / [] rather than crashing.
+                "section_path": read_chunk_section_path(row),
+                "headings": read_chunk_headings(row),
             },
         )
         for row, score in zip(selected_rows, selected_scores)
@@ -627,7 +646,8 @@ async def fetch_extraction_chunks_for_run(
     Columns projected (mirrors the direct-path SELECT):
       @rid AS node_id, vertex_id, self_ref, chunk_text, embedding,
       page_number, modality, pipeline_run_id,
-      chunk_index, source_refs, token_count
+      chunk_index, source_refs, token_count,
+      section_path, headings   (router-scoring Part 1 — SECTION signal)
 
     Returns
     -------
@@ -643,7 +663,8 @@ async def fetch_extraction_chunks_for_run(
         (
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "
-            "chunk_index, source_refs, token_count "
+            "chunk_index, source_refs, token_count, "
+            "section_path, headings "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -800,6 +821,10 @@ def build_pool_from_multi_channel_state(
                                 "chunk_index": row.get("chunk_index"),
                                 "source_refs": row.get("source_refs"),
                                 "token_count": row.get("token_count"),
+                                # Router-scoring Part 1 — SECTION signal
+                                # (C8 anchor dense sub-channel).
+                                "section_path": read_chunk_section_path(row),
+                                "headings": read_chunk_headings(row),
                             },
                         )
                     )
@@ -1017,6 +1042,10 @@ async def search_extraction_chunks_multi_channel_full(
                                 "chunk_index": row.get("chunk_index"),
                                 "source_refs": row.get("source_refs"),
                                 "token_count": row.get("token_count"),
+                                # Router-scoring Part 1 — SECTION signal
+                                # (C8 anchor dense sub-channel).
+                                "section_path": read_chunk_section_path(row),
+                                "headings": read_chunk_headings(row),
                             },
                         )
                     )
@@ -1240,6 +1269,10 @@ async def search_extraction_chunks_dense_multi_query(
                         "chunk_index": row.get("chunk_index"),
                         "source_refs": row.get("source_refs"),
                         "token_count": row.get("token_count"),
+                        # Router-scoring Part 1 — SECTION signal
+                        # (dense multi-query candidates).
+                        "section_path": read_chunk_section_path(row),
+                        "headings": read_chunk_headings(row),
                     },
                 )
             )

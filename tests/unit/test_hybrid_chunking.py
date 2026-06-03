@@ -467,3 +467,103 @@ def test_get_tokenizer_distinct_for_different_max_tokens() -> None:
     assert t1 is not t2, (
         "Tokenizers with different max_tokens must NOT share a cache slot"
     )
+
+
+# ---------------------------------------------------------------------------
+# Router-scoring change Part 1 — section_path / headings projection
+# ---------------------------------------------------------------------------
+
+
+def test_merged_chunk_carries_section_path_and_headings() -> None:
+    """Every emitted ``MergedChunk`` carries the section hierarchy from
+    ``chunk.meta.headings``: ``headings`` (list[str]) and ``section_path``
+    (the joined string, or None when empty).
+
+    This is the SECTION signal source: the chunker already knows the
+    section heading hierarchy (consumed at pipeline.py via
+    ``_build_section_path_string``); Part 1 projects it onto the value
+    object so the router can match anchors against the section title.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "doc must produce >=1 chunk"
+
+    # The Dvina-like doc's body fragments each descend from a known heading.
+    expected_heading_per_text = {
+        "Soviet-era surface-to-air": "Chapter 1: Overview",
+        "Maximum engagement range": "Chapter 2: Kinematics",
+        "Radar tracking accuracy": "Section 2.1: Tracking",
+        "comprises the Fan Song": "Chapter 3: Components",
+    }
+
+    matched = 0
+    for c in chunks:
+        # Type contract: headings is always a list[str]; section_path is
+        # str|None (None only when headings is empty).
+        assert isinstance(c.headings, list)
+        assert all(isinstance(h, str) for h in c.headings)
+        if c.headings:
+            assert isinstance(c.section_path, str)
+            # section_path must mention every heading term it carries.
+            for h in c.headings:
+                assert all(
+                    term.lower() in c.section_path.lower()
+                    for term in h.split()
+                    if term
+                ), f"section_path {c.section_path!r} missing heading {h!r}"
+        else:
+            assert c.section_path is None
+
+        for body_fragment, heading in expected_heading_per_text.items():
+            if body_fragment in c.text:
+                matched += 1
+                # The chunk's headings must include the nearest section heading.
+                joined = " ".join(c.headings).lower()
+                assert all(
+                    term.lower() in joined
+                    for term in heading.split()
+                    if term
+                ), (
+                    f"chunk containing {body_fragment!r} is missing heading "
+                    f"terms from {heading!r}; headings were {c.headings!r}"
+                )
+
+    assert matched, "No chunk matched any expected body fragment"
+
+
+def test_merged_chunk_section_path_none_when_no_headings() -> None:
+    """A doc whose chunks have no section headings → ``headings == []`` and
+    ``section_path is None`` (empty → None/[], per the plan)."""
+    # A bare paragraph with no preceding heading still chunks, but carries
+    # no heading hierarchy.
+    doc = DoclingDocument(name="headingless_synthetic")
+    doc.add_text(
+        label="text",
+        text=(
+            "A standalone paragraph with no section heading above it. "
+            "It should still produce a chunk, but with no section path."
+        ),
+    )
+    doc_json = doc.export_to_dict()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "headingless doc must still produce >=1 chunk"
+    for c in chunks:
+        assert c.headings == []
+        assert c.section_path is None
+
+
+def test_merged_chunk_section_fields_are_frozen() -> None:
+    """The new fields participate in the frozen-dataclass contract."""
+    c = MergedChunk(
+        chunk_index=0,
+        text="hello",
+        source_refs=["#/texts/0"],
+        page_no=None,
+        token_count=1,
+        section_path="Chapter 1",
+        headings=["Chapter 1"],
+    )
+    assert c.section_path == "Chapter 1"
+    assert c.headings == ["Chapter 1"]
+    with pytest.raises(Exception):  # FrozenInstanceError
+        c.section_path = "mutated"  # type: ignore[misc]

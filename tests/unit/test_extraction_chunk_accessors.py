@@ -186,6 +186,129 @@ def test_read_chunk_index_handles_garbage_as_minus_one():
 
 
 # ---------------------------------------------------------------------------
+# read_chunk_section_path — router-scoring Part 1 (section signal)
+# ---------------------------------------------------------------------------
+
+
+def test_read_chunk_section_path_returns_value():
+    from app.services.extraction_chunk_index import read_chunk_section_path
+
+    row = {"section_path": "Radar Systems > Fan Song"}
+    assert read_chunk_section_path(row) == "Radar Systems > Fan Song"
+
+
+def test_read_chunk_section_path_returns_none_for_legacy_row():
+    """Legacy rows (indexed before Part 1) have no section_path column → None."""
+    from app.services.extraction_chunk_index import read_chunk_section_path
+
+    legacy = {"chunk_index": 3, "self_ref": "chunk_3"}
+    assert read_chunk_section_path(legacy) is None
+
+
+def test_read_chunk_section_path_returns_none_when_none():
+    from app.services.extraction_chunk_index import read_chunk_section_path
+
+    row = {"section_path": None, "chunk_index": 0}
+    assert read_chunk_section_path(row) is None
+
+
+def test_read_chunk_section_path_returns_none_for_blank_string():
+    """A whitespace-only section_path is treated as 'no section' → None,
+    so the section matcher never tries to match an empty crumb.
+    """
+    from app.services.extraction_chunk_index import read_chunk_section_path
+
+    assert read_chunk_section_path({"section_path": ""}) is None
+    assert read_chunk_section_path({"section_path": "   "}) is None
+
+
+def test_read_chunk_section_path_coerces_non_string_to_string():
+    """Defensive: a non-string, non-None value is coerced to str rather than
+    raising (mirrors the never-crash contract of the other accessors).
+    """
+    from app.services.extraction_chunk_index import read_chunk_section_path
+
+    assert read_chunk_section_path({"section_path": 123}) == "123"
+
+
+# ---------------------------------------------------------------------------
+# read_chunk_headings — router-scoring Part 1 (section signal)
+# ---------------------------------------------------------------------------
+
+
+def test_read_chunk_headings_returns_native_list():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings": ["Radar Systems", "Fan Song"]}
+    assert read_chunk_headings(row) == ["Radar Systems", "Fan Song"]
+
+
+def test_read_chunk_headings_returns_empty_list_for_legacy_row():
+    """Legacy rows have no headings column → [] (never None)."""
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    legacy = {"chunk_index": 3, "self_ref": "chunk_3"}
+    assert read_chunk_headings(legacy) == []
+
+
+def test_read_chunk_headings_returns_empty_list_when_none():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings": None, "chunk_index": 0}
+    assert read_chunk_headings(row) == []
+
+
+def test_read_chunk_headings_returns_empty_list_when_empty_list():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings": [], "chunk_index": 4}
+    assert read_chunk_headings(row) == []
+
+
+def test_read_chunk_headings_falls_back_to_json_string():
+    """Mirror source_refs: a JSON-string fallback under ``headings_json`` is
+    transparently decoded.
+    """
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings_json": '["Radar Systems", "Fan Song"]'}
+    assert read_chunk_headings(row) == ["Radar Systems", "Fan Song"]
+
+
+def test_read_chunk_headings_native_list_wins_over_json_string():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {
+        "headings": ["Radar Systems"],
+        "headings_json": '["WRONG"]',
+    }
+    assert read_chunk_headings(row) == ["Radar Systems"]
+
+
+def test_read_chunk_headings_handles_corrupt_json_string_as_empty():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings_json": "not valid json"}
+    assert read_chunk_headings(row) == []
+
+
+def test_read_chunk_headings_filters_nones_from_list():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    row = {"headings": [None, "Radar Systems", None]}
+    assert read_chunk_headings(row) == ["Radar Systems"]
+
+
+def test_read_chunk_headings_never_returns_none():
+    from app.services.extraction_chunk_index import read_chunk_headings
+
+    for row in ({}, {"headings": None}, {"headings_json": None}):
+        result = read_chunk_headings(row)
+        assert result is not None
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
 # Object access (not just dicts) — accessors must accept object-style rows
 # ---------------------------------------------------------------------------
 
@@ -195,7 +318,9 @@ def test_accessors_accept_object_like_rows():
     accessors take ``dict | object``; both must work.
     """
     from app.services.extraction_chunk_index import (
+        read_chunk_headings,
         read_chunk_index,
+        read_chunk_section_path,
         read_chunk_source_refs,
         read_chunk_token_count,
     )
@@ -204,11 +329,15 @@ def test_accessors_accept_object_like_rows():
         chunk_index = 5
         source_refs = ["#/texts/7"]
         token_count = 128
+        section_path = "Radar Systems > Fan Song"
+        headings = ["Radar Systems", "Fan Song"]
 
     row = _Row()
     assert read_chunk_index(row) == 5
     assert read_chunk_source_refs(row) == ["#/texts/7"]
     assert read_chunk_token_count(row) == 128
+    assert read_chunk_section_path(row) == "Radar Systems > Fan Song"
+    assert read_chunk_headings(row) == ["Radar Systems", "Fan Song"]
 
 
 # ---------------------------------------------------------------------------

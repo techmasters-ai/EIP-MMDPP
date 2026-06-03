@@ -512,3 +512,109 @@ def test_merged_self_ref_is_chunk_index_and_unique_per_row() -> None:
     assert len(set(self_refs)) == len(self_refs), (
         f"self_ref values are non-unique across merged rows: {self_refs!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Router-scoring Part 1 — section_path / headings bound on every INSERT
+# ---------------------------------------------------------------------------
+
+
+def test_insert_merged_sql_binds_section_path_and_headings() -> None:
+    """The merged INSERT SQL declares ``section_path`` + ``headings`` columns,
+    and ``_insert_merged_chunk_row`` binds both params for every row.
+
+    This is the storage half of the SECTION signal: the chunker projects
+    ``chunk.meta.headings`` onto each ``MergedChunk`` (Part 1, hybrid_chunking),
+    and the indexer must materialize those columns on the ExtractionChunk
+    vertex so the router can read them back.
+    """
+    from app.services.extraction_chunk_index import (
+        _INSERT_MERGED_SQL,
+        build_extraction_index_hybrid,
+    )
+    from app.services.hybrid_chunking import build_hybrid_chunks_for_extraction
+
+    # The INSERT SQL must declare the two new columns (ArcadeDB materializes
+    # them via SET; no schema migration).
+    assert "section_path = :section_path" in _INSERT_MERGED_SQL
+    assert "headings = :headings" in _INSERT_MERGED_SQL
+
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    n = len(chunks)
+    assert n >= 2
+    fake_embeddings = [[0.1] * 1024] * n
+    store = _make_mock_store()
+
+    with patch(
+        "app.services.extraction_chunk_index.embed_texts",
+        return_value=fake_embeddings,
+    ):
+        build_extraction_index_hybrid(
+            doc_json,
+            pipeline_run_id="run-section",
+            document_id="doc-section",
+            store=store,
+        )
+
+    rows = _captured_insert_params(store)
+    assert rows, "expected >=1 INSERT row captured"
+
+    # Every INSERT binds both params (key present even when None / []).
+    for row in rows:
+        assert "section_path" in row
+        assert "headings" in row
+        # headings is always a list; section_path is str|None.
+        assert isinstance(row["headings"], list)
+        assert row["section_path"] is None or isinstance(row["section_path"], str)
+        # The two representations must agree: when headings is non-empty,
+        # section_path is the " > "-joined crumb.
+        if row["headings"]:
+            assert row["section_path"] == " > ".join(row["headings"])
+        else:
+            assert row["section_path"] is None
+
+    # The bound values must come from the chunker (not be uniformly empty):
+    # the Dvina fixture has headings on every body chunk.
+    by_index = {r.get("chunk_index"): r for r in rows}
+    for c in chunks:
+        bound = by_index[c.chunk_index]
+        assert bound["section_path"] == c.section_path
+        assert bound["headings"] == c.headings
+
+
+def test_insert_merged_round_trips_through_read_accessors() -> None:
+    """The bound INSERT params, read back via the Part 1 accessors, return the
+    chunker's section_path / headings (no shape drift between write and read).
+    """
+    from app.services.extraction_chunk_index import (
+        build_extraction_index_hybrid,
+        read_chunk_headings,
+        read_chunk_section_path,
+    )
+    from app.services.hybrid_chunking import build_hybrid_chunks_for_extraction
+
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    by_index = {c.chunk_index: c for c in chunks}
+    n = len(chunks)
+    fake_embeddings = [[0.1] * 1024] * n
+    store = _make_mock_store()
+
+    with patch(
+        "app.services.extraction_chunk_index.embed_texts",
+        return_value=fake_embeddings,
+    ):
+        build_extraction_index_hybrid(
+            doc_json,
+            pipeline_run_id="run-section-rt",
+            document_id="doc-section-rt",
+            store=store,
+        )
+
+    rows = _captured_insert_params(store)
+    assert rows
+    for row in rows:
+        src = by_index[row["chunk_index"]]
+        assert read_chunk_section_path(row) == src.section_path
+        assert read_chunk_headings(row) == src.headings

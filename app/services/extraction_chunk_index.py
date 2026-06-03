@@ -221,6 +221,75 @@ def read_chunk_source_refs(row: dict | Any) -> list[str]:
     return []
 
 
+def read_chunk_section_path(row: dict | Any) -> str | None:
+    """Return ``section_path`` as ``str`` or ``None``.
+
+    Router-scoring Part 1 (SECTION signal). ``section_path`` is the chunk's
+    heading hierarchy joined as a single breadcrumb (``"A > B > C"``), written
+    by ``_insert_merged_chunk_row`` from ``MergedChunk.section_path``.
+
+    Coalescing rules (legacy rows indexed before Part 1 lack the column):
+
+    * missing / ``None`` → ``None``
+    * empty or whitespace-only string → ``None`` (no section to match against)
+    * non-string, non-None → coerced to ``str`` (defensive; never raises)
+
+    ``None`` means "no section title known"; the caller decides what that
+    implies for matching. This NEVER raises, mirroring the other accessors.
+    """
+    raw = _row_get(row, "section_path", None)
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        return stripped or None
+    # Defensive: non-string, non-None — coerce rather than raise.
+    return str(raw)
+
+
+def read_chunk_headings(row: dict | Any) -> list[str]:
+    """Return ``headings`` as ``list[str]`` regardless of storage shape.
+
+    Router-scoring Part 1 (SECTION signal). ``headings`` is the raw heading
+    hierarchy (outermost → innermost) written by ``_insert_merged_chunk_row``
+    from ``MergedChunk.headings``. Mirrors ``read_chunk_source_refs`` exactly:
+
+    1. native ArcadeDB ``LIST`` property (``row["headings"]``)
+    2. JSON-encoded string fallback (``row["headings_json"]``)
+    3. legacy / missing → ``[]``
+
+    NEVER returns ``None``. An empty list means "no heading hierarchy known"
+    — a legacy row (pre-Part-1 index) or a chunk that descends from no heading.
+    None elements are filtered (mirrors the source_refs None-filter).
+    """
+    raw = _row_get(row, "headings", None)
+    if isinstance(raw, list):
+        return [str(x) for x in raw if x is not None]
+    if raw is not None:
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+                if isinstance(decoded, list):
+                    return [str(x) for x in decoded if x is not None]
+            except (ValueError, TypeError):
+                pass
+        else:
+            logger.warning(
+                "read_chunk_headings: headings is unexpected type %s "
+                "for row; coercing to []",
+                type(raw).__name__,
+            )
+    json_raw = _row_get(row, "headings_json", None)
+    if isinstance(json_raw, str):
+        try:
+            decoded = json.loads(json_raw)
+            if isinstance(decoded, list):
+                return [str(x) for x in decoded if x is not None]
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
 def read_chunk_token_count(row: dict | Any) -> int:
     """Return ``token_count`` as ``int``. Legacy / missing / ``None`` → ``0``.
 
@@ -988,6 +1057,13 @@ _INSERT_MERGED_SQL = (
     "chunk_index = :chunk_index, "
     "source_refs = :source_refs, "
     "token_count = :token_count, "
+    # Router-scoring Part 1 — SECTION signal. ArcadeDB is schemaless for
+    # these props: SET materializes the columns; no CREATE PROPERTY / schema
+    # migration. ``headings`` is a LIST column (mirrors ``source_refs``);
+    # ``section_path`` is a plain string. Legacy rows (indexed before Part 1)
+    # simply lack both columns — the read accessors None/[]-coalesce.
+    "section_path = :section_path, "
+    "headings = :headings, "
     "created_at = sysdate()"
 )
 
@@ -1004,6 +1080,8 @@ def _insert_merged_chunk_row(
     embedding: list[float],
     page_number: int | None,
     token_count: int,
+    section_path: str | None = None,
+    headings: list[str] | None = None,
 ) -> None:
     """Insert one merged-mode ``ExtractionChunk`` vertex.
 
@@ -1038,6 +1116,11 @@ def _insert_merged_chunk_row(
             "chunk_index": chunk_index,
             "source_refs": list(source_refs),
             "token_count": token_count,
+            # Router-scoring Part 1 — SECTION signal. Pass through as-is;
+            # the read accessors None/[]-coalesce. ``headings`` stored as a
+            # LIST (mirrors ``source_refs``); ``section_path`` as a string.
+            "section_path": section_path,
+            "headings": list(headings) if headings else [],
         },
     )
 
@@ -1317,6 +1400,8 @@ def build_extraction_index_hybrid(
             embedding=embedding,
             page_number=page_no_int,
             token_count=c.token_count,
+            section_path=c.section_path,
+            headings=c.headings,
         )
     insert_ms = int((time.monotonic() - insert_t0) * 1000)
 
