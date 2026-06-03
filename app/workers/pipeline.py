@@ -2178,6 +2178,30 @@ def _flatten_pages_to_sorted_unique_ints(raw) -> list[int]:
     return sorted(out)
 
 
+# Relationship types whose direction is SEMANTICALLY symmetric: the edge
+# A--rel-->B asserts the SAME fact as B--rel-->A. The extractor sometimes emits
+# BOTH directional edges but a relationship_provenance row for only ONE
+# direction (e.g. ``1D --ASSOCIATED_WITH--> SNR-75`` is committed with NULL
+# source_chunk_ids while the reverse ``SNR-75 --ASSOCIATED_WITH--> 1D`` carries
+# the full 19-chunk provenance). For symmetric types the reverse direction's
+# provenance LEGITIMATELY applies to the forward edge, so we back-fill it
+# (at LOWER precedence than an exact-direction match — see
+# ``_build_relationship_records``).
+#
+# DIRECTIONAL types (CUES = directional target handoff, LAUNCHES, INSTALLED_ON,
+# GUIDES, ...) are DELIBERATELY EXCLUDED: their reverse direction is a DIFFERENT
+# assertion, so reverse provenance must NOT bleed across direction.
+#
+# No machine-readable symmetry flag exists on the ontology RelationshipMetadata
+# (only name/label/description/source_type/target_type/cardinality); the
+# descriptions distinguish symmetric ("System association radar↔missile") from
+# directional ("Directional handoff") in PROSE only. Hence this documented
+# allowlist. To extend: add the rel_type string here (and, ideally, follow up by
+# adding a real ``symmetric: bool`` to RelationshipMetadata in docling-graph so
+# this can derive from ontology metadata instead of a hardcoded set).
+_SYMMETRIC_REL_TYPES: frozenset[str] = frozenset({"ASSOCIATED_WITH"})
+
+
 def _build_relationship_records(
     edges,
     relationship_provenance_rows,
@@ -2238,6 +2262,12 @@ def _build_relationship_records(
     _FALLBACK = "__rel_type_fallback__"
 
     provenance_by_triple: dict[tuple, dict] = {}
+    # Symmetric back-fill: for SYMMETRIC rel types we ALSO register each row's
+    # bucket under the REVERSED triple key (to_identity, rel_type, from_identity)
+    # in this SEPARATE map. The per-edge lookup consults it only AFTER the exact
+    # provenance_by_triple miss, so an exact-direction match always wins (no
+    # clobber) and DIRECTIONAL types never get a reversed bucket at all.
+    provenance_by_reversed_triple: dict[tuple, dict] = {}
     for row in (relationship_provenance_rows or []):
         rt = getattr(row, "relationship_type", None)
         if not rt:
@@ -2282,6 +2312,7 @@ def _build_relationship_records(
                     rt, src_id_str or None, tgt_id_str or None,
                 )
 
+        reversed_key: tuple | None = None
         if src_identity is not None and tgt_identity is not None:
             # Both upstream_refs values (DTO ref path) and id_to_identity values
             # (typed-edge path) are RAW pre-canonicalization identities, whereas
@@ -2292,36 +2323,57 @@ def _build_relationship_records(
             src_identity = _resolve_identity_alias(src_identity, identity_aliases)
             tgt_identity = _resolve_identity_alias(tgt_identity, identity_aliases)
             key: tuple = (src_identity, rt, tgt_identity)
+            # SYMMETRIC back-fill: register the SAME evidence under the reversed
+            # triple too (lower-precedence map). DIRECTIONAL rel types get no
+            # reversed key, so their reverse edges never back-fill.
+            if rt in _SYMMETRIC_REL_TYPES:
+                reversed_key = (tgt_identity, rt, src_identity)
         else:
             key = (_FALLBACK, rt)
+
+        def _accumulate(target: dict, src_row) -> None:
+            target["evidence_ids"] = sorted(set(
+                target["evidence_ids"] + list(getattr(src_row, "evidence_ids", []) or [])
+            ))
+            target["self_refs"] = sorted(set(
+                target["self_refs"] + list(getattr(src_row, "self_refs", []) or [])
+            ))
+            # Flatten defensively: a row's page_numbers can arrive as a nested
+            # list-of-lists (e.g. [[6,7]]) which is both unhashable for set() and
+            # malformed for source_pages. Collapse to flat ints, merge with the
+            # bucket, keep sorted-unique.
+            target["page_numbers"] = _flatten_pages_to_sorted_unique_ints(
+                target["page_numbers"] + [getattr(src_row, "page_numbers", None)]
+            )
 
         bucket = provenance_by_triple.setdefault(key, {
             "evidence_ids": [],
             "self_refs": [],
             "page_numbers": [],
         })
-        bucket["evidence_ids"] = sorted(set(
-            bucket["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
-        ))
-        bucket["self_refs"] = sorted(set(
-            bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
-        ))
-        # Flatten defensively: a row's page_numbers can arrive as a nested
-        # list-of-lists (e.g. [[6,7]]) which is both unhashable for set() and
-        # malformed for source_pages. Collapse to flat ints, merge with the
-        # bucket, keep sorted-unique.
-        bucket["page_numbers"] = _flatten_pages_to_sorted_unique_ints(
-            bucket["page_numbers"] + [getattr(row, "page_numbers", None)]
-        )
+        _accumulate(bucket, row)
+
+        if reversed_key is not None:
+            reversed_bucket = provenance_by_reversed_triple.setdefault(reversed_key, {
+                "evidence_ids": [],
+                "self_refs": [],
+                "page_numbers": [],
+            })
+            _accumulate(reversed_bucket, row)
 
     rel_records = []
     for e in edges:
         triple_key = (e.from_identity, e.rel_type, e.to_identity)
         fallback_key = (_FALLBACK, e.rel_type)
-        rel_prov = (
-            provenance_by_triple.get(triple_key)
-            or provenance_by_triple.get(fallback_key)
-        )
+        # Lookup precedence: exact direction → (symmetric only) reversed direction
+        # back-fill → coarse rel-type fallback. The reversed map is consulted ONLY
+        # for symmetric rel types (it's never populated for directional ones) and
+        # ONLY on an exact-direction miss, so an exact match is never clobbered.
+        rel_prov = provenance_by_triple.get(triple_key)
+        if rel_prov is None and e.rel_type in _SYMMETRIC_REL_TYPES:
+            rel_prov = provenance_by_reversed_triple.get(triple_key)
+        if rel_prov is None:
+            rel_prov = provenance_by_triple.get(fallback_key)
 
         props: dict[str, Any] = {}
         if rel_prov:

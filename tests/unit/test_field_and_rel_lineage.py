@@ -562,6 +562,174 @@ def test_relationship_record_ref_not_in_upstream_refs_falls_back_and_warns(caplo
 
 
 # ---------------------------------------------------------------------------
+# (b3) SYMMETRIC-PROVENANCE BACK-FILL — a committed edge of a SYMMETRIC rel
+#      type whose own direction carries NO provenance row inherits the lineage
+#      of the REVERSE-direction provenance (the extractor emitted both edges but
+#      a provenance row for only ONE direction). DIRECTIONAL rel types MUST NOT
+#      back-fill; exact-direction provenance always wins over a reverse back-fill.
+# ---------------------------------------------------------------------------
+def test_symmetric_rel_reverse_edge_backfills_from_forward_provenance():
+    """ASSOCIATED_WITH is symmetric. Provenance rows exist ONLY for (A, _, B)
+    (resolving to chunkX). merged.edges contains BOTH (A, _, B) AND the reverse
+    (B, _, A). Both committed records must carry source_chunk_ids == [chunkX]:
+    the reverse edge back-fills from the forward-direction provenance because the
+    rel type is symmetric.
+
+    Today this FAILS: (B, ASSOCIATED_WITH, A) has no exact-triple bucket and no
+    fallback bucket, so it gets NO source_chunk_ids."""
+    a, b = _identity("A"), _identity("B")
+    edge_ab = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ba = MergedEdgeRecord(
+        from_identity=b, to_identity=a, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    # Provenance for the FORWARD direction only: (A, ASSOCIATED_WITH, B) -> chunkX.
+    upstream_refs = {"E_A": a, "E_B": b}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+        )
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ba],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+    )
+
+    by_pair = {(r.from_identity["name"], r.to_identity["name"]): r for r in records}
+    # Forward edge: its OWN exact-direction provenance.
+    assert by_pair[("A", "B")].properties["source_chunk_ids"] == ["chunkX"]
+    # Reverse edge: back-filled from the forward provenance (symmetric type).
+    assert by_pair[("B", "A")].properties["source_chunk_ids"] == ["chunkX"]
+    # Same anchor self_refs carried through (reuse of the resolver, not fabricated).
+    assert by_pair[("B", "A")].properties["source_self_refs"] == ["#/texts/100"]
+
+
+def test_directional_rel_reverse_edge_does_not_backfill():
+    """A DIRECTIONAL rel type (CUES) must NOT back-fill the reverse direction.
+    Provenance exists only for (A, CUES, B) -> chunkX; edges exist both ways.
+    (A, CUES, B) gets chunkX but the reverse (B, CUES, A) stays empty (no
+    fallback bucket either) — directional lineage is NOT shared across direction."""
+    a, b = _identity("A"), _identity("B")
+    edge_ab = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="CUES",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ba = MergedEdgeRecord(
+        from_identity=b, to_identity=a, rel_type="CUES",
+        confidence=0.9, pass_origins={"p"},
+    )
+    upstream_refs = {"E_A": a, "E_B": b}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="CUES",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+        )
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ba],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+    )
+
+    by_pair = {(r.from_identity["name"], r.to_identity["name"]): r for r in records}
+    # Forward (exact) direction resolves.
+    assert by_pair[("A", "B")].properties["source_chunk_ids"] == ["chunkX"]
+    # Reverse direction does NOT back-fill — no source_chunk_ids property at all.
+    assert "source_chunk_ids" not in by_pair[("B", "A")].properties
+
+
+def test_directional_synthetic_rel_reverse_edge_does_not_backfill():
+    """Second directional guard with a synthetic 'GUIDES' rel type (not in the
+    symmetric allowlist): same shape — only (A, GUIDES, B) resolves, the reverse
+    stays empty."""
+    a, b = _identity("A"), _identity("B")
+    edge_ab = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="GUIDES",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ba = MergedEdgeRecord(
+        from_identity=b, to_identity=a, rel_type="GUIDES",
+        confidence=0.9, pass_origins={"p"},
+    )
+    upstream_refs = {"E_A": a, "E_B": b}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="GUIDES",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # -> chunkX
+        )
+    ]
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ba],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+    )
+    by_pair = {(r.from_identity["name"], r.to_identity["name"]): r for r in records}
+    assert by_pair[("A", "B")].properties["source_chunk_ids"] == ["chunkX"]
+    assert "source_chunk_ids" not in by_pair[("B", "A")].properties
+
+
+def test_symmetric_rel_exact_direction_precedence_no_clobber():
+    """When BOTH (A, sym, B) and (B, sym, A) carry their OWN provenance rows,
+    each edge uses its OWN exact-direction chunk — the reverse back-fill must NOT
+    clobber an exact-direction match. A->B keeps chunkX, B->A keeps chunkY."""
+    a, b = _identity("A"), _identity("B")
+    edge_ab = MergedEdgeRecord(
+        from_identity=a, to_identity=b, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    edge_ba = MergedEdgeRecord(
+        from_identity=b, to_identity=a, rel_type="ASSOCIATED_WITH",
+        confidence=0.9, pass_origins={"p"},
+    )
+    upstream_refs = {"E_A": a, "E_B": b}
+    rel_prov = [
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_A", to_ref_id="E_B",
+            evidence_ids=["#/texts/100"],   # (A,_,B) -> chunkX
+        ),
+        ExtractionRelationshipProvenance(
+            relationship_type="ASSOCIATED_WITH",
+            from_ref_id="E_B", to_ref_id="E_A",
+            evidence_ids=["#/texts/200"],   # (B,_,A) -> chunkY
+        ),
+    ]
+
+    records = pipeline_mod._build_relationship_records(
+        edges=[edge_ab, edge_ba],
+        relationship_provenance_rows=rel_prov,
+        entity_provenance_rows=[],
+        element_uid_chunk_map=_PE_ELEMENT_UID_CHUNK_MAP,
+        identity_map=_PE_IDENTITY_MAP,
+        upstream_refs=upstream_refs,
+    )
+
+    by_pair = {(r.from_identity["name"], r.to_identity["name"]): r for r in records}
+    # Each direction keeps its OWN exact-direction provenance — no clobber.
+    assert by_pair[("A", "B")].properties["source_chunk_ids"] == ["chunkX"]
+    assert by_pair[("B", "A")].properties["source_chunk_ids"] == ["chunkY"]
+
+
+# ---------------------------------------------------------------------------
 # (c) _build_lineage_resolver_maps — exercises the REAL function body
 #     (the select(...) calls + artifact_id -> element_uid -> chunk_id join).
 #     Regression guard: this function previously called select() WITHOUT a
