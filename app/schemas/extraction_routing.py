@@ -118,6 +118,21 @@ class ChunkScopeDiagnostics(BaseModel):
     # Keys: candidate_key, reranker_score (or null), alias_hits, pattern_hits,
     #       negative_hits, section_hits, retrieval_sources (sorted list), final_score.
 
+    score_components_all: list[dict] | None = None
+    # Additive calibration diagnostics (last piece of the section/lexical feature).
+    # One dict per FULL-POOL candidate (capped at top_n_candidates ≤ 50), NOT just
+    # the top_k — so the offline calibration (scripts/phase1b_reweight_separator.py,
+    # scripts/phase2_anchor_alias_separation.py) can learn per-feature weights from
+    # the decomposed signal across the whole pool.
+    # Keys (extraction_candidate_scoring.COMPONENT_KEYS):
+    #   candidate_key, cosine, rerank_norm,
+    #   field_label_hits, field_label_norm, pass_keyword_hits, pass_keyword_norm,
+    #   entity_anchor_text, anchor_text_norm, entity_anchor_section,
+    #   anchor_section_norm, section_norm, is_table, pattern_norm, negative_norm,
+    #   final_score.
+    # Purely additive — the SELECTED-only score_components above is unchanged.
+    # None on per-element + all error/early-return paths (like score_components).
+
     fallback_level: str | None = None
     # "none" on the normal multi-channel success path.
     # "relaxed_dense" | "lexical_table" | "identity_anchor" | "full" after escalation.

@@ -246,10 +246,42 @@ def merge_candidates(
 _RERANK_FLOOR = float("-inf")   # sentinel for unscorable candidates in sort key
 
 
+# Keys of the per-candidate component dict surfaced for offline calibration
+# (the additive ``score_components_all`` diagnostics field). Pinned here so the
+# endpoint, the scoring path, and the tests share one contract. The NAMES are
+# chosen to line up with the offline calibration scripts' COMPONENT_FIELDS
+# (cosine, rerank_norm, section_norm, is_table, pattern_norm, negative_norm) and
+# add the decomposed-lexical features (field_label_*, pass_keyword_*,
+# entity_anchor_text/anchor_text_norm, entity_anchor_section/anchor_section_norm).
+COMPONENT_KEYS: tuple[str, ...] = (
+    "candidate_key",
+    "cosine",
+    "rerank_norm",
+    "field_label_hits",
+    "field_label_norm",
+    "pass_keyword_hits",
+    "pass_keyword_norm",
+    "entity_anchor_text",
+    "anchor_text_norm",
+    "entity_anchor_section",
+    "anchor_section_norm",
+    "section_norm",
+    "is_table",
+    "pattern_norm",
+    "negative_norm",
+    "final_score",
+)
+
+
 def score_candidates(
     candidates: list[dict[str, Any]],
     cfg: "RetrievalProfile",
-) -> list[tuple["MergedCandidate", float]]:
+    *,
+    return_components: bool = False,
+) -> (
+    list[tuple["MergedCandidate", float]]
+    | list[tuple["MergedCandidate", float, dict[str, Any]]]
+):
     """Score and sort candidates after cross-encoder reranking.
 
     Input ``candidates`` is the list produced by C6 (caller), shaped as::
@@ -310,6 +342,15 @@ def score_candidates(
 
     C5 ONLY SCORES + SORTS — it does NOT apply the top_k cut (C6 does) and
     does NOT call rerank() (C6 does) and does NOT wire the endpoint.
+
+    Component breakdown (additive, opt-in — ``return_components=True``):
+      Returns ``list[(MergedCandidate, final_score, components)]`` where
+      ``components`` is the REAL per-candidate dict this call computed (no
+      recompute / drift). Keys are :data:`COMPONENT_KEYS`. Scoring, ordering,
+      and the default 2-tuple return shape are UNCHANGED — the components are
+      simply also emitted. ``final_score`` inside the dict is identical to the
+      float in the pair, and ``cosine`` mirrors ``mc.vector_score`` (None → 0.0)
+      so the offline calibration can read the absolute dense channel too.
     """
     if not candidates:
         return []
@@ -351,7 +392,8 @@ def score_candidates(
     # ------------------------------------------------------------------
     # 3. Score each candidate
     # ------------------------------------------------------------------
-    results: list[tuple[MergedCandidate, float, float]] = []   # (mc, final, raw_rr)
+    results: list[tuple[MergedCandidate, float, float, dict[str, Any]]] = []
+    # (mc, final, raw_rr, components)
 
     for c in candidates:
         mc: MergedCandidate = c["merged_candidate"]
@@ -375,15 +417,21 @@ def score_candidates(
         negative_norm = mc.negative_hits / max(1, max_negative)
         is_table      = 1.0 if mc.content_type == "table" else 0.0
 
+        # Decomposed-lexical norms. Computed UNCONDITIONALLY (cheap; same
+        # ratio-max as everything else) so the component breakdown always
+        # carries per-feature signal for offline calibration. They only feed
+        # the final_score when cfg.lexical_decomposed (the legacy path ignores
+        # them — byte-identical scoring preserved).
+        field_label_norm    = mc.field_label_hits      / max(1, max_field_label)
+        pass_keyword_norm   = mc.pass_keyword_hits      / max(1, max_pass_keyword)
+        anchor_text_norm    = mc.entity_anchor_text     / max(1, max_anchor_text)
+        anchor_section_norm = mc.entity_anchor_section  / max(1, max_anchor_section)
+
         # Lexical term — flag-gated decomposition (router-scoring piece).
         # Default (lexical_decomposed=False): the LITERAL legacy single-weight
         # term, byte-identical to before this piece.
         # When True: replace it with four independently weighted sub-terms.
         if cfg.lexical_decomposed:
-            field_label_norm   = mc.field_label_hits      / max(1, max_field_label)
-            pass_keyword_norm  = mc.pass_keyword_hits      / max(1, max_pass_keyword)
-            anchor_text_norm   = mc.entity_anchor_text     / max(1, max_anchor_text)
-            anchor_section_norm = mc.entity_anchor_section / max(1, max_anchor_section)
             lexical_term = (
                 cfg.field_label_weight     * field_label_norm
                 + cfg.pass_keyword_weight    * pass_keyword_norm
@@ -403,14 +451,60 @@ def score_candidates(
         )
         final = max(final, 0.0)
 
-        results.append((mc, final, sort_rr))
+        # Per-candidate component breakdown (additive diagnostics). Built from
+        # the SAME values used for final above — no recompute/drift. cosine is
+        # the absolute dense channel (mc.vector_score; None → 0.0), not a C5
+        # term. Keys match COMPONENT_KEYS.
+        components: dict[str, Any] = {
+            "candidate_key": mc.candidate_key,
+            "cosine": float(mc.vector_score) if mc.vector_score is not None else 0.0,
+            "rerank_norm": float(rerank_norm),
+            "field_label_hits": mc.field_label_hits,
+            "field_label_norm": float(field_label_norm),
+            "pass_keyword_hits": mc.pass_keyword_hits,
+            "pass_keyword_norm": float(pass_keyword_norm),
+            "entity_anchor_text": mc.entity_anchor_text,
+            "anchor_text_norm": float(anchor_text_norm),
+            "entity_anchor_section": mc.entity_anchor_section,
+            "anchor_section_norm": float(anchor_section_norm),
+            "section_norm": float(section_norm),
+            "is_table": float(is_table),
+            "pattern_norm": float(pattern_norm),
+            "negative_norm": float(negative_norm),
+            "final_score": final,
+        }
+
+        results.append((mc, final, sort_rr, components))
 
     # ------------------------------------------------------------------
     # 4. Sort: final desc → reranker_score desc → candidate_key asc
     # ------------------------------------------------------------------
     results.sort(key=lambda t: (-t[1], -t[2] if t[2] != _RERANK_FLOOR else math.inf, t[0].candidate_key))
 
-    return [(mc, score) for mc, score, _ in results]
+    if return_components:
+        return [(mc, score, comps) for mc, score, _, comps in results]
+    return [(mc, score) for mc, score, _, _ in results]
+
+
+def score_components_for_pool(
+    candidates: list[dict[str, Any]],
+    cfg: "RetrievalProfile",
+) -> list[dict[str, Any]]:
+    """Return the per-candidate component dict for EVERY candidate in the pool.
+
+    Thin wrapper over ``score_candidates(..., return_components=True)`` that
+    drops the (mc, final) prefix and yields just the component dicts (in the
+    same final-desc sorted order). This is the function the chunk-scope endpoint
+    calls to populate the additive ``score_components_all`` diagnostics field for
+    the FULL reranked pool. Keeping it a SEPARATE entry point means endpoint
+    tests that monkeypatch ``score_candidates`` to a bare 2-tuple stub are
+    unaffected — the full-pool breakdown is computed here on the real signal.
+
+    Purely additive: it does not score, select, sort-differently, or mutate the
+    pool. Keys per dict are :data:`COMPONENT_KEYS`.
+    """
+    scored = score_candidates(candidates, cfg, return_components=True)
+    return [comps for _mc, _final, comps in scored]
 
 
 # ---------------------------------------------------------------------------

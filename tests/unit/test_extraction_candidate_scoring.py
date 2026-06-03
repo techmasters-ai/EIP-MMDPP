@@ -2015,3 +2015,322 @@ class TestScoreCandidatesDecomposedFlagOn:
         scores = {mc.candidate_key: s for mc, s in result}
         # Legacy lexical_weight must NOT fire — scores tie (same rerank, zero decomposed).
         assert abs(scores["c_legacy"] - scores["c_plain"]) < 1e-9
+
+
+# ===========================================================================
+# CALIBRATION-DIAGNOSTICS — score_candidates component breakdown (opt-in)
+# ===========================================================================
+#
+# Additive-to-diagnostics piece (LAST of feature (b)): surface the decomposed
+# per-chunk scoring features so the offline calibration can read per-feature
+# signal. score_candidates gains an opt-in `return_components=True` that ALSO
+# yields, per candidate, the REAL component dict it computed (no recompute /
+# drift). The default 2-tuple return shape is UNCHANGED for existing callers.
+#
+# Per-candidate component dict keys (exact contract):
+#   cosine, rerank_norm,
+#   field_label_hits, field_label_norm,
+#   pass_keyword_hits, pass_keyword_norm,
+#   entity_anchor_text, anchor_text_norm,
+#   entity_anchor_section, anchor_section_norm,
+#   section_norm, is_table, pattern_norm, negative_norm,
+#   final_score, candidate_key
+# ===========================================================================
+
+
+_EXPECTED_COMPONENT_KEYS = {
+    "cosine",
+    "rerank_norm",
+    "field_label_hits",
+    "field_label_norm",
+    "pass_keyword_hits",
+    "pass_keyword_norm",
+    "entity_anchor_text",
+    "anchor_text_norm",
+    "entity_anchor_section",
+    "anchor_section_norm",
+    "section_norm",
+    "is_table",
+    "pattern_norm",
+    "negative_norm",
+    "final_score",
+    "candidate_key",
+}
+
+
+class TestScoreCandidatesReturnComponents:
+    def test_legacy_two_tuple_default_unchanged(self):
+        """Without return_components, the return shape is still list[(mc, float)]."""
+        from app.services.extraction_candidate_scoring import (
+            MergedCandidate,
+            score_candidates,
+        )
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("c1", reranker_score=0.9, alias_hits=2),
+            _make_scored_candidate("c2", reranker_score=0.5),
+        ]
+        result = score_candidates(cands, cfg)
+        assert all(len(t) == 2 for t in result)
+        for mc, score in result:
+            assert isinstance(mc, MergedCandidate)
+            assert isinstance(score, float)
+
+    def test_return_components_yields_three_tuple(self):
+        """return_components=True → list[(mc, final, components_dict)]."""
+        from app.services.extraction_candidate_scoring import (
+            MergedCandidate,
+            score_candidates,
+        )
+
+        cfg = _make_profile()
+        cands = [_make_scored_candidate("c1", reranker_score=0.8, alias_hits=1)]
+        result = score_candidates(cands, cfg, return_components=True)
+        assert len(result) == 1
+        mc, final, comps = result[0]
+        assert isinstance(mc, MergedCandidate)
+        assert isinstance(final, float)
+        assert isinstance(comps, dict)
+
+    def test_component_dict_has_all_keys(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate(
+                "c1",
+                reranker_score=0.7,
+                alias_hits=3,
+                pattern_hits=2,
+                negative_hits=1,
+                section_hits=4,
+                content_type="table",
+                field_label_hits=3,
+                pass_keyword_hits=5,
+                entity_anchor_text=2,
+                entity_anchor_section=4,
+            ),
+            _make_scored_candidate("c2", reranker_score=0.2),
+        ]
+        result = score_candidates(cands, cfg, return_components=True)
+        for _, _, comps in result:
+            assert set(comps.keys()) == _EXPECTED_COMPONENT_KEYS, (
+                f"component keys mismatch: {set(comps.keys()) ^ _EXPECTED_COMPONENT_KEYS}"
+            )
+
+    def test_components_final_score_matches_tuple_final(self):
+        """The components dict's final_score == the float in the (mc, final) pair —
+        same single computation, no drift."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=2.0)
+        cands = [
+            _make_scored_candidate("c_high", reranker_score=0.9, alias_hits=0),
+            _make_scored_candidate("c_boost", reranker_score=0.1, alias_hits=5),
+        ]
+        legacy = dict(
+            (mc.candidate_key, s) for mc, s in score_candidates(cands, cfg)
+        )
+        with_comps = score_candidates(cands, cfg, return_components=True)
+        for mc, final, comps in with_comps:
+            assert comps["final_score"] == final
+            assert comps["candidate_key"] == mc.candidate_key
+            assert abs(comps["final_score"] - legacy[mc.candidate_key]) < 1e-12
+
+    def test_components_ordering_matches_legacy(self):
+        """return_components must not change ordering vs the legacy call."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=2.0)
+        cands = [
+            _make_scored_candidate("c_high", reranker_score=0.9, alias_hits=0),
+            _make_scored_candidate("c_boost", reranker_score=0.1, alias_hits=5),
+            _make_scored_candidate("c_mid", reranker_score=0.5, alias_hits=1),
+        ]
+        legacy_keys = [mc.candidate_key for mc, _ in score_candidates(cands, cfg)]
+        comp_keys = [
+            mc.candidate_key
+            for mc, _, _ in score_candidates(cands, cfg, return_components=True)
+        ]
+        assert comp_keys == legacy_keys
+
+    def test_component_norm_values_are_real_computed_norms(self):
+        """The decomposed norms in the dict equal hit / max(1, pool_max) — the
+        SAME normalisation score_candidates uses internally."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        # Two candidates so pool maxima are well-defined.
+        c1 = _make_scored_candidate(
+            "c1",
+            reranker_score=0.8,
+            field_label_hits=2,
+            pass_keyword_hits=4,
+            entity_anchor_text=1,
+            entity_anchor_section=3,
+            section_hits=3,
+            pattern_hits=2,
+            negative_hits=1,
+            content_type="table",
+            alias_hits=3,  # 2 field_label + 1 anchor_text
+        )
+        c2 = _make_scored_candidate(
+            "c2",
+            reranker_score=0.2,
+            field_label_hits=4,   # pool max for field_label
+            pass_keyword_hits=8,  # pool max for pass_keyword
+            entity_anchor_text=2,  # pool max for anchor_text
+            entity_anchor_section=6,  # pool max for anchor_section
+            section_hits=6,
+            pattern_hits=4,
+            negative_hits=2,
+            alias_hits=6,
+        )
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates([c1, c2], cfg, return_components=True)
+        }
+        c = comps["c1"]
+        assert c["field_label_norm"] == pytest.approx(2 / 4)
+        assert c["pass_keyword_norm"] == pytest.approx(4 / 8)
+        assert c["anchor_text_norm"] == pytest.approx(1 / 2)
+        assert c["anchor_section_norm"] == pytest.approx(3 / 6)
+        assert c["section_norm"] == pytest.approx(3 / 6)
+        assert c["pattern_norm"] == pytest.approx(2 / 4)
+        assert c["negative_norm"] == pytest.approx(1 / 2)
+        assert c["is_table"] == 1.0
+        # raw counts surfaced verbatim
+        assert c["field_label_hits"] == 2
+        assert c["pass_keyword_hits"] == 4
+        assert c["entity_anchor_text"] == 1
+        assert c["entity_anchor_section"] == 3
+
+    def test_cosine_carries_vector_score(self):
+        """`cosine` mirrors the candidate's vector_score (None → 0.0)."""
+        from app.services.extraction_candidate_scoring import (
+            MergedCandidate,
+            score_candidates,
+        )
+
+        mc_with_cos = MergedCandidate(
+            candidate_key="c_cos",
+            chunk_index=0,
+            self_ref="c_cos",
+            chunk_text="t",
+            source_refs=[],
+            token_count=10,
+            page_number=None,
+            vector_score=0.73,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources=set(),
+            supported_field_hints=set(),
+        )
+        cand = {"merged_candidate": mc_with_cos, "content_text": "t", "reranker_score": 0.5}
+        result = score_candidates([cand], cfg=_make_profile(), return_components=True)
+        _, _, comps = result[0]
+        assert comps["cosine"] == pytest.approx(0.73)
+
+    def test_cosine_none_vector_score_is_zero(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cand = _make_scored_candidate("c1", reranker_score=0.5)  # vector_score=None
+        _, _, comps = score_candidates([cand], _make_profile(), return_components=True)[0]
+        assert comps["cosine"] == 0.0
+
+    def test_rerank_norm_matches_internal_minmax(self):
+        """rerank_norm in the dict is the min-max normalised reranker score."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("hi", reranker_score=1.0),
+            _make_scored_candidate("lo", reranker_score=0.0),
+            _make_scored_candidate("mid", reranker_score=0.5),
+        ]
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(cands, cfg, return_components=True)
+        }
+        assert comps["hi"]["rerank_norm"] == pytest.approx(1.0)
+        assert comps["lo"]["rerank_norm"] == pytest.approx(0.0)
+        assert comps["mid"]["rerank_norm"] == pytest.approx(0.5)
+
+    def test_unscorable_candidate_rerank_norm_zero(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("scored", reranker_score=0.7),
+            _make_scored_candidate("unscorable"),  # no reranker_score
+        ]
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(cands, cfg, return_components=True)
+        }
+        assert comps["unscorable"]["rerank_norm"] == 0.0
+
+    def test_empty_pool_returns_empty_with_components(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        assert score_candidates([], _make_profile(), return_components=True) == []
+
+
+class TestScoreComponentsForPool:
+    """The endpoint reads the FULL-pool component dicts via a non-patched helper
+    (so existing endpoint tests that mock score_candidates are unaffected).
+    score_components_for_pool returns one dict per pool candidate — the SAME
+    component contract as score_candidates(return_components=True)."""
+
+    def test_importable(self):
+        from app.services.extraction_candidate_scoring import (  # noqa: F401
+            score_components_for_pool,
+        )
+
+    def test_returns_one_dict_per_candidate(self):
+        from app.services.extraction_candidate_scoring import score_components_for_pool
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("c1", reranker_score=0.8, alias_hits=2),
+            _make_scored_candidate("c2", reranker_score=0.5),
+            _make_scored_candidate("c3", reranker_score=0.1),
+        ]
+        out = score_components_for_pool(cands, cfg)
+        assert isinstance(out, list)
+        assert len(out) == 3
+        for d in out:
+            assert set(d.keys()) == _EXPECTED_COMPONENT_KEYS
+
+    def test_dicts_match_score_candidates_components(self):
+        """Per candidate_key, the dict equals the one from
+        score_candidates(return_components=True) — single source of truth."""
+        from app.services.extraction_candidate_scoring import (
+            score_candidates,
+            score_components_for_pool,
+        )
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.5, pattern_weight=0.3)
+        cands = [
+            _make_scored_candidate(
+                "c1", reranker_score=0.8, alias_hits=2, pattern_hits=1,
+                section_hits=2, negative_hits=1,
+            ),
+            _make_scored_candidate("c2", reranker_score=0.3, alias_hits=1),
+        ]
+        via_pool = {d["candidate_key"]: d for d in score_components_for_pool(cands, cfg)}
+        via_score = {
+            c["candidate_key"]: c
+            for _, _, c in score_candidates(cands, cfg, return_components=True)
+        }
+        assert via_pool == via_score
+
+    def test_empty_pool_returns_empty(self):
+        from app.services.extraction_candidate_scoring import score_components_for_pool
+
+        assert score_components_for_pool([], _make_profile()) == []

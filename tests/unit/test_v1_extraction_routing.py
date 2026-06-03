@@ -1701,3 +1701,336 @@ class TestF2F4FieldSubset:
         assert "erp_dbw" not in field_subset, (
             f"erp_dbw has no evidence → must be dropped; got {field_subset!r}"
         )
+
+
+# ===========================================================================
+# CALIBRATION DIAGNOSTICS — score_components_all (FULL pool), additive
+# ===========================================================================
+#
+# LAST piece of feature (b): emit a per-feature decomposed component dict for
+# EVERY pool candidate (not just the top_k) so offline calibration can read
+# per-feature signal. Purely additive:
+#   - existing top_k `score_components` stays byte-identical
+#   - `score_components_all` length == full pool size (> top_k when pool > top_k)
+#   - each `score_components_all` dict carries the decomposed feature keys
+# ===========================================================================
+
+
+class TestScoreComponentsAllFullPool:
+    """diagnostics.score_components_all covers the FULL reranked pool; the
+    existing top_k score_components is unchanged."""
+
+    _DECOMPOSED_KEYS = {
+        "cosine", "rerank_norm",
+        "field_label_hits", "field_label_norm",
+        "pass_keyword_hits", "pass_keyword_norm",
+        "entity_anchor_text", "anchor_text_norm",
+        "entity_anchor_section", "anchor_section_norm",
+        "section_norm", "is_table", "pattern_norm", "negative_norm",
+        "final_score", "candidate_key",
+    }
+
+    def _make_mc_pass_def(self):
+        rp = MagicMock()
+        rp.min_similarity = 0.0
+        rp.top_n_candidates = 50
+        rp.top_k = 5  # << smaller than the pool so all > top_k is observable
+        rp.field_query_top_k = 3  # > 0 triggers multi-channel path
+        rp.fallback_to_full = True
+        rp.rerank_weight = 1.0
+        rp.lexical_weight = 0.2
+        rp.pattern_weight = 0.15
+        rp.section_weight = 0.1
+        rp.table_boost = 0.08
+        rp.negative_weight = 0.2
+        rp.pattern_hit_limit = 50
+        rp.lexical_decomposed = False
+        rp.field_label_weight = 0.0
+        rp.pass_keyword_weight = 0.0
+        rp.anchor_text_weight = 0.0
+        rp.anchor_section_weight = 0.0
+        rp.lexical_keywords = []
+        rp.subset_schema_extraction = False
+
+        pd = MagicMock()
+        pd.name = _PASS_NAME
+        pd.phase = "field_group"
+        pd.required = False
+        pd.primary_entity_types = None
+        pd.module = "extraction_schemas.radar_power_rf"
+        pd.template_class = "RadarPowerRfPass"
+        pd.retrieval = rp
+        return pd
+
+    def _make_mc(self, idx: int):
+        from app.services.extraction_candidate_scoring import MergedCandidate
+        return MergedCandidate(
+            candidate_key=f"run-test:chunk_{idx}",
+            chunk_index=idx,
+            self_ref=f"chunk_{idx}",
+            chunk_text=f"chunk text {idx}",
+            source_refs=[f"#/texts/{idx * 2}", f"#/texts/{idx * 2 + 1}"],
+            token_count=50,
+            page_number=1,
+            vector_score=0.8 - idx * 0.01,
+            field_scores={},
+            alias_hits=idx % 3,
+            pattern_hits=idx % 2,
+            negative_hits=0,
+            section_hits=idx % 4,
+            content_type="table" if idx % 5 == 0 else None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+            field_label_hits=idx % 3,
+            pass_keyword_hits=idx % 2,
+            entity_anchor_text=0,
+            entity_anchor_section=idx % 4,
+        )
+
+    def _make_mc_state(self):
+        from app.services.extraction_chunk_search import MultiChannelState
+        return MultiChannelState(
+            rows=[], entity_dense=[], field_dense={},
+            lex_hits={}, pat_hits={}, raw_row_count=0,
+        )
+
+    def _make_multi_channel_diag(self, pool_size: int):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            raw_row_count=pool_size,
+            entity_dense_count=pool_size,
+            field_dense_total_count=0,
+            per_field_dense_counts={},
+            lexical_hit_count=0,
+            pattern_hit_count=0,
+            pool_size=pool_size,
+            filter_strategy="direct_cosine",
+        )
+
+    @pytest.mark.asyncio
+    async def test_score_components_all_covers_full_pool(self, app):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        pass_def = self._make_mc_pass_def()
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        # 10-candidate pool, top_k=5 → all (10) must exceed top_k (5).
+        pool = [self._make_mc(i) for i in range(10)]
+        diag = self._make_multi_channel_diag(len(pool))
+        state = self._make_mc_state()
+
+        from pydantic import BaseModel
+        class _FakeTemplate(BaseModel):
+            frequency_mhz: str = ""
+            power_kw: str = ""
+
+        def _fake_rerank(query, candidates, top_k):
+            # assign descending reranker scores in pool order
+            return [
+                dict(c, reranker_score=0.9 - i * 0.05)
+                for i, c in enumerate(candidates)
+            ]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=_FakeTemplate),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
+                # Use the REAL score_candidates so the top_k selection + the
+                # full-pool component emission both run on the genuine signal.
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings",
+                      return_value=settings_mock),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        diag_out = resp.json()["diagnostics"]
+
+        sc_all = diag_out["score_components_all"]
+        assert sc_all is not None, "score_components_all must be populated on multi-channel path"
+        # Full pool size (10) — strictly greater than top_k (5).
+        assert len(sc_all) == 10, f"expected full pool of 10, got {len(sc_all)}"
+        assert len(sc_all) > pass_def.retrieval.top_k
+
+        # Each dict carries the decomposed feature keys.
+        for d in sc_all:
+            assert set(d.keys()) == self._DECOMPOSED_KEYS, (
+                f"score_components_all dict key mismatch: "
+                f"{set(d.keys()) ^ self._DECOMPOSED_KEYS}"
+            )
+
+        # The existing top_k score_components is still capped at top_k and
+        # carries its (unchanged) legacy key set.
+        sc_topk = diag_out["score_components"]
+        assert sc_topk is not None
+        assert len(sc_topk) == pass_def.retrieval.top_k == 5
+        legacy_keys = {
+            "candidate_key", "reranker_score", "alias_hits", "pattern_hits",
+            "negative_hits", "section_hits", "retrieval_sources", "final_score",
+        }
+        for d in sc_topk:
+            assert set(d.keys()) == legacy_keys, (
+                f"top_k score_components key set changed: "
+                f"{set(d.keys()) ^ legacy_keys}"
+            )
+
+        # Every candidate_key in the top_k slice also appears in the full pool.
+        topk_keys = {d["candidate_key"] for d in sc_topk}
+        all_keys = {d["candidate_key"] for d in sc_all}
+        assert topk_keys.issubset(all_keys)
+
+    @pytest.mark.asyncio
+    async def test_score_components_unchanged_with_and_without_new_field(self, app):
+        """The top_k score_components content is byte-identical to what it was
+        before score_components_all was added (final_score + raw counts)."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        pass_def = self._make_mc_pass_def()
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        pool = [self._make_mc(i) for i in range(7)]
+        diag = self._make_multi_channel_diag(len(pool))
+        state = self._make_mc_state()
+
+        from pydantic import BaseModel
+        class _FakeTemplate(BaseModel):
+            frequency_mhz: str = ""
+
+        def _fake_rerank(query, candidates, top_k):
+            return [dict(c, reranker_score=0.9 - i * 0.05) for i, c in enumerate(candidates)]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "q"
+        signals_mock.field_queries = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest", return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class", return_value=_FakeTemplate),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile", return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store", return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate", new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries", new=AsyncMock(return_value=[])),
+                patch("app.api.v1.extraction_routing.rrk.rerank", side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings", return_value=settings_mock),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        diag_out = resp.json()["diagnostics"]
+        sc_topk = diag_out["score_components"]
+        sc_all = {d["candidate_key"]: d for d in diag_out["score_components_all"]}
+
+        # For each selected candidate, the top_k score_components final_score must
+        # equal the full-pool dict's final_score (same single computation).
+        for d in sc_topk:
+            ck = d["candidate_key"]
+            assert ck in sc_all
+            assert d["final_score"] == pytest.approx(sc_all[ck]["final_score"])
+
+
+# ===========================================================================
+# SCHEMA — ChunkScopeDiagnostics.score_components_all round-trip
+# ===========================================================================
+
+
+class TestChunkScopeDiagnosticsScoreComponentsAll:
+    def test_defaults_none(self):
+        from app.schemas.extraction_routing import ChunkScopeDiagnostics
+
+        diag = ChunkScopeDiagnostics(
+            mode="full",
+            query_text="q",
+            vector_threshold=0.4,
+            candidate_count=0,
+            selected_ref_count=0,
+            selected_token_estimate=0,
+            full_doc_token_estimate=100,
+            would_skip_if_fallback_disabled=False,
+            vector_search_ms=1,
+            rerank_ms=1,
+            ann_top_k_requested=10,
+            post_filter_candidate_count=0,
+            post_filter_retry_count=0,
+            filter_strategy="direct_cosine",
+        )
+        assert diag.score_components_all is None
+
+    def test_round_trips_list_of_dicts(self):
+        from app.schemas.extraction_routing import ChunkScopeDiagnostics
+
+        payload = [
+            {
+                "candidate_key": "run:chunk_0",
+                "cosine": 0.7,
+                "rerank_norm": 1.0,
+                "field_label_hits": 2,
+                "field_label_norm": 0.5,
+                "pass_keyword_hits": 1,
+                "pass_keyword_norm": 0.25,
+                "entity_anchor_text": 0,
+                "anchor_text_norm": 0.0,
+                "entity_anchor_section": 3,
+                "anchor_section_norm": 0.75,
+                "section_norm": 0.75,
+                "is_table": 0.0,
+                "pattern_norm": 0.5,
+                "negative_norm": 0.0,
+                "final_score": 1.23,
+            }
+        ]
+        diag = ChunkScopeDiagnostics(
+            mode="selected_refs",
+            query_text="q",
+            vector_threshold=0.4,
+            candidate_count=1,
+            selected_ref_count=1,
+            selected_token_estimate=10,
+            full_doc_token_estimate=100,
+            would_skip_if_fallback_disabled=False,
+            vector_search_ms=1,
+            rerank_ms=1,
+            ann_top_k_requested=10,
+            post_filter_candidate_count=1,
+            post_filter_retry_count=0,
+            filter_strategy="direct_cosine",
+            score_components_all=payload,
+        )
+        dumped = diag.model_dump()
+        assert dumped["score_components_all"] == payload
+        # JSON round-trip
+        reloaded = ChunkScopeDiagnostics.model_validate_json(diag.model_dump_json())
+        assert reloaded.score_components_all == payload

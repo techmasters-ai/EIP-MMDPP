@@ -52,6 +52,7 @@ from app.services.extraction_candidate_scoring import (
     enough_field_coverage,
     field_coverage,
     score_candidates,
+    score_components_for_pool,
 )
 from app.services.extraction_query_builder import (
     build_retrieval_profile,
@@ -1377,6 +1378,9 @@ async def chunk_scope(
     _c7_channel_counts: dict[str, int] | None = None
     _c7_field_coverage: dict[str, int] | None = None
     _c7_score_components: list[dict] | None = None
+    # Additive calibration diagnostics: decomposed per-feature components for the
+    # FULL reranked pool (not just the top_k). None outside the multi-channel path.
+    _c7_score_components_all: list[dict] | None = None
     _c7_fallback_level: str | None = None
 
     # Task E3 — fallback diagnostics (before/after counts + field_coverage_before).
@@ -1431,6 +1435,19 @@ async def chunk_scope(
                 "final_score": final_score,
             })
         _c7_score_components = _sc_list[: profile.top_k]
+
+        # score_components_all: decomposed per-feature component dict for EVERY
+        # candidate in the FULL reranked pool (NOT just the top_k) — the additive
+        # calibration-diagnostics piece. score_components_for_pool replays the
+        # SAME C5 normalisation score_candidates uses (no recompute/drift) and is
+        # a SEPARATE entry point from score_candidates, so endpoint tests that
+        # monkeypatch score_candidates do not perturb this full-pool breakdown.
+        # The existing top_k score_components above is left UNCHANGED.
+        # reranked_pool is the authoritative final pool fed into C5 scoring; cap
+        # to top_n_candidates so the payload stays bounded (≤ 50).
+        _sca_pool = [d for d in reranked_pool if "merged_candidate" in d]
+        _sca_pool = _sca_pool[: profile.top_n_candidates]
+        _c7_score_components_all = score_components_for_pool(_sca_pool, profile)
 
         # fallback_level: set by E2 ladder ("none" on the happy path).
         _c7_fallback_level = _e2_fallback_level
@@ -1503,6 +1520,8 @@ async def chunk_scope(
             channel_counts=_c7_channel_counts,
             field_coverage=_c7_field_coverage,
             score_components=_c7_score_components,
+            # Additive: decomposed per-feature components for the FULL pool.
+            score_components_all=_c7_score_components_all,
             fallback_level=_c7_fallback_level,
             # Task C8 identity-anchor channel count (None in per_element mode;
             # 0 when anchor query ran but found no committed entities).
