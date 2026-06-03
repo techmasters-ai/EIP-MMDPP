@@ -415,6 +415,15 @@ class TestEndpointIdentityAnchorFires:
         profile.section_weight = 0.0
         profile.table_boost = 0.0
         profile.negative_weight = 0.0
+        # Decomposed-lexical knobs pinned to real RetrievalProfile defaults so
+        # the MagicMock profile exercises the legacy (flag-off) path and feeds
+        # an EMPTY keyword list into keyword_hit_counts (not an auto-MagicMock).
+        profile.lexical_decomposed = False
+        profile.field_label_weight = 0.0
+        profile.pass_keyword_weight = 0.0
+        profile.anchor_text_weight = 0.0
+        profile.anchor_section_weight = 0.0
+        profile.lexical_keywords = []
         pd.retrieval = profile
         return pd
 
@@ -673,6 +682,15 @@ class TestEndpointIdentityAnchorNoOp:
         profile.section_weight = 0.0
         profile.table_boost = 0.0
         profile.negative_weight = 0.0
+        # Decomposed-lexical knobs pinned to real RetrievalProfile defaults so
+        # the MagicMock profile exercises the legacy (flag-off) path and feeds
+        # an EMPTY keyword list into keyword_hit_counts (not an auto-MagicMock).
+        profile.lexical_decomposed = False
+        profile.field_label_weight = 0.0
+        profile.pass_keyword_weight = 0.0
+        profile.anchor_text_weight = 0.0
+        profile.anchor_section_weight = 0.0
+        profile.lexical_keywords = []
         pd.retrieval = profile
         return pd
 

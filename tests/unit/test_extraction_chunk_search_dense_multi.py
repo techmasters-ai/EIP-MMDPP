@@ -679,6 +679,62 @@ async def test_multi_channel_full_wires_real_section_meta_into_section_hits():
 
 
 @pytest.mark.asyncio
+async def test_multi_channel_full_wires_pass_keyword_hits_into_candidate():
+    """Decomposed-lexical wiring: cfg.lexical_keywords flows through
+    search_extraction_chunks_multi_channel_full into MergedCandidate.pass_keyword_hits
+    (a SEPARATE feature from field_label_hits / alias_hits).
+
+    The matching chunk's body text contains the keyword needle; the keyword
+    count must land in pass_keyword_hits and must NOT leak into alias_hits."""
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_multi_channel_full,
+    )
+    from app.services.ontology_bundles import RetrievalProfile
+
+    match_vec = _norm(_vec(1.0, 0.0))
+    other_vec = _norm(_vec(0.0, 1.0))
+    rows = [
+        _row(
+            "#/texts/match",
+            match_vec,
+            vertex_id="run-A:chunk_match",
+            chunk_text="the missile reaches a high velocity at burnout",
+        ),
+        _row(
+            "#/texts/other",
+            other_vec,
+            vertex_id="run-A:chunk_other",
+            chunk_text="unrelated body without the needle",
+        ),
+    ]
+    store = _fake_store(rows)
+    signals = _make_retrieval_signals(entity_query="missile performance")
+    # Per-pass keyword list set on the profile (operator-supplied in production).
+    cfg = RetrievalProfile(top_n_candidates=10, lexical_keywords=["velocity"])
+
+    with patch(
+        "app.services.extraction_chunk_search.embed_texts",
+        MagicMock(side_effect=lambda texts, query=False: [match_vec for _ in texts]),
+    ):
+        pool, _diag, _state = await search_extraction_chunks_multi_channel_full(
+            signals, "run-A", cfg, store=store,
+        )
+
+    by_key = {mc.candidate_key: mc for mc in pool}
+    assert "run-A:chunk_match" in by_key, (
+        f"matching chunk must be in the merged pool; got {list(by_key)}"
+    )
+    mc = by_key["run-A:chunk_match"]
+    assert mc.pass_keyword_hits == 1, (
+        "cfg.lexical_keywords must flow into MergedCandidate.pass_keyword_hits"
+    )
+    # Keyword must NOT leak into alias_hits (legacy invariant): no field aliases
+    # and no anchors here, so alias_hits stays 0.
+    assert mc.alias_hits == 0
+    assert mc.field_label_hits == 0
+
+
+@pytest.mark.asyncio
 async def test_build_pool_from_state_wires_real_section_meta():
     """The pool-builder reuse path (E2 fallback ladder) also supplies real
     section_meta — section_hits is set from the chunk's headings."""

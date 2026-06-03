@@ -872,6 +872,9 @@ def build_pool_from_multi_channel_state(
             anchor_hit_count = sum(1 for a in normalised_anchors if a in haystack)
             if anchor_hit_count > 0:
                 mc.retrieval_sources.add("identity_anchor")
+                # Decomposed-lexical: bump BOTH entity_anchor_text AND alias_hits
+                # to preserve alias_hits == field_label_hits + entity_anchor_text.
+                mc.entity_anchor_text += anchor_hit_count
                 mc.alias_hits += anchor_hit_count
 
     merged_pool.sort(
@@ -909,6 +912,7 @@ async def search_extraction_chunks_multi_channel_full(
         merge_candidates,
     )
     from app.services.extraction_lexical_search import (
+        keyword_hit_counts,
         lexical_hit_counts,
         pattern_hit_counts,
         section_hit_counts,
@@ -962,6 +966,16 @@ async def search_extraction_chunks_multi_channel_full(
     lexical_hit_count = sum(
         1 for v in lex_hits.values() if v.get("alias_hits", 0) > 0
     )
+
+    # Decomposed-lexical: per-pass keyword channel (NEW feature). Counts the
+    # profile's ``lexical_keywords`` SEPARATELY from the field aliases above,
+    # then folds the count into the same lex_hits payload under "keyword_hits"
+    # so merge_candidates maps it to ``pass_keyword_hits`` (NOT alias_hits).
+    # Empty lexical_keywords → every entry gets keyword_hits=0, byte-identical
+    # to the pre-decomposition lexical payload.
+    kw_hits = keyword_hit_counts(rows, cfg.lexical_keywords)
+    for key, lh in lex_hits.items():
+        lh["keyword_hits"] = kw_hits.get(key, {}).get("keyword_hits", 0)
 
     # ------------------------------------------------------------------
     # 4. C3 — regex/pattern hits (pure, no DB calls).
@@ -1113,6 +1127,11 @@ async def search_extraction_chunks_multi_channel_full(
             )
             if anchor_hit_count > 0:
                 mc.retrieval_sources.add("identity_anchor")
+                # Decomposed-lexical: anchor-in-TEXT is its own feature.
+                # Bump BOTH the decomposed entity_anchor_text AND the legacy
+                # alias_hits to preserve the invariant
+                # alias_hits == field_label_hits + entity_anchor_text.
+                mc.entity_anchor_text += anchor_hit_count
                 mc.alias_hits += anchor_hit_count
 
     # ------------------------------------------------------------------

@@ -606,6 +606,125 @@ class TestKeywordOnlyDropped:
 
 
 # ===========================================================================
+# DECOMPOSED-LEXICAL — merge_candidates keeps the four lexical features separate
+# ===========================================================================
+#
+# Router-scoring lexical-decomposition piece. The single conflated alias_hits is
+# split into FOUR independently-weighted features on MergedCandidate:
+#   field_label_hits     — pydantic-schema field-alias matches (today's signal)
+#   pass_keyword_hits    — per-pass lexical_keywords matches (NEW)
+#   entity_anchor_text   — committed entity-name matches in chunk TEXT (C8)
+#   entity_anchor_section— entity-name matches in chunk SECTION (= section_hits)
+#
+# LEGACY INVARIANT: alias_hits == field_label_hits + entity_anchor_text.
+# pass_keyword_hits is purely additive/new and is NOT folded into alias_hits.
+# ===========================================================================
+
+
+class TestMergeCandidatesDecomposedFeatures:
+    def test_four_decomposed_features_populated_separately(self):
+        """A dense candidate with field-alias + keyword + section hits surfaces
+        all four decomposed features with the right values, and alias_hits holds
+        the legacy invariant (field_label + entity_anchor_text)."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_0", self_ref="#s0", score=0.9)
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={
+                "run1:chunk_0": {
+                    "alias_hits": 3,          # field-alias count -> field_label_hits
+                    "keyword_hits": 2,        # per-pass keyword count -> pass_keyword_hits
+                    "negative_hits": 0,
+                    "supported_fields": {"max_range_km"},
+                }
+            },
+            pattern_hits={},
+            section_meta={"run1:chunk_0": {"section_hits": 4}},
+            table_meta={},
+        )
+        assert len(results) == 1
+        mc = results[0]
+        assert mc.field_label_hits == 3
+        assert mc.pass_keyword_hits == 2
+        assert mc.entity_anchor_text == 0   # no C8 anchor-in-text mutation here
+        assert mc.entity_anchor_section == 4
+        # Legacy invariant: alias_hits = field_label_hits + entity_anchor_text.
+        assert mc.alias_hits == mc.field_label_hits + mc.entity_anchor_text
+        assert mc.alias_hits == 3
+        # section_hits unchanged (entity_anchor_section mirrors it).
+        assert mc.section_hits == 4
+        assert mc.entity_anchor_section == mc.section_hits
+
+    def test_keyword_hits_absent_defaults_to_zero(self):
+        """A lexical_hits entry WITHOUT keyword_hits (legacy shape) → 0."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_1", self_ref="#s1", score=0.8)
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={
+                "run1:chunk_1": {"alias_hits": 2, "negative_hits": 0, "supported_fields": set()}
+            },
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+        )
+        mc = results[0]
+        assert mc.pass_keyword_hits == 0
+        assert mc.field_label_hits == 2
+        assert mc.alias_hits == 2  # legacy invariant: keyword NOT in alias_hits
+
+    def test_keyword_not_folded_into_alias_hits(self):
+        """Even with a large keyword count, alias_hits excludes pass_keyword_hits."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_2", self_ref="#s2", score=0.7)
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={
+                "run1:chunk_2": {
+                    "alias_hits": 1,
+                    "keyword_hits": 9,
+                    "negative_hits": 0,
+                    "supported_fields": set(),
+                }
+            },
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+        )
+        mc = results[0]
+        assert mc.pass_keyword_hits == 9
+        assert mc.field_label_hits == 1
+        assert mc.alias_hits == 1   # 9 keywords do NOT leak into alias_hits
+
+    def test_no_lexical_signal_all_decomposed_zero(self):
+        """A dense-only candidate has all decomposed features zero and the
+        legacy invariant trivially holds."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_3", self_ref="#s3", score=0.6)
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+        )
+        mc = results[0]
+        assert mc.field_label_hits == 0
+        assert mc.pass_keyword_hits == 0
+        assert mc.entity_anchor_text == 0
+        assert mc.entity_anchor_section == 0
+        assert mc.alias_hits == 0
+
+
+# ===========================================================================
 # C5 — score_candidates (post-rerank precision scoring)
 # ===========================================================================
 #
@@ -647,9 +766,26 @@ def _make_scored_candidate(
     negative_hits: int = 0,
     section_hits: int = 0,
     content_type: str | None = None,
+    field_label_hits: int | None = None,
+    pass_keyword_hits: int = 0,
+    entity_anchor_text: int | None = None,
+    entity_anchor_section: int | None = None,
 ) -> dict:
-    """Build a dict in the representation score_candidates expects."""
+    """Build a dict in the representation score_candidates expects.
+
+    Decomposed defaults: when not given, ``field_label_hits`` mirrors
+    ``alias_hits`` and ``entity_anchor_section`` mirrors ``section_hits`` so the
+    decomposed and legacy views stay consistent in tests that only set the
+    legacy fields (these are exactly the production invariants).
+    """
     from app.services.extraction_candidate_scoring import MergedCandidate
+
+    if field_label_hits is None:
+        field_label_hits = alias_hits
+    if entity_anchor_text is None:
+        entity_anchor_text = 0
+    if entity_anchor_section is None:
+        entity_anchor_section = section_hits
 
     mc = MergedCandidate(
         candidate_key=candidate_key,
@@ -668,6 +804,10 @@ def _make_scored_candidate(
         content_type=content_type,
         retrieval_sources=set(),
         supported_field_hints=set(),
+        field_label_hits=field_label_hits,
+        pass_keyword_hits=pass_keyword_hits,
+        entity_anchor_text=entity_anchor_text,
+        entity_anchor_section=entity_anchor_section,
     )
     d: dict = {
         "merged_candidate": mc,
@@ -1641,3 +1781,237 @@ class TestSectionWeightInertAtDefault:
         assert s_zero["a"] == s_zero["b"]
         # With weight 0.5 the section-bearing candidate scores strictly higher.
         assert s_hot["a"] > s_hot["b"]
+
+
+# ===========================================================================
+# DECOMPOSED-LEXICAL C5 — flag-gated four-feature lexical term
+# ===========================================================================
+#
+# When cfg.lexical_decomposed is False (the DEFAULT), score_candidates runs the
+# LITERAL legacy lexical term: cfg.lexical_weight * (alias_hits / max(1,max_alias)).
+# Byte-identical final_score + ordering, even when the decomposed features are
+# non-zero in the pool.
+#
+# When True, that single term is replaced by the sum of four independently
+# weighted sub-terms (field_label / pass_keyword / anchor_text / anchor_section),
+# proving each decomposed feature is independently weightable.
+# ===========================================================================
+
+
+class TestScoreCandidatesDecomposedFlagOff:
+    """lexical_decomposed=False (default) → byte-identical legacy behaviour even
+    when the decomposed features carry non-zero values."""
+
+    def test_byte_identical_legacy_with_nonzero_decomposed_hits(self):
+        """[HARD SAFETY] final_score + ordering byte-identical between a pool
+        whose candidates carry non-zero decomposed features (field_label /
+        pass_keyword / anchor_text / anchor_section) and the SAME pool scored
+        purely through the legacy alias_hits path — because lexical_decomposed
+        defaults to False so only alias_hits is read.
+
+        The 'baseline' pool sets ONLY the legacy fields (alias_hits/section_hits);
+        the 'decomposed' pool additionally populates every decomposed feature
+        AND sets the decomposed sub-weights HOT. With the flag off, the
+        decomposed sub-weights and features must be completely ignored.
+        """
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # Flag OFF (default) but decomposed sub-weights set HOT — they must be inert.
+        cfg = RetrievalProfile(
+            lexical_decomposed=False,
+            lexical_weight=0.20,
+            field_label_weight=5.0,
+            pass_keyword_weight=5.0,
+            anchor_text_weight=5.0,
+            anchor_section_weight=5.0,
+        )
+        assert cfg.lexical_decomposed is False
+
+        specs = [
+            dict(reranker_score=0.9, alias_hits=2, pattern_hits=1, section_hits=5),
+            dict(reranker_score=0.5, alias_hits=0, pattern_hits=3, section_hits=2),
+            dict(reranker_score=0.1, alias_hits=4, negative_hits=1, section_hits=1),
+            dict(reranker_score=0.3, alias_hits=3, section_hits=9),
+            dict(alias_hits=1, section_hits=4),  # unscorable (no reranker_score)
+        ]
+
+        baseline_pool = []
+        decomposed_pool = []
+        for i, kw in enumerate(specs):
+            # Baseline: only the legacy fields are set; decomposed mirror legacy.
+            baseline_pool.append(_make_scored_candidate(f"c{i}", **kw))
+            # Decomposed: same legacy fields, but ALSO inject non-zero decomposed
+            # features that DIFFER from the legacy ones. With the flag off these
+            # must not move a single score.
+            kw_dec = dict(kw)
+            kw_dec.update(
+                field_label_hits=kw.get("alias_hits", 0),
+                pass_keyword_hits=7,          # non-zero, must be ignored
+                entity_anchor_text=0,
+                entity_anchor_section=kw.get("section_hits", 0),
+            )
+            decomposed_pool.append(_make_scored_candidate(f"c{i}", **kw_dec))
+
+        res_base = score_candidates(baseline_pool, cfg)
+        res_dec = score_candidates(decomposed_pool, cfg)
+
+        keys_base = [mc.candidate_key for mc, _ in res_base]
+        keys_dec = [mc.candidate_key for mc, _ in res_dec]
+        scores_base = [s for _, s in res_base]
+        scores_dec = [s for _, s in res_dec]
+
+        assert keys_base == keys_dec, "ordering must be byte-identical with flag off"
+        assert scores_base == scores_dec, "final_score must be byte-identical with flag off"
+
+    def test_existing_c5_alias_promotion_unchanged_with_flag_off(self):
+        """The legacy alias-promotion behaviour (a C5 contract test) is unchanged
+        when the decomposed sub-weights are hot but the flag is off."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(
+            rerank_weight=1.0,
+            lexical_weight=2.0,
+            field_label_weight=99.0,   # hot, but flag off → ignored
+            pass_keyword_weight=99.0,
+        )
+        c_high_rerank = _make_scored_candidate("c_high_rerank", reranker_score=0.9, alias_hits=0)
+        c_boost = _make_scored_candidate("c_boost", reranker_score=0.1, alias_hits=5)
+        result = score_candidates([c_high_rerank, c_boost], cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys[0] == "c_boost"
+
+
+class TestScoreCandidatesDecomposedFlagOn:
+    """lexical_decomposed=True → each decomposed feature is independently
+    weightable; the legacy single lexical_weight term is replaced."""
+
+    def test_pass_keyword_only_weight_promotes_keyword_chunk(self):
+        """With only pass_keyword_weight hot, a keyword-only chunk outscores a
+        field-label-only chunk (proving pass_keyword is its own lever)."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # Identical rerank; only difference is WHERE the lexical signal sits.
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            rerank_weight=1.0,
+            lexical_weight=0.0,          # legacy term off
+            field_label_weight=0.0,
+            pass_keyword_weight=1.0,     # only this lever is hot
+            anchor_text_weight=0.0,
+            anchor_section_weight=0.0,
+        )
+        c_keyword = _make_scored_candidate(
+            "c_keyword", reranker_score=0.5, field_label_hits=0, pass_keyword_hits=4
+        )
+        c_field = _make_scored_candidate(
+            "c_field", reranker_score=0.5, field_label_hits=4, pass_keyword_hits=0
+        )
+        result = score_candidates([c_field, c_keyword], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_keyword"] > scores["c_field"], (
+            f"pass_keyword_weight must promote the keyword chunk; got {scores}"
+        )
+        assert result[0][0].candidate_key == "c_keyword"
+
+    def test_field_label_only_weight_promotes_field_label_chunk(self):
+        """Mirror: with only field_label_weight hot, the field-label chunk wins."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            rerank_weight=1.0,
+            lexical_weight=0.0,
+            field_label_weight=1.0,      # only this lever hot
+            pass_keyword_weight=0.0,
+            anchor_text_weight=0.0,
+            anchor_section_weight=0.0,
+        )
+        c_keyword = _make_scored_candidate(
+            "c_keyword", reranker_score=0.5, field_label_hits=0, pass_keyword_hits=4
+        )
+        c_field = _make_scored_candidate(
+            "c_field", reranker_score=0.5, field_label_hits=4, pass_keyword_hits=0
+        )
+        result = score_candidates([c_keyword, c_field], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_field"] > scores["c_keyword"]
+
+    def test_anchor_section_only_weight_promotes_section_chunk(self):
+        """With only anchor_section_weight hot, a section-only chunk wins."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            rerank_weight=1.0,
+            lexical_weight=0.0,
+            section_weight=0.0,          # keep the separate section term off too
+            field_label_weight=0.0,
+            pass_keyword_weight=0.0,
+            anchor_text_weight=0.0,
+            anchor_section_weight=1.0,   # only this lever hot
+        )
+        c_section = _make_scored_candidate(
+            "c_section", reranker_score=0.5, entity_anchor_section=4, section_hits=4
+        )
+        c_plain = _make_scored_candidate(
+            "c_plain", reranker_score=0.5, entity_anchor_section=0, section_hits=0
+        )
+        result = score_candidates([c_plain, c_section], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_section"] > scores["c_plain"]
+        assert result[0][0].candidate_key == "c_section"
+
+    def test_anchor_text_only_weight_promotes_anchor_text_chunk(self):
+        """With only anchor_text_weight hot, an anchor-in-text chunk wins."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            rerank_weight=1.0,
+            lexical_weight=0.0,
+            field_label_weight=0.0,
+            pass_keyword_weight=0.0,
+            anchor_text_weight=1.0,      # only this lever hot
+            anchor_section_weight=0.0,
+        )
+        c_anchor = _make_scored_candidate(
+            "c_anchor", reranker_score=0.5, entity_anchor_text=4, alias_hits=4
+        )
+        c_plain = _make_scored_candidate(
+            "c_plain", reranker_score=0.5, entity_anchor_text=0, alias_hits=0
+        )
+        result = score_candidates([c_plain, c_anchor], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_anchor"] > scores["c_plain"]
+
+    def test_decomposed_ignores_legacy_lexical_weight(self):
+        """With the flag ON, the legacy lexical_weight term is NOT applied — a
+        chunk with only legacy alias_hits but zero decomposed features gets no
+        lexical boost (its decomposed sub-terms are all zero)."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            rerank_weight=1.0,
+            lexical_weight=99.0,         # would dominate if legacy term ran
+            field_label_weight=0.0,
+            pass_keyword_weight=0.0,
+            anchor_text_weight=0.0,
+            anchor_section_weight=0.0,
+        )
+        # Both have decomposed features all zero; one has legacy alias_hits set.
+        c_legacy = _make_scored_candidate(
+            "c_legacy", reranker_score=0.5, alias_hits=9,
+            field_label_hits=0, entity_anchor_text=0,
+        )
+        c_plain = _make_scored_candidate("c_plain", reranker_score=0.5, alias_hits=0)
+        result = score_candidates([c_legacy, c_plain], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        # Legacy lexical_weight must NOT fire — scores tie (same rerank, zero decomposed).
+        assert abs(scores["c_legacy"] - scores["c_plain"]) < 1e-9

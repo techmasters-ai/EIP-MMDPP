@@ -29,6 +29,7 @@ from app.services.extraction_query_builder import FieldRetrievalQuery
 
 # The module under test (will be created by the implementation step).
 from app.services.extraction_lexical_search import (
+    keyword_hit_counts,
     lexical_hit_counts,
     pattern_hit_counts,
     section_hit_counts,
@@ -454,3 +455,88 @@ class TestSectionHitCounts:
             rows, ["SNR-75"], likely_sections=("fire control",),
         )
         assert result["r12"]["section_hits"] == 1
+
+
+# ---------------------------------------------------------------------------
+# KEYWORD — keyword_hit_counts (per-pass lexical_keywords, decomposed-lexical)
+#
+# Mirrors lexical_hit_counts (NFC + casefold substring over chunk_text) but the
+# needles are a per-pass configurable keyword list (RetrievalProfile.lexical_keywords)
+# rather than schema field aliases. The COUNT is tracked SEPARATELY from the
+# field-alias count so the decomposed-lexical C5 term can weight pass keywords
+# independently of field labels. Returns {candidate_key: {"keyword_hits": int}}.
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordHitCounts:
+    def test_keyword_present_counts_one(self):
+        rows = [_row("r1", "The missile reaches a high velocity at burnout.")]
+        result = keyword_hit_counts(rows, ["velocity", "range"])
+        assert result["r1"]["keyword_hits"] == 1
+
+    def test_multiple_keywords_each_counted(self):
+        rows = [_row("r2", "velocity and range are both specified here.")]
+        result = keyword_hit_counts(rows, ["velocity", "range"])
+        assert result["r2"]["keyword_hits"] == 2
+
+    def test_keyword_absent_counts_zero(self):
+        rows = [_row("r3", "unrelated prose about nothing in particular.")]
+        result = keyword_hit_counts(rows, ["velocity", "range"])
+        assert result["r3"]["keyword_hits"] == 0
+
+    def test_case_insensitive_match(self):
+        rows = [_row("r4", "Peak VELOCITY recorded during the test.")]
+        result = keyword_hit_counts(rows, ["velocity"])
+        assert result["r4"]["keyword_hits"] == 1
+
+    def test_cyrillic_nfc_decomposed_vs_composed_parity(self):
+        composed = "Й"  # U+0419 (NFC)
+        decomposed = unicodedata.normalize("NFD", composed)  # U+0418 U+0306
+        assert composed != decomposed
+        rows = [_row("r5", f"keyword {decomposed} appears")]
+        result = keyword_hit_counts(rows, [f"keyword {composed}"])
+        assert result["r5"]["keyword_hits"] == 1
+
+    def test_same_keyword_twice_counts_per_entry(self):
+        # Mirrors lexical_hit_counts: a keyword listed twice contributes twice.
+        rows = [_row("r5b", "velocity matters")]
+        result = keyword_hit_counts(rows, ["velocity", "velocity"])
+        assert result["r5b"]["keyword_hits"] == 2
+
+    def test_empty_keywords_zeroes_every_row(self):
+        rows = [_row("r6", "velocity and range here")]
+        result = keyword_hit_counts(rows, [])
+        assert result["r6"]["keyword_hits"] == 0
+
+    def test_blank_and_none_keywords_ignored(self):
+        # Defensive: empty-string / None keywords must not match every chunk.
+        rows = [_row("r7", "general description")]
+        result = keyword_hit_counts(rows, ["", None, "  "])
+        assert result["r7"]["keyword_hits"] == 0
+
+    def test_candidate_key_prefers_vertex_id(self):
+        rows = [_row("r8", "velocity test", vertex_id="run1:chunk_8")]
+        result = keyword_hit_counts(rows, ["velocity"])
+        assert "run1:chunk_8" in result
+        assert "r8" not in result
+
+    def test_candidate_key_falls_back_to_self_ref(self):
+        rows = [_row("r9", "velocity test")]
+        result = keyword_hit_counts(rows, ["velocity"])
+        assert "r9" in result
+
+    def test_empty_rows_returns_empty_dict(self):
+        assert keyword_hit_counts([], ["velocity"]) == {}
+
+    def test_keyword_count_independent_of_field_aliases(self):
+        """The SAME chunk: keyword_hit_counts only counts the keyword needles,
+        NOT field aliases. Proves the two counts are SEPARATE features."""
+        rows = [_row("r10", "the radar has high velocity")]
+        # "radar" is a (hypothetical) field alias; only "velocity" is a keyword.
+        kw = keyword_hit_counts(rows, ["velocity"])
+        lex = lexical_hit_counts(rows, [_fq("speed", aliases=("radar",))])
+        assert kw["r10"]["keyword_hits"] == 1       # only the keyword
+        assert lex["r10"]["alias_hits"] == 1        # only the field alias
+        # They are tracked on DIFFERENT result keys.
+        assert "keyword_hits" in kw["r10"]
+        assert "alias_hits" in lex["r10"]

@@ -117,6 +117,12 @@ def _make_profile(
     table_boost: float = 0.0,
     negative_weight: float = 0.0,
     pattern_hit_limit: int = 50,
+    lexical_decomposed: bool = False,
+    field_label_weight: float = 0.0,
+    pass_keyword_weight: float = 0.0,
+    anchor_text_weight: float = 0.0,
+    anchor_section_weight: float = 0.0,
+    lexical_keywords: list | None = None,
 ) -> Any:
     p = MagicMock()
     p.top_n_candidates = top_n_candidates
@@ -133,6 +139,16 @@ def _make_profile(
     p.section_weight = section_weight
     p.table_boost = table_boost
     p.negative_weight = negative_weight
+    # Decomposed-lexical knobs — pin to the real RetrievalProfile defaults so
+    # the MagicMock cfg exercises the LEGACY (flag-off) scoring path. Without
+    # these, MagicMock auto-attrs make cfg.lexical_decomposed truthy and the
+    # decomposed weights MagicMocks, which crashes score_candidates.
+    p.lexical_decomposed = lexical_decomposed
+    p.field_label_weight = field_label_weight
+    p.pass_keyword_weight = pass_keyword_weight
+    p.anchor_text_weight = anchor_text_weight
+    p.anchor_section_weight = anchor_section_weight
+    p.lexical_keywords = lexical_keywords if lexical_keywords is not None else []
     return p
 
 

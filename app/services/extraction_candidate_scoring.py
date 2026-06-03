@@ -64,6 +64,24 @@ class MergedCandidate:
     content_type: str | None         # "table" when Phase D metadata exists (None for now)
     retrieval_sources: set[str]      # {"dense", "field:<field_name>", "lexical", "pattern"}
     supported_field_hints: set[str]  # field_names that contributed signal
+    # ------------------------------------------------------------------
+    # Decomposed-lexical features (router-scoring lexical-decomposition piece).
+    # The single conflated ``alias_hits`` is split into FOUR independently
+    # weighted lexical features, gated behind ``cfg.lexical_decomposed``.
+    # Appended with defaults so existing positional construction is unaffected.
+    #
+    # LEGACY INVARIANT (preserved): alias_hits == field_label_hits +
+    # entity_anchor_text. ``pass_keyword_hits`` is purely additive/new and is
+    # NOT folded into alias_hits.
+    #   field_label_hits     — pydantic-schema field-alias matches (today's signal)
+    #   pass_keyword_hits    — per-pass lexical_keywords matches (NEW)
+    #   entity_anchor_text   — committed entity-name matches in chunk TEXT (C8)
+    #   entity_anchor_section— entity-name matches in chunk SECTION (= section_hits)
+    # ------------------------------------------------------------------
+    field_label_hits: int = 0
+    pass_keyword_hits: int = 0
+    entity_anchor_text: int = 0
+    entity_anchor_section: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +168,14 @@ def merge_candidates(
         b = buckets[key]
         b["retrieval_sources"].add("lexical")
         # lexical_hits values: {alias_hits, negative_hits, supported_fields}
-        b.setdefault("_alias_hits", 0)
-        b["_alias_hits"] = b.get("_alias_hits", 0) + lh.get("alias_hits", 0)
+        # and (decomposed-lexical piece) optional {keyword_hits}.
+        # alias_hits here is the FIELD-ALIAS count → field_label_hits.
+        # keyword_hits is the per-pass keyword count → pass_keyword_hits
+        # (a SEPARATE feature; NOT folded into alias_hits).
+        b.setdefault("_field_label_hits", 0)
+        b["_field_label_hits"] = b.get("_field_label_hits", 0) + lh.get("alias_hits", 0)
+        b.setdefault("_pass_keyword_hits", 0)
+        b["_pass_keyword_hits"] = b.get("_pass_keyword_hits", 0) + lh.get("keyword_hits", 0)
         b.setdefault("_negative_hits", 0)
         b["_negative_hits"] = b.get("_negative_hits", 0) + lh.get("negative_hits", 0)
         for f in lh.get("supported_fields", set()):
@@ -173,6 +197,20 @@ def merge_candidates(
     out: list[MergedCandidate] = []
     for key, b in buckets.items():
         sm = section_meta.get(key, {})
+        field_label_hits = b.get("_field_label_hits", 0)
+        pass_keyword_hits = b.get("_pass_keyword_hits", 0)
+        section_hits = sm.get("section_hits", 0)
+        # Decomposed-lexical mapping (router-scoring):
+        #   field_label_hits      = field-alias count (from lexical_hits.alias_hits)
+        #   pass_keyword_hits     = per-pass keyword count (lexical_hits.keyword_hits)
+        #   entity_anchor_text    = anchor-in-TEXT count — 0 at merge time; the C8
+        #                           lexical sub-channel (extraction_chunk_search)
+        #                           bumps this AND alias_hits post-merge.
+        #   entity_anchor_section = section_hits (anchor-in-SECTION count, Part 2)
+        # LEGACY INVARIANT: alias_hits == field_label_hits + entity_anchor_text.
+        # At merge time entity_anchor_text == 0, so alias_hits == field_label_hits,
+        # byte-identical to the pre-decomposition alias_hits value.
+        entity_anchor_text = 0
         out.append(
             MergedCandidate(
                 candidate_key=key,
@@ -184,13 +222,17 @@ def merge_candidates(
                 page_number=b["page_number"],
                 vector_score=b["vector_score"],
                 field_scores=b["field_scores"],
-                alias_hits=b.get("_alias_hits", 0),
+                alias_hits=field_label_hits + entity_anchor_text,
                 pattern_hits=b.get("_pattern_hits", 0),
                 negative_hits=b.get("_negative_hits", 0),
-                section_hits=sm.get("section_hits", 0),
+                section_hits=section_hits,
                 content_type=table_meta.get(key),
                 retrieval_sources=b["retrieval_sources"],
                 supported_field_hints=b["supported_field_hints"],
+                field_label_hits=field_label_hits,
+                pass_keyword_hits=pass_keyword_hits,
+                entity_anchor_text=entity_anchor_text,
+                entity_anchor_section=section_hits,
             )
         )
 
@@ -229,12 +271,34 @@ def score_candidates(
     Formula (all weights from ``cfg``)::
 
         final = cfg.rerank_weight  * rerank_norm
-              + cfg.lexical_weight * lexical_norm
+              + lexical_term
               + cfg.pattern_weight * pattern_norm
               + cfg.section_weight * section_norm
               + cfg.table_boost    * is_table
               - cfg.negative_weight * negative_norm
         final = max(final, 0.0)
+
+    The ``lexical_term`` is flag-gated on ``cfg.lexical_decomposed``
+    (router-scoring lexical-decomposition piece):
+
+      - ``False`` (DEFAULT) → the LITERAL legacy single-weight term::
+
+            lexical_term = cfg.lexical_weight * lexical_norm
+
+        Byte-identical final_score + ordering to before this piece, even when
+        the decomposed features (field_label / pass_keyword / anchor_text /
+        anchor_section) carry non-zero values — they are simply not read.
+
+      - ``True`` → the term is replaced by four independently weighted
+        sub-terms (each ``hit / max(1, pool_max)`` normalised)::
+
+            lexical_term = cfg.field_label_weight     * field_label_norm
+                         + cfg.pass_keyword_weight     * pass_keyword_norm
+                         + cfg.anchor_text_weight      * anchor_text_norm
+                         + cfg.anchor_section_weight   * anchor_section_norm
+
+      The separate ``cfg.section_weight * section_norm`` term is unchanged in
+      both branches (section_weight defaults to 0.0).
 
     Normalisation (min-max for reranker; ratio-max for lexical/pattern signals):
       - ``rerank_norm``: min-max over pool; missing ``reranker_score`` → 0.0.
@@ -277,6 +341,12 @@ def score_candidates(
     max_pattern  = max((mc.pattern_hits  for mc in mcs), default=0)
     max_section  = max((mc.section_hits  for mc in mcs), default=0)
     max_negative = max((mc.negative_hits for mc in mcs), default=0)
+    # Decomposed-lexical pool maxima — only consumed when cfg.lexical_decomposed.
+    # Computed unconditionally (cheap) but unused on the legacy path.
+    max_field_label    = max((mc.field_label_hits      for mc in mcs), default=0)
+    max_pass_keyword   = max((mc.pass_keyword_hits      for mc in mcs), default=0)
+    max_anchor_text    = max((mc.entity_anchor_text     for mc in mcs), default=0)
+    max_anchor_section = max((mc.entity_anchor_section  for mc in mcs), default=0)
 
     # ------------------------------------------------------------------
     # 3. Score each candidate
@@ -305,9 +375,27 @@ def score_candidates(
         negative_norm = mc.negative_hits / max(1, max_negative)
         is_table      = 1.0 if mc.content_type == "table" else 0.0
 
+        # Lexical term — flag-gated decomposition (router-scoring piece).
+        # Default (lexical_decomposed=False): the LITERAL legacy single-weight
+        # term, byte-identical to before this piece.
+        # When True: replace it with four independently weighted sub-terms.
+        if cfg.lexical_decomposed:
+            field_label_norm   = mc.field_label_hits      / max(1, max_field_label)
+            pass_keyword_norm  = mc.pass_keyword_hits      / max(1, max_pass_keyword)
+            anchor_text_norm   = mc.entity_anchor_text     / max(1, max_anchor_text)
+            anchor_section_norm = mc.entity_anchor_section / max(1, max_anchor_section)
+            lexical_term = (
+                cfg.field_label_weight     * field_label_norm
+                + cfg.pass_keyword_weight    * pass_keyword_norm
+                + cfg.anchor_text_weight     * anchor_text_norm
+                + cfg.anchor_section_weight  * anchor_section_norm
+            )
+        else:
+            lexical_term = cfg.lexical_weight * lexical_norm
+
         final = (
             cfg.rerank_weight   * rerank_norm
-            + cfg.lexical_weight  * lexical_norm
+            + lexical_term
             + cfg.pattern_weight  * pattern_norm
             + cfg.section_weight  * section_norm
             + cfg.table_boost     * is_table

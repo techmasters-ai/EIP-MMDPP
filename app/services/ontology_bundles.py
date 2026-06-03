@@ -239,16 +239,38 @@ class RetrievalProfile(BaseModel):
         description=(
             "Decomposed-lexical sub-weight for committed-entity ANCHOR names "
             "that matched in the chunk SECTION heading. Inert until "
-            "lexical_decomposed=True (next piece)."
+            "lexical_decomposed=True."
+        ),
+    )
+    pass_keyword_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Decomposed-lexical sub-weight for per-pass ``lexical_keywords`` "
+            "matches in the chunk body text. Enriches the weak field-alias "
+            "vocabulary with a per-pass keyword list weighted as its own "
+            "feature. Inert until lexical_decomposed=True."
+        ),
+    )
+    lexical_keywords: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-pass extra keyword needles matched (NFC + casefold substring) "
+            "against chunk body text as a SEPARATE feature from schema field "
+            "aliases. Counted by ``keyword_hit_counts`` and weighted by "
+            "``pass_keyword_weight`` when lexical_decomposed=True. A manifest "
+            "``retrieval:`` block may set it; omitting it yields [] (no extra "
+            "keywords). Values are operator-supplied — no defaults are baked in."
         ),
     )
     lexical_decomposed: bool = Field(
         default=False,
         description=(
-            "When True (next piece), the C5 lexical term is split into "
-            "field_label / anchor_text / anchor_section sub-terms using the "
+            "When True, the C5 lexical term is split into field_label / "
+            "pass_keyword / anchor_text / anchor_section sub-terms using the "
             "weights above instead of the single ``lexical_weight``. Default "
-            "False preserves the legacy single-weight lexical term."
+            "False preserves the legacy single-weight lexical term "
+            "(byte-identical final_score)."
         ),
     )
 

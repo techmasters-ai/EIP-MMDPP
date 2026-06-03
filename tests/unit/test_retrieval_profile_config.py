@@ -117,6 +117,13 @@ class TestNewFieldDefaults:
     def test_lexical_decomposed_default(self):
         assert _profile().lexical_decomposed is False
 
+    # decomposed-lexical: per-pass keyword feature (this piece).
+    def test_pass_keyword_weight_default(self):
+        assert _profile().pass_keyword_weight == pytest.approx(0.0)
+
+    def test_lexical_keywords_default_empty_list(self):
+        assert _profile().lexical_keywords == []
+
     # subset-schema extraction (opt-in)
     def test_subset_schema_extraction_default(self):
         assert _profile().subset_schema_extraction is False
@@ -170,6 +177,14 @@ class TestNewFieldsRoundtrip:
         assert p.anchor_text_weight == pytest.approx(0.13)
         assert p.anchor_section_weight == pytest.approx(0.17)
         assert p.lexical_decomposed is True
+
+    def test_pass_keyword_config_roundtrip(self):
+        p = _profile(
+            pass_keyword_weight=0.19,
+            lexical_keywords=["velocity", "range"],
+        )
+        assert p.pass_keyword_weight == pytest.approx(0.19)
+        assert p.lexical_keywords == ["velocity", "range"]
 
     def test_subset_schema_extraction_opt_in(self):
         p = _profile(subset_schema_extraction=True)
@@ -296,6 +311,9 @@ class TestManifestIntegration:
             assert rp.anchor_text_weight == pytest.approx(0.0)
             assert rp.anchor_section_weight == pytest.approx(0.0)
             assert rp.lexical_decomposed is False
+            # per-pass keyword feature (this piece) — inert/empty by default.
+            assert rp.pass_keyword_weight == pytest.approx(0.0)
+            assert rp.lexical_keywords == []
             # subset schema
             assert rp.subset_schema_extraction is False
 
@@ -320,6 +338,8 @@ class TestManifestCarryingNewKeysLoads:
             "field_label_weight": 0.1,
             "anchor_text_weight": 0.2,
             "anchor_section_weight": 0.3,
+            "pass_keyword_weight": 0.4,
+            "lexical_keywords": ["velocity", "range"],
             "lexical_decomposed": True,
         }
         rp = _profile(**block)
@@ -327,6 +347,8 @@ class TestManifestCarryingNewKeysLoads:
         assert rp.field_label_weight == pytest.approx(0.1)
         assert rp.anchor_text_weight == pytest.approx(0.2)
         assert rp.anchor_section_weight == pytest.approx(0.3)
+        assert rp.pass_keyword_weight == pytest.approx(0.4)
+        assert rp.lexical_keywords == ["velocity", "range"]
         assert rp.lexical_decomposed is True
 
     def test_full_manifest_with_new_keys_model_validates(self):

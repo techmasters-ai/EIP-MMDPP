@@ -155,6 +155,74 @@ def lexical_hit_counts(
 
 
 # ---------------------------------------------------------------------------
+# KEYWORD — per-pass lexical_keywords search (decomposed-lexical feature)
+# ---------------------------------------------------------------------------
+
+def keyword_hit_counts(
+    rows: list[dict],
+    keywords: Sequence[str | None],
+) -> dict[str, dict]:
+    """Return per-chunk per-pass KEYWORD hit counts.
+
+    Mirrors :func:`lexical_hit_counts` exactly in normalisation (NFC + casefold
+    substring) and keying (``vertex_id`` preferred, ``self_ref`` fallback), but
+    the needles are the pass's configurable ``lexical_keywords`` list
+    (``RetrievalProfile.lexical_keywords``) rather than schema field aliases.
+
+    This count is tracked SEPARATELY from the field-alias count so the
+    decomposed-lexical C5 term can weight per-pass keywords independently of
+    schema field labels. It enriches the otherwise-weak field-alias vocabulary
+    per pass without conflating the two signals.
+
+    Parameters
+    ----------
+    rows:
+        List of ExtractionChunk row dicts. Each must have ``self_ref`` (str)
+        and ``chunk_text`` (str). May also carry ``vertex_id`` (str | None).
+    keywords:
+        Per-pass keyword needles to match against each chunk's body text.
+        Blank / ``None`` entries are skipped (they would otherwise match every
+        chunk). Each keyword that appears in the haystack contributes 1; the
+        SAME keyword listed twice contributes twice (mirrors
+        ``lexical_hit_counts`` per-alias counting). Empty list → every row
+        scores ``keyword_hits == 0``.
+
+    Returns
+    -------
+    dict[str, dict]
+        Keyed by candidate_key. Each value has:
+        - ``keyword_hits`` (int) — number of ``keywords`` found in the chunk's
+          body text.
+
+    Pure: no DB / no network. Consumed by C4 ``merge_candidates`` via the
+    ``lexical_hits`` payload (``keyword_hits`` key) → ``pass_keyword_hits``.
+    """
+    # Pre-normalise keywords once (NFC + casefold), dropping blanks / Nones so
+    # an empty needle can't substring-match every chunk body.
+    norm_keywords = [
+        _nfc(k).casefold()
+        for k in keywords
+        if k and k.strip()
+    ]
+
+    result: dict[str, dict] = {}
+
+    for row in rows:
+        key = _candidate_key(row)
+        haystack = _nfc(row.get("chunk_text") or "").casefold()
+
+        keyword_hits = 0
+        if haystack:
+            for kw in norm_keywords:
+                if kw in haystack:
+                    keyword_hits += 1
+
+        result[key] = {"keyword_hits": keyword_hits}
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # SECTION — section-heading anchor search (router-scoring section signal, v1)
 # ---------------------------------------------------------------------------
 

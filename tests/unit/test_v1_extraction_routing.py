@@ -1091,6 +1091,15 @@ class TestMultiChannelEmptyExpandedRefsFail:
         rp.table_boost = 0.0
         rp.negative_weight = 0.0
         rp.pattern_hit_limit = 50
+        # Decomposed-lexical knobs pinned to real RetrievalProfile defaults so
+        # the MagicMock profile stays on the legacy (flag-off) scoring path and
+        # feeds an EMPTY keyword list into keyword_hit_counts.
+        rp.lexical_decomposed = False
+        rp.field_label_weight = 0.0
+        rp.pass_keyword_weight = 0.0
+        rp.anchor_text_weight = 0.0
+        rp.anchor_section_weight = 0.0
+        rp.lexical_keywords = []
         # E2 fallback ladder fields
         rp.fallback_min_field_coverage = 1
         rp.fallback_similarity_relaxation = 0.07
@@ -1307,6 +1316,15 @@ class TestF2F4FieldSubset:
         rp.table_boost = 0.0
         rp.negative_weight = 0.0
         rp.pattern_hit_limit = 50
+        # Decomposed-lexical knobs pinned to real RetrievalProfile defaults so
+        # the MagicMock profile stays on the legacy (flag-off) scoring path and
+        # feeds an EMPTY keyword list into keyword_hit_counts.
+        rp.lexical_decomposed = False
+        rp.field_label_weight = 0.0
+        rp.pass_keyword_weight = 0.0
+        rp.anchor_text_weight = 0.0
+        rp.anchor_section_weight = 0.0
+        rp.lexical_keywords = []
         rp.subset_schema_extraction = subset_schema_extraction
 
         pd = MagicMock()
