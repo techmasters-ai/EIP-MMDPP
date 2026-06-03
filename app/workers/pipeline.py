@@ -2610,6 +2610,14 @@ def _ensure_structural_document_vertex(document_id: str) -> str:
         doc = db.get(_Document, uuid.UUID(document_id))
         filename = doc.filename if doc else document_id
         source_id = str(doc.source_id) if doc and doc.source_id else None
+        # Human-readable collection name off the doc.source relationship (must be
+        # read while the session is open). None-safe.
+        source_name = None
+        try:
+            if doc is not None and doc.source is not None:
+                source_name = doc.source.name
+        except Exception:
+            source_name = None
     finally:
         db.close()
 
@@ -2618,12 +2626,19 @@ def _ensure_structural_document_vertex(document_id: str) -> str:
     props: dict[str, Any] = {"title": filename}
     if source_id:
         props["source_id"] = source_id
-    return graph_store.upsert_node_sync(_NR(
+    if source_name:
+        props["source_name"] = source_name
+    doc_rid = graph_store.upsert_node_sync(_NR(
         entity_type="Document",
         identity_fields={"document_id": document_id},
         name=filename,
         properties=props,
     ))
+    # First-class Collection vertex + Document -BELONGS_TO-> Collection
+    # (idempotent; no-op when source_id unknown). Mirrors derive_structure_links
+    # so the graph_only path also gets the Collection.
+    graph_store.upsert_collection_and_link_sync(doc_rid, source_id, source_name)
+    return doc_rid
 
 
 def _upsert_document_graph_extraction(
@@ -10011,8 +10026,23 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         graph_store = get_graph_store()
         graph_store.ensure_ready_sync()
 
+        # Collection ("source") identity. source_name is the human-readable
+        # collection name off the doc.source relationship (same relationship
+        # reingest_graph_only reads .default_ontology_bundle_key from); None-safe
+        # — a missing source/name leaves source_name unset and skips the
+        # Collection wiring below without crashing.
+        source_id = str(doc.source_id) if doc.source_id else None
+        source_name = None
+        try:
+            if doc.source is not None:
+                source_name = doc.source.name
+        except Exception:
+            source_name = None
+
         # Include document metadata as properties
         doc_node_props: dict[str, Any] = {"source_id": str(doc.source_id), "title": doc.filename}
+        if source_name:
+            doc_node_props["source_name"] = source_name
         if doc.document_metadata and isinstance(doc.document_metadata, dict):
             if doc.document_metadata.get("document_summary"):
                 doc_node_props["summary"] = doc.document_metadata["document_summary"]
@@ -10031,6 +10061,12 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             name=doc.filename,
             properties=doc_node_props,
         ))
+
+        # First-class Collection vertex + Document -BELONGS_TO-> Collection.
+        # Idempotent (find-or-create on source_id; edge guarded on existence) so
+        # re-ingest / graph_only re-runs don't duplicate. No-op when source_id
+        # is unknown.
+        graph_store.upsert_collection_and_link_sync(doc_rid, source_id, source_name)
 
         # Provenance envelope re-used across every structural edge below so
         # get_document_edges_sync (which filters on the edge's document_id

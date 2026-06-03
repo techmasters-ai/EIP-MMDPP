@@ -87,6 +87,18 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("title", "STRING"),
         ("upload_datetime", "DATETIME"),
         ("document_datetime", "DATETIME"),
+        # Free-text mirror of the owning collection's name (the Collection
+        # vertex carries the same value; threaded here so a Document row is
+        # self-describing without a BELONGS_TO traversal).
+        ("source_name", "STRING"),
+    ],
+    # First-class collection ("source") vertex. One per ingest.sources row;
+    # keyed on source_id (UNIQUE — see Phase 7). Documents in the same
+    # collection share ONE Collection vertex via Document -BELONGS_TO-> Collection.
+    # NOT an ontology entity type — structural infrastructure only.
+    "Collection": [
+        ("source_id", "STRING"),
+        ("name", "STRING"),
     ],
     "Alias": [
         ("alias_name", "STRING"),
@@ -123,6 +135,10 @@ _STRUCTURAL_EDGE_TYPES = [
     "HAS_FIGURE",
     "HAS_TABLE",
     "CHILD_OF",
+    # Document -> Collection membership. Structural (no source_chunk_ids
+    # lineage, not an ontology relationship type) so the per-run domain-edge
+    # retract (Fix N) and the doc-scoped lineage gate both exclude it.
+    "BELONGS_TO",
 ]
 
 # Document-anchor + derive-rules STRUCTURAL edge types that ARE declared in the
@@ -479,6 +495,10 @@ async def sync_schema_from_ontology(
         ("CommunityReport", "community_id"),
         # VR C.1: ExtractionChunk synthetic PK — unique per pipeline_run_id:self_ref pair
         ("ExtractionChunk", "vertex_id"),
+        # First-class collection: one Collection vertex per source_id. The
+        # UNIQUE index is also what lets the population path UPSERT on source_id
+        # (ArcadeDB UPSERT requires a UNIQUE index on the WHERE field).
+        ("Collection", "source_id"),
     ]
     unique_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"

@@ -111,6 +111,7 @@ except Exception:  # standalone fallback — mirror of the arcadedb_schema const
         "CONTAINS_TEXT", "CONTAINS_IMAGE", "SAME_PAGE", "SAME_SECTION",
         "SAME_ARTIFACT", "NEXT_CHUNK", "HAS_PROVENANCE", "EXTRACTED_FROM",
         "HAS_ALIAS", "HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "CHILD_OF",
+        "BELONGS_TO",
     ]
     _SCHEMA_ANCHOR_STRUCTURAL = ("HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN")
 # Document-anchor + derive structural edges NOT present in the schema's

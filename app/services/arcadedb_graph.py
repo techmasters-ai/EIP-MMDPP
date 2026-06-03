@@ -552,6 +552,30 @@ def _build_structural_edge_sql(
     return sql, props or None
 
 
+def _build_collection_upsert_sql(
+    source_id: str, name: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Build the find-or-create UPSERT for a Collection vertex keyed on source_id.
+
+    Mirrors ``upsert_document_node``'s ``UPDATE ... UPSERT RETURN AFTER @rid
+    WHERE ...`` idiom: idempotent on the UNIQUE ``Collection(source_id)`` index,
+    so two documents sharing a source_id converge on ONE Collection vertex
+    (never a blind INSERT). ``name`` is set only when provided (legacy/unknown
+    source name → source_id-only Collection, no crash).
+    """
+    params: dict[str, Any] = {"source_id": source_id}
+    name_set = ""
+    if name is not None:
+        params["name"] = name
+        name_set = "name = :name, "
+    sql = (
+        f"UPDATE Collection SET source_id = :source_id, {name_set}"
+        f"updated_at = sysdate() "
+        f"UPSERT RETURN AFTER @rid WHERE source_id = :source_id"
+    )
+    return sql, params
+
+
 def _build_resolve_root_entity_sql(
     name: str,
     entity_type: str | None = None,
@@ -1103,6 +1127,39 @@ class ArcadeDBGraphStore:
         sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
         result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
+
+    async def upsert_collection_and_link(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Async twin of ``upsert_collection_and_link_sync`` (see it for the
+        idempotency contract). Find-or-create the Collection keyed on source_id,
+        then create Document -BELONGS_TO-> Collection only if absent. Missing
+        source_id → no-op, returns "".
+        """
+        if not source_id or not document_rid:
+            return ""
+        sql, params = _build_collection_upsert_sql(source_id, name)
+        result = await self._client.command(self._database, "sql", sql, params)
+        collection_rid = _rid(result)
+        if not collection_rid:
+            return ""
+        existing = await self._client.query(
+            self._database,
+            "sql",
+            f"SELECT @rid AS rid FROM (SELECT expand(outE('BELONGS_TO')) "
+            f"FROM {document_rid}) WHERE @in = {collection_rid} LIMIT 1",
+        )
+        if not existing:
+            await self._client.command(
+                self._database,
+                "sql",
+                f"CREATE EDGE BELONGS_TO FROM {document_rid} TO {collection_rid} "
+                f"SET created_at = sysdate()",
+            )
+        return collection_rid
 
     # ==================================================================
     # Query operations
@@ -2170,6 +2227,7 @@ class ArcadeDBGraphStore:
         # Core vertex types
         vertex_types = [
             "Document", "TextChunk", "ImageChunk", "Alias", "BaseEntity",
+            "Collection",
         ]
         for vtype in vertex_types:
             try:
@@ -2181,7 +2239,7 @@ class ArcadeDBGraphStore:
 
         # Core edge types
         edge_types = [
-            "EXTRACTED_FROM", "HAS_ALIAS", "HAS_CHUNK",
+            "EXTRACTED_FROM", "HAS_ALIAS", "HAS_CHUNK", "BELONGS_TO",
         ]
         for etype in edge_types:
             try:
@@ -2201,6 +2259,7 @@ class ArcadeDBGraphStore:
             "CREATE INDEX IF NOT EXISTS ON TextChunk (document_id) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON ImageChunk (chunk_id) UNIQUE_HASH_INDEX",
             "CREATE INDEX IF NOT EXISTS ON ImageChunk (document_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Collection (source_id) UNIQUE_HASH_INDEX",
         ]
         for sql in indexes:
             try:
@@ -2601,6 +2660,58 @@ class ArcadeDBGraphStore:
         sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
+
+    def upsert_collection_and_link_sync(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Find-or-create the Collection for *source_id*, then link the Document.
+
+        Called immediately AFTER the root Document vertex is upserted (the worker
+        path is sync). Two-step, fully idempotent:
+
+          1. ``UPDATE Collection ... UPSERT WHERE source_id`` — keyed on the
+             UNIQUE ``Collection(source_id)`` index, so every document in the
+             same collection converges on ONE Collection vertex (re-ingest is a
+             no-op update, never a duplicate).
+          2. ``CREATE EDGE BELONGS_TO`` Document -> Collection, guarded by a
+             prior existence query (mirrors the relationship find-or-create), so
+             a re-ingest / graph_only re-run does NOT stack duplicate edges.
+
+        None-guard: a missing/blank ``source_id`` (legacy or unknown source)
+        skips Collection creation entirely and returns "" — never raises.
+        Returns the Collection @rid (or "").
+        """
+        if not source_id:
+            return ""
+        if not document_rid:
+            return ""
+
+        # 1. find-or-create the Collection vertex (idempotent on source_id).
+        sql, params = _build_collection_upsert_sql(source_id, name)
+        result = self._client.command_sync(self._database, "sql", sql, params)
+        collection_rid = _rid(result)
+        if not collection_rid:
+            return ""
+
+        # 2. create Document -BELONGS_TO-> Collection ONLY if absent (no dup on
+        #    re-ingest). Existence pre-check by both endpoint RIDs.
+        existing = self._client.query_sync(
+            self._database,
+            "sql",
+            f"SELECT @rid AS rid FROM (SELECT expand(outE('BELONGS_TO')) "
+            f"FROM {document_rid}) WHERE @in = {collection_rid} LIMIT 1",
+        )
+        if not existing:
+            self._client.command_sync(
+                self._database,
+                "sql",
+                f"CREATE EDGE BELONGS_TO FROM {document_rid} TO {collection_rid} "
+                f"SET created_at = sysdate()",
+            )
+        return collection_rid
 
     def set_vertex_embedding_sync(
         self,

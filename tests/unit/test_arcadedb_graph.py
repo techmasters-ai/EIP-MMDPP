@@ -1117,3 +1117,108 @@ class TestBatchEntityChunkEdgeRetry:
 
         # No retry on non-matching errors
         assert calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Collection vertex + Document -BELONGS_TO-> Collection (first-class collection)
+# ---------------------------------------------------------------------------
+class TestCollectionAndBelongsTo:
+    """The root Document upsert must, after upserting the Document, find-or-create
+    a Collection vertex keyed on source_id (idempotent across documents in the same
+    collection) and create a single Document -BELONGS_TO-> Collection edge."""
+
+    def _sqls(self, gs):
+        """Every SQL string passed to command_sync (positional arg index 2)."""
+        out: list[str] = []
+        for call in gs._client.command_sync.call_args_list:
+            if len(call.args) >= 3:
+                out.append(str(call.args[2]))
+        return out
+
+    def test_collection_upsert_is_find_or_create_keyed_on_source_id(self):
+        gs = _graph()
+        gs.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id="src-uuid-1", name="Air Defense Corpus",
+        )
+        sqls = self._sqls(gs)
+        upserts = [s for s in sqls if "Collection" in s and "UPSERT" in s.upper()]
+        assert upserts, f"no Collection UPSERT emitted; saw: {sqls}"
+        u = upserts[0]
+        # Idempotent: UPSERT keyed on source_id, NOT a blind INSERT.
+        assert "INSERT" not in u.upper().split("UPSERT")[0], (
+            "Collection creation must be an UPSERT/guarded, not a blind INSERT"
+        )
+        assert "source_id" in u
+        assert "WHERE" in u.upper()
+
+    def test_two_docs_same_source_id_issue_identical_keyed_upsert(self):
+        """Two documents in the same collection produce the SAME source_id-keyed
+        UPSERT — so they converge on ONE Collection vertex."""
+        gs1 = _graph()
+        gs1.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id="shared-src", name="Corpus",
+        )
+        gs2 = _graph()
+        gs2.upsert_collection_and_link_sync(
+            document_rid="#13:0", source_id="shared-src", name="Corpus",
+        )
+        up1 = [s for s in self._sqls(gs1) if "Collection" in s and "UPSERT" in s.upper()][0]
+        up2 = [s for s in self._sqls(gs2) if "Collection" in s and "UPSERT" in s.upper()][0]
+        assert up1 == up2
+
+    def _qsqls(self, gs):
+        """Every SQL string passed to query_sync (positional arg index 2)."""
+        out: list[str] = []
+        for call in gs._client.query_sync.call_args_list:
+            if len(call.args) >= 3:
+                out.append(str(call.args[2]))
+        return out
+
+    def test_belongs_to_edge_emitted_and_duplicate_guarded(self):
+        # Prime the existence pre-check (query_sync) to report NO existing edge
+        # so the create path fires.
+        client = _make_client(query_sync_result=[])
+        gs = _graph(client=client)
+        gs.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id="src-uuid-1", name="Corpus",
+        )
+        cmds = self._sqls(gs)
+        belongs = [s for s in cmds if "BELONGS_TO" in s]
+        assert belongs, f"no BELONGS_TO edge SQL emitted; saw: {cmds}"
+        # The Document -> Collection direction is created.
+        assert any("CREATE EDGE BELONGS_TO" in s for s in belongs)
+        # Dedup guard: an existence pre-check query precedes the create.
+        guard_queries = [s for s in self._qsqls(gs) if "BELONGS_TO" in s]
+        assert guard_queries, "BELONGS_TO creation must run an existence pre-check"
+
+    def test_belongs_to_skipped_when_edge_already_present(self):
+        """Re-ingest: the existence pre-check finds the edge → NO duplicate
+        CREATE EDGE BELONGS_TO is issued."""
+        client = _make_client(query_sync_result=[{"rid": "#9:9"}])
+        gs = _graph(client=client)
+        gs.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id="src-uuid-1", name="Corpus",
+        )
+        cmds = self._sqls(gs)
+        assert not any("CREATE EDGE BELONGS_TO" in s for s in cmds), (
+            "duplicate BELONGS_TO must not be created on re-ingest"
+        )
+
+    def test_none_source_id_emits_no_collection_and_does_not_crash(self):
+        gs = _graph()
+        # Must not raise.
+        gs.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id=None, name="Corpus",
+        )
+        sqls = self._sqls(gs)
+        assert not any("Collection" in s for s in sqls)
+        assert not any("BELONGS_TO" in s for s in sqls)
+
+    def test_empty_source_id_emits_no_collection(self):
+        gs = _graph()
+        gs.upsert_collection_and_link_sync(
+            document_rid="#12:0", source_id="", name="Corpus",
+        )
+        sqls = self._sqls(gs)
+        assert not any("Collection" in s for s in sqls)
+        assert not any("BELONGS_TO" in s for s in sqls)

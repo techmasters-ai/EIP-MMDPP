@@ -228,6 +228,17 @@ class GraphStore(Protocol):
         """Create a structural edge (e.g. EXTRACTED_FROM) and return its ID."""
         ...
 
+    async def upsert_collection_and_link(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Find-or-create the Collection for *source_id* and link the Document
+        via BELONGS_TO (both idempotent). No-op when *source_id* is missing.
+        Returns the Collection RID (or "")."""
+        ...
+
     # ------------------------------------------------------------------
     # Query operations
     # ------------------------------------------------------------------
@@ -577,6 +588,15 @@ class GraphStore(Protocol):
         properties: dict[str, Any] | None = None,
     ) -> str:
         """Synchronous variant of :meth:`create_structural_edge`."""
+        ...
+
+    def upsert_collection_and_link_sync(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Synchronous variant of :meth:`upsert_collection_and_link`."""
         ...
 
     def set_vertex_embedding_sync(
