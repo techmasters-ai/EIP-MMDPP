@@ -125,6 +125,25 @@ _STRUCTURAL_EDGE_TYPES = [
     "CHILD_OF",
 ]
 
+# Document-anchor + derive-rules STRUCTURAL edge types that ARE declared in the
+# ontology relationship_types registry (so they would otherwise look like domain
+# rels) but are built by the docling document-anchor walker / derive_rules
+# structural path (via create_structural_edge_sync), NOT the ontology
+# relationship path — they legitimately carry no source_chunk_ids lineage and are
+# NOT per-document-retractable domain edges.
+#
+# Single source of truth for the four extras that the schema's
+# _STRUCTURAL_EDGE_TYPES list omits (it lists the HAS_SECTION/HAS_FIGURE/HAS_TABLE/
+# CHILD_OF doc-anchor subset but not HAS_IMAGE / NEAR_TEXT / the chunk-containment
+# CONTAINS / the derive-rules MENTIONED_IN). Consumed by BOTH:
+#   * scripts/verify_lineage_e2e.py — STRUCTURAL_EDGE_TYPES (the doc-scoped
+#     fail-closed lineage gate's domain/structural partition).
+#   * app/workers/pipeline.py::_domain_relationship_edge_types — the per-run
+#     domain-edge retract's structural exclusion set.
+# Promoting it here guarantees the retract and the gate cannot diverge on what
+# counts as a domain edge (anti-drift).
+_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES = ("HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN")
+
 # Common properties on all ontology entity vertex types
 _COMMON_ENTITY_PROPS = [
     ("id", "STRING"),

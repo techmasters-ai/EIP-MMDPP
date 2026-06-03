@@ -101,17 +101,24 @@ FANOUT_FAIL_FRACTION = 0.50
 #   MENTIONED_IN is in the ontology relationship_types registry but is a
 #   derive-rules structural edge (DOCUMENT target, built by
 #   derive_structural_edges), so it is also excluded.
-try:  # authoritative — keep this gate in lock-step with the schema constant
-    from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES as _SCHEMA_STRUCTURAL
-except Exception:  # standalone fallback — mirror of arcadedb_schema._STRUCTURAL_EDGE_TYPES
+try:  # authoritative — keep this gate in lock-step with the schema constants
+    from app.services.arcadedb_schema import (
+        _STRUCTURAL_EDGE_TYPES as _SCHEMA_STRUCTURAL,
+        _ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES as _SCHEMA_ANCHOR_STRUCTURAL,
+    )
+except Exception:  # standalone fallback — mirror of the arcadedb_schema constants
     _SCHEMA_STRUCTURAL = [
         "CONTAINS_TEXT", "CONTAINS_IMAGE", "SAME_PAGE", "SAME_SECTION",
         "SAME_ARTIFACT", "NEXT_CHUNK", "HAS_PROVENANCE", "EXTRACTED_FROM",
         "HAS_ALIAS", "HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "CHILD_OF",
     ]
-# Document-anchor + derive structural edges NOT present in the schema constant
-# (docling_anchors.py document_anchors walker + derive_rules structural edges).
-_ANCHOR_STRUCTURAL = ["HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN"]
+    _SCHEMA_ANCHOR_STRUCTURAL = ("HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN")
+# Document-anchor + derive structural edges NOT present in the schema's
+# _STRUCTURAL_EDGE_TYPES (docling_anchors.py document_anchors walker + derive_rules
+# structural edges). Consumes the SHARED schema constant so this gate and the
+# per-run domain-edge retract (pipeline._domain_relationship_edge_types) can never
+# diverge on what counts as a domain edge (anti-drift).
+_ANCHOR_STRUCTURAL = list(_SCHEMA_ANCHOR_STRUCTURAL)
 STRUCTURAL_EDGE_TYPES = frozenset(list(_SCHEMA_STRUCTURAL) + _ANCHOR_STRUCTURAL)
 
 

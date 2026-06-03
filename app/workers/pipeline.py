@@ -206,6 +206,63 @@ def _attempt_rollback(document_id: str) -> str:
         return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
 
 
+def _domain_relationship_edge_types(ontology: dict) -> list[str]:
+    """Enumerate the ontology's DOMAIN relationship edge type names (Fix N).
+
+    = the ontology relationship type names (the same canonical helper the schema
+    sync and gate use, ``build_relationship_type_names``) MINUS the structural
+    set. The structural set is the shared schema constant
+    ``_STRUCTURAL_EDGE_TYPES`` UNION the document-anchor / derive-rules extras
+    ``_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES`` (HAS_IMAGE, NEAR_TEXT, CONTAINS,
+    MENTIONED_IN) — the SAME two constants ``scripts/verify_lineage_e2e.py`` builds
+    its ``STRUCTURAL_EDGE_TYPES`` from, so this retract and the doc-scoped
+    fail-closed lineage gate can NEVER diverge on what counts as a domain edge.
+
+    For air_defense_v3 this yields exactly the 24 domain rel types (excludes the 8
+    structural rels CHILD_OF, CONTAINS, HAS_FIGURE, HAS_IMAGE, HAS_SECTION,
+    HAS_TABLE, MENTIONED_IN, NEAR_TEXT). Names are routed through ``_safe_type_name``
+    so a reserved word maps to the actual ArcadeDB class name (defensive).
+    """
+    from app.services.ontology_templates import build_relationship_type_names
+    from app.services.arcadedb_schema import (
+        _STRUCTURAL_EDGE_TYPES,
+        _ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES,
+        _safe_type_name,
+    )
+
+    structural = set(_STRUCTURAL_EDGE_TYPES) | set(_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES)
+    return [
+        _safe_type_name(name)
+        for name in build_relationship_type_names(ontology)
+        if _safe_type_name(name) not in structural
+    ]
+
+
+def _retract_document_domain_edges(merged, ontology, document_id, tracker) -> int:
+    """Retract the document's prior domain relationship edges before re-commit (Fix N).
+
+    Why: the domain-edge import path is find-or-create — it only re-touches edges
+    THIS run re-emits, so any prior edge the run did NOT re-emit keeps its STALE
+    lineage and the doc would re-accumulate stale global edges across narrowed
+    re-runs, breaking the doc-scoped fail-closed lineage gate. Retracting the
+    document's full domain-edge population here, immediately before
+    ``_import_graph_phase_domain_edges``, makes the post-run population == exactly
+    this run's extraction (every committed edge re-emitted with fresh lineage).
+
+    Ontology-driven (NOT emit-driven): the type list is the full domain rel set so
+    types this run did not emit are still retracted. Empty domain set → no-op,
+    tracker untouched (no mutation). Otherwise ``tracker.mark()`` (a rollback-
+    gating mutation) then the store retract.
+    """
+    domain_edge_types = _domain_relationship_edge_types(ontology)
+    if not domain_edge_types:
+        return 0
+    tracker.mark()
+    return get_graph_store().retract_document_domain_edges_sync(
+        str(document_id), domain_edge_types
+    )
+
+
 def _rel_to_dict(rel_tuple) -> dict:
     """Serialise a rejected_edges tuple (source_pass, raw_rel, reason) to a
     JSON-safe dict for the metrics blob."""
@@ -8840,6 +8897,15 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
                     )
                     continue
                 merged_upstream_refs[ref_id] = identity
+        # Fix N: retract THIS document's prior domain relationship edges BEFORE
+        # re-committing the run's domain edges. _import_graph_phase_domain_edges is
+        # find-or-create — it only re-touches edges this run re-emits, so any prior
+        # edge NOT re-emitted this run would keep its stale lineage and the doc
+        # would re-accumulate stale global edges across narrowed re-runs, breaking
+        # the doc-scoped fail-closed lineage gate. Retracting here makes the
+        # post-run domain-edge population == exactly this run's extraction (every
+        # committed edge re-emitted with fresh lineage on the CREATE branch).
+        _retract_document_domain_edges(merged, ontology, document_id, tracker)
         _import_graph_phase_domain_edges(
             merged, ontology, tracker, provenance_envelope,
             relationship_provenance_rows=all_rel_provenance,

@@ -695,6 +695,33 @@ class GraphStore(Protocol):
         """
         ...
 
+    def retract_document_domain_edges_sync(
+        self,
+        document_id: str,
+        domain_edge_types: list[str],
+    ) -> int:
+        """Retract this document's prior DOMAIN relationship edges per run.
+
+        Called by the merge phase BEFORE re-committing the run's domain edges so
+        the document's domain-edge population after any run equals exactly what
+        THIS run extracted — find-or-create only re-touches re-emitted edges, so
+        un-re-emitted prior edges would otherwise keep stale lineage and break the
+        doc-scoped fail-closed lineage gate (Fix N).
+
+        ``domain_edge_types`` is the gate-aligned set of domain relationship
+        classes (every ontology relationship type MINUS the structural set). For
+        each class, the implementation removes ``document_id`` from the edge's
+        ``document_ids`` LIST (shared edges shrink; single-owner edges empty) then
+        prunes edges whose list is now empty. MUST NOT touch structural edges
+        (``HAS_*``, ``NEAR_TEXT``, ``CONTAINS``, ``MENTIONED_IN``,
+        ``EXTRACTED_FROM``, ``CONTAINS_TEXT``) or ``HAS_PROVENANCE``. A missing
+        edge class (fresh DB) is a no-op, not an error.
+
+        Returns the number of SQL statements that executed successfully
+        (logging parity with :meth:`delete_extraction_layer_graph_sync`).
+        """
+        ...
+
     def count_ontology_nodes_sync(
         self,
         entity_type: str,

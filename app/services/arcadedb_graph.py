@@ -3019,6 +3019,88 @@ class ArcadeDBGraphStore:
         )
         return executed
 
+    def retract_document_domain_edges_sync(
+        self,
+        document_id: str,
+        domain_edge_types: list[str],
+    ) -> int:
+        """Retract this document's prior DOMAIN relationship edges.
+
+        Called by the merge phase BEFORE re-committing the run's domain edges so
+        the doc's domain-edge population after any run == exactly what THIS run
+        extracted (find-or-create only re-touches re-emitted edges; un-re-emitted
+        prior edges otherwise keep STALE lineage that breaks the doc-scoped
+        fail-closed lineage gate). ``domain_edge_types`` is the gate-aligned set
+        of domain relationship classes (see
+        pipeline._domain_relationship_edge_types) — NEVER structural edge classes
+        (HAS_*, NEAR_TEXT, CONTAINS, MENTIONED_IN, EXTRACTED_FROM, CONTAINS_TEXT)
+        and NEVER HAS_PROVENANCE (those carry no per-document domain-edge lineage
+        and have separate retraction semantics in delete_extraction_layer_graph_sync).
+
+        For EACH domain edge class, issues the same two-statement document-scoping
+        idiom delete_extraction_layer_graph_sync uses for domain edges:
+          1. UPDATE — remove this doc_id from the edge's ``document_ids`` LIST
+             (shared edges referenced by OTHER docs only shrink; a single-owner
+             edge's list empties).
+          2. DELETE — prune edges whose ``document_ids`` is now empty
+             (``size() = 0``) — i.e. single-owner edges of THIS doc. Shared edges
+             (list still non-empty) are kept.
+
+        Each statement is independently wrapped in try/except + logger.debug: a
+        missing edge class on a fresh DB is a no-op, not a crash. Returns the count
+        of statements that executed successfully (logging parity with
+        delete_extraction_layer_graph_sync).
+        """
+        if not domain_edge_types:
+            return 0
+
+        executed = 0
+        params = {"doc_id": document_id}
+
+        for edge_class in domain_edge_types:
+            # 1. Shrink: remove this doc from the edge's document_ids list.
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"UPDATE {edge_class} "
+                    f"SET document_ids = document_ids.remove(:doc_id) "
+                    f"WHERE document_ids CONTAINS :doc_id",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "retract_document_domain_edges_sync: %s shrink skipped "
+                    "(class may not exist yet): %s",
+                    edge_class, exc,
+                )
+            # 2. Prune: delete edges now owned by no document (single-owner of
+            #    this doc). Shared edges (list still non-empty) are preserved.
+            #    (params carries the same doc_id for call-site symmetry; the
+            #    prune predicate is doc-agnostic — it deletes any now-empty edge.)
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"DELETE FROM {edge_class} "
+                    f"WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "retract_document_domain_edges_sync: %s prune skipped "
+                    "(class may not exist yet): %s",
+                    edge_class, exc,
+                )
+
+        logger.info(
+            "retract_document_domain_edges_sync: %d SQL statements executed "
+            "across %d domain edge classes for document %s (re-emitted edges "
+            "are recommitted with fresh lineage immediately after)",
+            executed, len(domain_edge_types), document_id,
+        )
+        return executed
+
     def count_ontology_nodes_sync(
         self,
         entity_type: str,
