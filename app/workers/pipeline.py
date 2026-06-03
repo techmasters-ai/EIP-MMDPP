@@ -8195,11 +8195,91 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
+def _collect_committed_identity_anchors(
+    *,
+    db,
+    run_id: str,
+    manifest,
+    ontology: dict,
+    document_id: str,
+) -> list[str]:
+    """Return committed identity-entity NAMES (+ aliases) for the C8 anchor channel.
+
+    Why this exists (C8 wiring gap): during field_group pass dispatch the graph
+    store holds ZERO entity vertices for this run — the ArcadeDB commit happens
+    only in the terminal MERGE phase (``_import_graph_phase_nodes``), AFTER all
+    entity passes terminalize.  So the endpoint's store-side
+    ``identity_anchor_queries`` (``SELECT name FROM <type> WHERE
+    pipeline_run_id``) finds nothing and ``identity_anchor_count`` is always 0.
+    The identity passes DO persist their extracted entities to Postgres
+    (``pipeline_pass_outputs``) the moment they complete, so the worker reads
+    them from there and hands the names to the endpoint as ``identity_anchors``.
+
+    Generalization (guardrail): identity scope is driven entirely off
+    ``phase == "identity"`` passes and their ``primary_entity_types`` (via the
+    same ``_extend_upstream_refs`` walk the relationship pass uses) — NO
+    hardcoded type names or equipment designations.
+
+    Opportunistic + non-blocking: ANY failure (missing/incomplete row, parse
+    error, walk error) is swallowed and contributes nothing; an empty result is
+    the clean no-op that leaves the routing request byte-identical to today.
+
+    Returns a deduplicated list of names; empty when nothing is committed yet.
+    """
+    try:
+        identity_pass_defs = [
+            p for p in manifest.passes
+            if getattr(p, "phase", None) == "identity"
+        ]
+    except Exception:
+        return []
+    if not identity_pass_defs:
+        return []
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name) -> None:
+        if name and isinstance(name, str):
+            key = name.strip()
+            if key and key not in seen:
+                seen.add(key)
+                anchors.append(key)
+
+    for id_pass in identity_pass_defs:
+        try:
+            row = load_pass_output(db, run_id, id_pass.name)
+            if row is None or getattr(row, "execution_status", None) != "COMPLETE":
+                continue
+            pass_result = _parse_pass_response(
+                row.extract_pass_response_json, id_pass, manifest
+            )
+            pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+                pass_result, id_pass, ontology, document_id,
+            )
+            refs: dict = {}
+            _extend_upstream_refs(refs, pass_result, id_pass, ontology)
+            for ref in refs.values():
+                _add(getattr(ref, "display_label", None))
+                for alias in (getattr(ref, "aliases", None) or []):
+                    _add(alias)
+        except Exception as exc:
+            logger.debug(
+                "C8 anchors: collecting identity names from pass=%s run=%s "
+                "raised %r — skipping pass",
+                getattr(id_pass, "name", "?"), run_id, exc,
+            )
+            continue
+
+    return anchors
+
+
 def _call_chunk_scope_endpoint(
     pipeline_run_id: str,
     bundle_key: str,
     pass_name: str,
     internal_api_base_url: str,
+    identity_anchors: list[str] | None = None,
 ) -> dict | None:
     """HTTP POST /v1/extraction/chunk-scope — sync call from worker via httpx.
 
@@ -8210,6 +8290,10 @@ def _call_chunk_scope_endpoint(
     Timeout: configurable via VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S (default 10s).
     The endpoint embeds a query and runs rerank; 10s is generous for a single
     pass but not so long it stalls the dispatch loop.
+
+    ``identity_anchors`` (C8): committed identity-entity names the worker fetched
+    for this run.  Forwarded ONLY when non-empty so the request body stays
+    byte-identical to the pre-C8 shape when there are no anchors.
     """
     url = f"{internal_api_base_url.rstrip('/')}/v1/extraction/chunk-scope"
     request_body = {
@@ -8217,6 +8301,10 @@ def _call_chunk_scope_endpoint(
         "bundle_key": bundle_key,
         "pass_name": pass_name,
     }
+    # Only include identity_anchors when we actually have some — keeps the body
+    # unchanged for passes/runs with no upstream identities (clean no-op).
+    if identity_anchors:
+        request_body["identity_anchors"] = identity_anchors
     try:
         with httpx.Client(timeout=settings.vector_router_chunk_scope_timeout_s) as client:
             response = client.post(url, json=request_body)
@@ -8374,11 +8462,38 @@ def _claim_and_dispatch_pass(
         )
 
         if _is_routable:
+            # C8: fetch committed identity-entity names for this run and deliver
+            # them as anchors so the endpoint's identity-anchor channel fires.
+            # (The graph store has no entity vertices yet — merge runs later —
+            # so the endpoint's own store query would find nothing; the names
+            # live in the identity passes' persisted Postgres outputs.)
+            # Driven off identity-phase passes via the manifest (generalized).
+            # Wrapped so a fetch failure never blocks dispatch.
+            _identity_anchors: list[str] = []
+            try:
+                _vr_manifest = load_bundle_manifest(bundle_key)
+                _vr_ontology = load_ontology(bundle_key=bundle_key)
+                _identity_anchors = _collect_committed_identity_anchors(
+                    db=db,
+                    run_id=run_id,
+                    manifest=_vr_manifest,
+                    ontology=_vr_ontology,
+                    document_id=document_id,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "C8 anchors: pre-dispatch fetch failed for run=%s pass=%s: %r "
+                    "— routing without anchors",
+                    run_id, pass_name, exc,
+                )
+                _identity_anchors = []
+
             router_response = _call_chunk_scope_endpoint(
                 pipeline_run_id=run_id,
                 bundle_key=bundle_key,
                 pass_name=pass_name,
                 internal_api_base_url=settings.internal_api_base_url,
+                identity_anchors=_identity_anchors,
             )
             effective_chunk_scope, router_diagnostics = _compute_effective_chunk_scope(
                 router_response, _vr_mode

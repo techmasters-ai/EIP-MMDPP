@@ -1025,3 +1025,99 @@ class TestIdentityAnchorQueriesScope:
         assert "run-SCOPE-TEST" in combined or "run_id" in combined or "pipeline_run_id" in combined, (
             f"pipeline_run_id not found in query args: {all_args}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Search-level separation: alias_hits fires WITH anchors, not WITHOUT.
+#
+# Locks in the load-bearing behavior the worker-side anchor delivery exists to
+# unlock: a chunk whose text NAMES a committed identity entity gets lexical
+# credit (alias_hits > 0 + "identity_anchor" source) ONLY when that entity name
+# is supplied to the multi-channel search as an anchor.  With empty anchors the
+# SAME chunk gets alias_hits == 0 (byte-identical to today's inert C8).
+# ---------------------------------------------------------------------------
+
+class TestSearchLevelAliasHitsSeparation:
+    """Directly exercise search_extraction_chunks_multi_channel_full with vs
+    without identity_anchors and assert the alias_hits separation on one chunk.
+    """
+
+    def _make_profile(self, top_n_candidates: int = 6):
+        profile = MagicMock()
+        profile.min_similarity = 0.0
+        profile.top_n_candidates = top_n_candidates
+        profile.field_query_top_k = 5
+        profile.pattern_hit_limit = 50
+        return profile
+
+    def _signals(self):
+        signals = MagicMock()
+        signals.entity_query = "radar power rf query"
+        signals.field_queries = ()
+        return signals
+
+    async def _run_search(self, *, identity_anchors, anchor_text):
+        from app.services.extraction_chunk_search import (
+            search_extraction_chunks_multi_channel_full,
+        )
+
+        run_id = "run-SEP"
+        chunk_rows = [
+            _row(
+                "chunk_0",
+                _norm(_vec(1, 0)),
+                pipeline_run_id=run_id,
+                chunk_index=0,
+                chunk_text=anchor_text,
+                source_refs=["#/texts/0"],
+            ),
+        ]
+        # Only the chunk SELECT is hit here (identity_anchor_queries is the
+        # endpoint's job; this test calls the search function directly).
+        store = _fake_store(rows=chunk_rows)
+
+        def _fake_embed(texts, query=False):
+            return [_norm(_vec(1, 0))] * len(texts)
+
+        with patch(
+            "app.services.extraction_chunk_search.embed_texts",
+            side_effect=_fake_embed,
+        ):
+            pool, _diag, _state = await search_extraction_chunks_multi_channel_full(
+                self._signals(),
+                run_id,
+                self._make_profile(),
+                store=store,
+                identity_anchors=identity_anchors,
+            )
+        return pool
+
+    @pytest.mark.asyncio
+    async def test_alias_hits_fires_with_anchors(self):
+        """A chunk naming the anchor entity gets alias_hits > 0 WITH anchors."""
+        pool = await self._run_search(
+            identity_anchors=["SA-2"],
+            anchor_text="SA-2 radar system operates at high altitude",
+        )
+        assert pool, "expected a non-empty candidate pool"
+        target = next((mc for mc in pool if mc.self_ref == "chunk_0"), None)
+        assert target is not None
+        assert target.alias_hits > 0, (
+            f"chunk naming the anchor should have alias_hits > 0; got {target.alias_hits}"
+        )
+        assert "identity_anchor" in target.retrieval_sources
+
+    @pytest.mark.asyncio
+    async def test_alias_hits_zero_without_anchors(self):
+        """The SAME chunk gets alias_hits == 0 when anchors are empty/None."""
+        pool = await self._run_search(
+            identity_anchors=None,
+            anchor_text="SA-2 radar system operates at high altitude",
+        )
+        assert pool, "expected a non-empty candidate pool"
+        target = next((mc for mc in pool if mc.self_ref == "chunk_0"), None)
+        assert target is not None
+        assert target.alias_hits == 0, (
+            f"with no anchors the chunk must have alias_hits == 0; got {target.alias_hits}"
+        )
+        assert "identity_anchor" not in target.retrieval_sources

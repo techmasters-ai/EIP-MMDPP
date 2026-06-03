@@ -9,11 +9,13 @@ All tests mock external I/O (httpx, ArcadeDB, Celery).
 Run with: pytest tests/unit/test_dispatcher_vr_wiring.py -v
 """
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.workers.pipeline import (
     _compute_effective_chunk_scope,
     _call_chunk_scope_endpoint,
+    _collect_committed_identity_anchors,
 )
 
 
@@ -398,3 +400,195 @@ class TestShadowModeWouldSkip:
             "shadow_skipped_narrowing must be False for would_skip "
             "(only True when router returned selected_refs)"
         )
+
+
+# ---------------------------------------------------------------------------
+# _call_chunk_scope_endpoint — identity_anchors forwarding (C8 worker delivery)
+# ---------------------------------------------------------------------------
+
+
+def _capture_post_body():
+    """Return (mock_client_cls_ctx_factory, captured) where captured['body'] is
+    the JSON body the worker POSTs. Mirrors the existing httpx.Client mock style.
+    """
+    captured: dict = {}
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"mode": "full", "self_refs": [], "diagnostics": {}}
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock()
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+
+    def _post(url, json=None):  # noqa: A002 - mirror httpx signature
+        captured["url"] = url
+        captured["body"] = json
+        return mock_response
+
+    mock_client.post.side_effect = _post
+    return mock_client, captured
+
+
+class TestCallChunkScopeEndpointIdentityAnchors:
+    """The worker must forward committed identity-entity names as
+    ``identity_anchors`` in the chunk-scope request body so the endpoint's C8
+    channel fires.  Empty/None anchors must leave the body byte-identical to
+    today (no ``identity_anchors`` key)."""
+
+    def test_anchors_included_in_request_body_when_supplied(self):
+        mock_client, captured = _capture_post_body()
+        with patch("httpx.Client", return_value=mock_client):
+            _call_chunk_scope_endpoint(
+                "run-123", "air_defense_v3", "radar_power_rf",
+                "http://api:8000",
+                identity_anchors=["Fan Song", "SA-2"],
+            )
+        assert captured["body"].get("identity_anchors") == ["Fan Song", "SA-2"]
+        # Existing keys must still be present and unchanged.
+        assert captured["body"]["pipeline_run_id"] == "run-123"
+        assert captured["body"]["bundle_key"] == "air_defense_v3"
+        assert captured["body"]["pass_name"] == "radar_power_rf"
+
+    def test_empty_anchors_omitted_from_body(self):
+        """Empty list → no identity_anchors key (body byte-identical to today)."""
+        mock_client, captured = _capture_post_body()
+        with patch("httpx.Client", return_value=mock_client):
+            _call_chunk_scope_endpoint(
+                "run-123", "air_defense_v3", "radar_power_rf",
+                "http://api:8000",
+                identity_anchors=[],
+            )
+        assert "identity_anchors" not in captured["body"]
+        assert set(captured["body"].keys()) == {
+            "pipeline_run_id", "bundle_key", "pass_name",
+        }
+
+    def test_none_anchors_omitted_from_body(self):
+        """Default None (no anchors) → body byte-identical to pre-C8 shape."""
+        mock_client, captured = _capture_post_body()
+        with patch("httpx.Client", return_value=mock_client):
+            _call_chunk_scope_endpoint(
+                "run-123", "air_defense_v3", "radar_power_rf",
+                "http://api:8000",
+            )
+        assert "identity_anchors" not in captured["body"]
+        assert set(captured["body"].keys()) == {
+            "pipeline_run_id", "bundle_key", "pass_name",
+        }
+
+
+# ---------------------------------------------------------------------------
+# _collect_committed_identity_anchors — worker-side fetch of identity names
+# ---------------------------------------------------------------------------
+
+
+def _identity_manifest():
+    """Manifest with one identity pass and one field_group pass (generalized:
+    identity scope is driven by phase == 'identity', not hardcoded types)."""
+    id_pass = SimpleNamespace(
+        name="radar_identity",
+        phase="identity",
+        primary_entity_types=["RADAR_SYSTEM"],
+        module="extraction_schemas.radar_identity",
+        template_class="RadarIdentityPass",
+        input_mode="document",
+        depends_on=[],
+    )
+    fg_pass = SimpleNamespace(
+        name="radar_power_rf",
+        phase="field_group",
+        primary_entity_types=["RADAR_SYSTEM"],
+    )
+    return SimpleNamespace(passes=[id_pass, fg_pass], bundle_key="air_defense_v3")
+
+
+class TestCollectCommittedIdentityAnchors:
+    """Worker-side anchor fetch: read identity-phase passes' persisted outputs
+    and surface their entity names (+ aliases) for the routing request."""
+
+    def test_returns_names_from_persisted_identity_passes(self):
+        manifest = _identity_manifest()
+        ontology = {"entity_types": [
+            {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+        ]}
+
+        dep_row = SimpleNamespace(
+            execution_status="COMPLETE",
+            extract_pass_response_json={"stub": True},
+        )
+
+        # Re-parsed pass result yields refs via _extend_upstream_refs; we patch
+        # _extend_upstream_refs to inject two refs with display_label + aliases.
+        def _fake_extend(upstream_refs, pass_result, pass_def, ont):
+            upstream_refs["E001"] = SimpleNamespace(
+                entity_type="RADAR_SYSTEM",
+                identity_values={"system_name": "Fan Song"},
+                display_label="Fan Song",
+                aliases=["SNR-75"],
+            )
+            upstream_refs["E002"] = SimpleNamespace(
+                entity_type="RADAR_SYSTEM",
+                identity_values={"system_name": "Spoon Rest"},
+                display_label="Spoon Rest",
+                aliases=[],
+            )
+
+        with (
+            patch("app.workers.pipeline.load_pass_output", return_value=dep_row),
+            patch("app.workers.pipeline._parse_pass_response", return_value=MagicMock()),
+            patch("app.workers.pipeline._build_pre_merge_walk_summary", return_value=None),
+            patch("app.workers.pipeline._extend_upstream_refs", side_effect=_fake_extend),
+        ):
+            anchors = _collect_committed_identity_anchors(
+                db=MagicMock(),
+                run_id="run-1",
+                manifest=manifest,
+                ontology=ontology,
+                document_id="doc-1",
+            )
+
+        # Display labels AND aliases are surfaced as anchors, deduped.
+        assert "Fan Song" in anchors
+        assert "Spoon Rest" in anchors
+        assert "SNR-75" in anchors
+        assert len(anchors) == len(set(anchors))
+
+    def test_empty_when_no_identity_passes(self):
+        """A manifest with no identity-phase pass → no anchors, no error."""
+        manifest = SimpleNamespace(
+            passes=[SimpleNamespace(name="radar_power_rf", phase="field_group",
+                                    primary_entity_types=["RADAR_SYSTEM"])],
+            bundle_key="air_defense_v3",
+        )
+        anchors = _collect_committed_identity_anchors(
+            db=MagicMock(), run_id="run-1", manifest=manifest,
+            ontology={"entity_types": []}, document_id="doc-1",
+        )
+        assert anchors == []
+
+    def test_empty_when_identity_pass_not_complete(self):
+        """Identity pass present but its row is not COMPLETE → empty anchors."""
+        manifest = _identity_manifest()
+        not_done = SimpleNamespace(execution_status="FAILED",
+                                   extract_pass_response_json=None)
+        with patch("app.workers.pipeline.load_pass_output", return_value=not_done):
+            anchors = _collect_committed_identity_anchors(
+                db=MagicMock(), run_id="run-1", manifest=manifest,
+                ontology={"entity_types": [
+                    {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+                ]}, document_id="doc-1",
+            )
+        assert anchors == []
+
+    def test_never_raises_on_internal_error(self):
+        """Any internal failure → returns [] (opportunistic, non-blocking)."""
+        manifest = _identity_manifest()
+        with patch("app.workers.pipeline.load_pass_output",
+                   side_effect=RuntimeError("db down")):
+            anchors = _collect_committed_identity_anchors(
+                db=MagicMock(), run_id="run-1", manifest=manifest,
+                ontology={"entity_types": [
+                    {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+                ]}, document_id="doc-1",
+            )
+        assert anchors == []
