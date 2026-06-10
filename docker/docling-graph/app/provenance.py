@@ -33,8 +33,12 @@ like an uppercase ontology name is treated as an entity.
 from __future__ import annotations
 
 import logging
+import math
+import re
+import unicodedata
 import uuid
-from typing import Any, get_args, get_origin
+from functools import lru_cache
+from typing import Any, Iterable, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -913,62 +917,316 @@ def build_entity_provenance_from_delta_graph(
             chunk_to_evidence_units,
         )
 
-        # Per-field provenance from the node's property_evidence map. Each
-        # key is a field name the LLM emitted; carry the entity's positional
-        # self_refs/chunk_indexes onto every field row so the field's lineage
-        # matches the entity's batch span.
-        property_evidence = prov.get("property_evidence")
-        if isinstance(property_evidence, dict):
-            for fname, fevidence in property_evidence.items():
-                if not isinstance(fname, str):
-                    continue
-                cited_field_refs = (
-                    [e for e in fevidence if isinstance(e, str)]
-                    if isinstance(fevidence, list) else []
-                )
-                # field evidence_id / element_uid: prefer the field's own
-                # cited self_ref, else the entity's element_uid.
-                field_evidence_id = cited_field_refs[0] if cited_field_refs else None
+        # Per-field provenance. PREFER the merge-time ``__property_provenance``
+        # map (``merge_delta_graphs`` in the delta helpers): it records, per
+        # field, the provenance of EACH 1-chunk batch that emitted that field's
+        # value. With 1-chunk batches each stamp's chunk_indexes/self_refs/
+        # page_numbers point at the EXACT chunk the field's value came from —
+        # which is NOT necessarily where the entity's name first appeared. The
+        # entity node's top-level provenance keeps only the first-seen batch's
+        # span, so stamping every field with it collapses all fields to that
+        # one chunk (the "50 km lives in chunk 9, not the title chunk" bug).
+        #
+        # Fall back to the LLM-cited ``property_evidence`` + entity span only
+        # when no merge map is present (legacy / pre-stamp graphs).
+        property_provenance = node.get("__property_provenance")
+        if isinstance(property_provenance, dict) and property_provenance:
+            _append_field_rows_from_property_provenance(
+                field_rows=field_rows,
+                property_provenance=property_provenance,
+                field_provenance_cls=field_provenance_cls,
+                instance_id=instance_id,
+                node_properties=node.get("properties") if isinstance(node.get("properties"), dict) else {},
+                entity_self_refs=self_refs,
+                entity_chunk_indexes=chunk_indexes,
+                entity_page_numbers=page_numbers,
+                entity_element_uid=element_uid,
+                entity_scalar_page=scalar_page,
+                entity_evidence_text=entity_evidence_text,
+                chunk_to_evidence_units=chunk_to_evidence_units,
+            )
+        else:
+            property_evidence = prov.get("property_evidence")
+            if isinstance(property_evidence, dict):
+                for fname, fevidence in property_evidence.items():
+                    if not isinstance(fname, str):
+                        continue
+                    cited_field_refs = (
+                        [e for e in fevidence if isinstance(e, str)]
+                        if isinstance(fevidence, list) else []
+                    )
+                    # field evidence_id / element_uid: prefer the field's own
+                    # cited self_ref, else the entity's element_uid.
+                    field_evidence_id = cited_field_refs[0] if cited_field_refs else None
 
-                # supporting_snippet is LOAD-BEARING — the worker
-                # (_parse_pass_response) DROPS any field row whose
-                # supporting_snippet is falsy, so an empty string here
-                # silently zeroes per-field lineage. Resolve the text from
-                # the SAME evidence-unit map build_auto_field_evidence uses:
-                #   1. join units cited by THIS field (property_evidence refs)
-                #      over the entity's chunk_indexes;
-                #   2. else the entity-level evidence text (all the node's
-                #      cited refs);
-                #   3. else ANY text in the entity's chunk_indexes (uncited).
-                # Only when no text is resolvable at all does the snippet fall
-                # to "" — and that row is the genuine no-text case, not a bug.
-                field_snippet = _join_evidence_text_for_node(
-                    {"chunk_indexes": chunk_indexes, "evidence_ids": cited_field_refs},
-                    chunk_to_evidence_units,
-                ) if cited_field_refs else None
-                if not field_snippet:
-                    field_snippet = entity_evidence_text
-                if not field_snippet:
-                    # Uncited fallback: any unit text across the entity's
-                    # chunk span (cited_ids empty → join takes all units).
+                    # supporting_snippet is LOAD-BEARING — the worker
+                    # (_parse_pass_response) DROPS any field row whose
+                    # supporting_snippet is falsy, so an empty string here
+                    # silently zeroes per-field lineage. Resolve the text from
+                    # the SAME evidence-unit map build_auto_field_evidence uses:
+                    #   1. join units cited by THIS field (property_evidence
+                    #      refs) over the entity's chunk_indexes;
+                    #   2. else the entity-level evidence text (all the node's
+                    #      cited refs);
+                    #   3. else ANY text in the entity's chunk_indexes
+                    #      (uncited).
+                    # Only when no text is resolvable at all does the snippet
+                    # fall to "" — and that row is the genuine no-text case.
                     field_snippet = _join_evidence_text_for_node(
-                        {"chunk_indexes": chunk_indexes, "evidence_ids": []},
+                        {"chunk_indexes": chunk_indexes, "evidence_ids": cited_field_refs},
                         chunk_to_evidence_units,
-                    )
+                    ) if cited_field_refs else None
+                    if not field_snippet:
+                        field_snippet = entity_evidence_text
+                    if not field_snippet:
+                        # Uncited fallback: any unit text across the entity's
+                        # chunk span (cited_ids empty → join takes all units).
+                        field_snippet = _join_evidence_text_for_node(
+                            {"chunk_indexes": chunk_indexes, "evidence_ids": []},
+                            chunk_to_evidence_units,
+                        )
 
-                field_rows.append(
-                    field_provenance_cls(
-                        instance_id=str(instance_id),
-                        field_name=fname,
-                        value=None,
-                        supporting_snippet=field_snippet or "",
-                        element_uid=field_evidence_id or element_uid,
-                        evidence_id=field_evidence_id,
-                        page=scalar_page,
-                        chunk_index=chunk_indexes[0] if chunk_indexes else None,
-                        self_refs=self_refs,
-                        chunk_indexes=chunk_indexes,
+                    field_rows.append(
+                        field_provenance_cls(
+                            instance_id=str(instance_id),
+                            field_name=fname,
+                            value=None,
+                            supporting_snippet=field_snippet or "",
+                            element_uid=field_evidence_id or element_uid,
+                            evidence_id=field_evidence_id,
+                            page=scalar_page,
+                            chunk_index=chunk_indexes[0] if chunk_indexes else None,
+                            self_refs=self_refs,
+                            chunk_indexes=chunk_indexes,
+                        )
                     )
-                )
 
     return entity_rows, field_rows
+
+
+# ---------------------------------------------------------------------------
+# Value→chunk matcher (inlined mirror of app/services/field_value_grounding.py).
+# docling-graph is a separate service; rather than depend on the worker package
+# we inline this small, stable matcher so the field-provenance builder can
+# VALUE-GROUND a field to the chunk whose text actually CONTAINS its value.
+# This corrects LLM OVER-EMISSION: gemma emits a salient field value while
+# looking at a prose chunk that does not contain it; __property_provenance
+# faithfully records that emission chunk, but the committed lineage should point
+# at the chunk the value physically lives in (e.g. a spec table). See task #67.
+# Keep in sync with field_value_grounding.py if its matching logic changes.
+# ---------------------------------------------------------------------------
+_VG_SUFFIX_UNITS: dict[str, list[str]] = {
+    "km": ["km", "км"], "mhz": ["mhz"], "ghz": ["ghz"], "khz": ["khz"],
+    "kw": ["kw"], "mw": ["mw"], "dbw": ["dbw"], "dbm": ["dbm"],
+    "deg": ["deg", "°", "degree", "degrees", "град"], "kg": ["kg", "кг"],
+    "mm": ["mm"], "cm": ["cm"], "kmh": ["km/h", "kph"], "mps": ["m/s"],
+    "mach": ["mach", "m="], "kn": ["kn", "knot"], "us": ["µs", "us", "microsec"],
+    "ms": ["ms"], "s": ["s", "sec", "second", "seconds"], "m": ["m", "metre", "meter"],
+}
+
+
+def _vg_nfc(s: str | None) -> str:
+    return unicodedata.normalize("NFC", s or "").casefold()
+
+
+def _vg_unit_token_regex(unit_nfc: str) -> str:
+    # Mirrors app/services/field_value_grounding.unit_token_regex — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    pat = re.escape(unit_nfc)
+    if re.match(r"\w", unit_nfc):
+        pat = r"(?<![^\W\d_])" + pat  # not preceded by a unicode letter
+    if re.search(r"\w$", unit_nfc):
+        pat = pat + r"(?!\w)"  # not followed by a unicode word char
+    return pat
+
+
+@lru_cache(maxsize=128)
+def _vg_compiled_unit_re(unit_nfc: str) -> "re.Pattern[str]":
+    # Mirrors app/services/field_value_grounding._compiled_unit_re — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    return re.compile(_vg_unit_token_regex(unit_nfc))
+
+
+def _vg_has_unit_token(text_nfc: str, units: Iterable[str]) -> bool:
+    # Mirrors app/services/field_value_grounding.has_unit_token — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    return any(_vg_compiled_unit_re(_vg_nfc(u)).search(text_nfc) for u in units)
+
+
+def _vg_units_for(field: str) -> list[str]:
+    f = (field or "").lower()
+    for suf in sorted(_VG_SUFFIX_UNITS, key=len, reverse=True):
+        if f.endswith("_" + suf):
+            return _VG_SUFFIX_UNITS[suf]
+    return []
+
+
+def _vg_num_variants(value: Any) -> set[str]:
+    out: set[str] = set()
+    try:
+        fv = float(value)
+    except (TypeError, ValueError):
+        return out
+    if not math.isfinite(fv):
+        return out
+    if fv == int(fv):
+        out.add(str(int(fv)))
+    out.add(f"{fv:g}")
+    out.add(str(value))
+    return {s for s in out if s}
+
+
+def _vg_value_in_chunk(num_strs: set[str], units: list[str], text_nfc: str) -> bool:
+    """True if a numeric value appears in the chunk text — ADJACENT (number next
+    to unit, prose) OR SAME_CHUNK (number + unit elsewhere in chunk, ≥2 digits —
+    detached-unit table). Mirrors field_value_grounding.value_in_chunk."""
+    units_nfc = [_vg_nfc(u) for u in units]
+    for ns in num_strs:
+        for u in units_nfc:
+            if re.search(r"(?<![\d.])" + re.escape(ns) + r"\s*[\(\-–]?\s*" + _vg_unit_token_regex(u), text_nfc):
+                return True
+    if _vg_has_unit_token(text_nfc, units_nfc):
+        for ns in num_strs:
+            if len(re.sub(r"\D", "", ns)) >= 2 and re.search(
+                r"(?<!\d)" + re.escape(ns) + r"(?!\d)(?!\.\d)", text_nfc
+            ):
+                return True
+    return False
+
+
+def _value_grounded_field_chunks(
+    value: Any, field_name: str, chunk_to_evidence_units: dict[int, list[dict]] | None
+) -> tuple[list[int], list[str]]:
+    """Return (chunk_indexes, evidence_ids) for chunks whose text CONTAINS the
+    numeric, unit-suffixed value. Empty for non-numeric / unitless / not-found —
+    caller then keeps the emission-chunk attribution unchanged."""
+    units = _vg_units_for(field_name)
+    if not units:
+        return [], []
+    nums = _vg_num_variants(value)
+    if not nums:
+        return [], []
+    g_ci: list[int] = []
+    g_refs: list[str] = []
+    for ci, units_list in (chunk_to_evidence_units or {}).items():
+        if not isinstance(units_list, list):
+            continue
+        text = " ".join(
+            u.get("text", "") for u in units_list if isinstance(u, dict)
+        )
+        if _vg_value_in_chunk(nums, units, _vg_nfc(text)):
+            if ci not in g_ci:
+                g_ci.append(int(ci))
+            for u in units_list:
+                eid = u.get("evidence_id") if isinstance(u, dict) else None
+                if isinstance(eid, str) and eid not in g_refs:
+                    g_refs.append(eid)
+    return sorted(g_ci), g_refs
+
+
+def _append_field_rows_from_property_provenance(
+    *,
+    field_rows: list[Any],
+    property_provenance: dict[str, Any],
+    field_provenance_cls: type,
+    instance_id: Any,
+    node_properties: dict[str, Any] | None,
+    entity_self_refs: list[str],
+    entity_chunk_indexes: list[int],
+    entity_page_numbers: list[int],
+    entity_element_uid: str | None,
+    entity_scalar_page: int | None,
+    entity_evidence_text: str | None,
+    chunk_to_evidence_units: dict[int, list[dict]] | None,
+) -> None:
+    """Emit one ExtractionFieldProvenance row per field in the merge-time
+    ``__property_provenance`` map, stamping each row with the PRECISE chunk
+    origin of the batch(es) that emitted that field's value.
+
+    Each ``property_provenance[field]`` is a list of stamps; with
+    ``attach_provenance=True`` every stamp is the batch's provenance dict
+    (self_refs / chunk_indexes / page_numbers / evidence_ids). A field
+    emitted in multiple batches gets the UNION of those origins. When a stamp
+    carried no positional lineage (e.g. ``attach_provenance`` off → the merge
+    stored a bare uid string), the field falls back to the entity's span so
+    the row never regresses below the pre-fix behavior.
+    """
+    for fname, raw_stamps in property_provenance.items():
+        if not isinstance(fname, str):
+            continue
+        stamps = raw_stamps if isinstance(raw_stamps, list) else [raw_stamps]
+
+        f_self_refs: list[str] = []
+        f_chunk_indexes: list[int] = []
+        f_page_numbers: list[int] = []
+        f_evidence_ids: list[str] = []
+        for stamp in stamps:
+            if not isinstance(stamp, dict):
+                continue  # bare uid string / unknown — no positional lineage.
+            for r in stamp.get("self_refs") or []:
+                if isinstance(r, str) and r not in f_self_refs:
+                    f_self_refs.append(r)
+            for c in stamp.get("chunk_indexes") or []:
+                if isinstance(c, int) and c not in f_chunk_indexes:
+                    f_chunk_indexes.append(c)
+            for p in stamp.get("page_numbers") or []:
+                if isinstance(p, int) and p not in f_page_numbers:
+                    f_page_numbers.append(p)
+            for e in stamp.get("evidence_ids") or []:
+                if isinstance(e, str) and e not in f_evidence_ids:
+                    f_evidence_ids.append(e)
+        f_chunk_indexes.sort()
+        f_page_numbers.sort()
+
+        # Fall back to the entity span for any axis the stamps left empty.
+        if not f_self_refs:
+            f_self_refs = entity_self_refs
+        if not f_chunk_indexes:
+            f_chunk_indexes = entity_chunk_indexes
+        if not f_page_numbers:
+            f_page_numbers = entity_page_numbers
+
+        # VALUE-GROUNDING OVERRIDE: if the field's extracted value physically
+        # appears in some chunk(s), attribute the row to the chunk(s) that
+        # actually CONTAIN it — correcting LLM over-emission where the value was
+        # emitted on a chunk that doesn't contain it (#67). Numeric+unit fields
+        # only; non-text / null / not-found keep the emission attribution.
+        g_ci, g_refs = _value_grounded_field_chunks(
+            (node_properties or {}).get(fname), fname, chunk_to_evidence_units
+        )
+        if g_ci:
+            f_chunk_indexes = g_ci
+            if g_refs:
+                f_self_refs = g_refs
+                f_evidence_ids = g_refs
+
+        field_evidence_id = f_evidence_ids[0] if f_evidence_ids else None
+        field_element_uid = f_self_refs[0] if f_self_refs else entity_element_uid
+        field_page = f_page_numbers[0] if f_page_numbers else entity_scalar_page
+
+        # supporting_snippet is LOAD-BEARING (worker drops rows with a falsy
+        # snippet). Resolve from the field's OWN chunk/evidence first, then the
+        # entity-level text, then any uncited text across the field's chunks.
+        field_snippet = _join_evidence_text_for_node(
+            {"chunk_indexes": f_chunk_indexes, "evidence_ids": f_evidence_ids},
+            chunk_to_evidence_units,
+        )
+        if not field_snippet:
+            field_snippet = entity_evidence_text
+        if not field_snippet:
+            field_snippet = _join_evidence_text_for_node(
+                {"chunk_indexes": f_chunk_indexes, "evidence_ids": []},
+                chunk_to_evidence_units,
+            )
+
+        field_rows.append(
+            field_provenance_cls(
+                instance_id=str(instance_id),
+                field_name=fname,
+                value=None,
+                supporting_snippet=field_snippet or "",
+                element_uid=field_evidence_id or field_element_uid,
+                evidence_id=field_evidence_id,
+                page=field_page,
+                chunk_index=f_chunk_indexes[0] if f_chunk_indexes else None,
+                self_refs=f_self_refs,
+                chunk_indexes=f_chunk_indexes,
+            )
+        )

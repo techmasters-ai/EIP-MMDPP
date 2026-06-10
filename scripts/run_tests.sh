@@ -152,6 +152,7 @@ run_dg_lineage() {
     docker/docling-graph/tests/test_positional_provenance_stamp.py \
     docker/docling-graph/tests/test_entity_provenance_from_delta.py \
     docker/docling-graph/tests/test_relationship_provenance_dto_nodes.py \
+    docker/docling-graph/tests/test_value_grounding_mirror.py \
     --tb=short \
     --junitxml="${REPORTS_DIR}/junit_dg_lineage.xml" \
     -q
