@@ -877,6 +877,10 @@ def build_pool_from_multi_channel_state(
         pattern_hits=state.pat_hits,
         section_meta=sec_hits,
         table_meta={},
+        # row_cosines=None: state reuse path does not re-run the dense scorer,
+        # so row_cosines are not available here.  Task 7 (gate-union) will wire
+        # them via the saved state; for now max/mean_top3 default to 0.0.
+        row_cosines=None,
     )
 
     # C8 lexical sub-channel on merged pool (if anchors present).
@@ -981,7 +985,7 @@ async def search_extraction_chunks_multi_channel_full(
     # 2. C1 — batched dense multi-query (entity + per-field vectors).
     #    ONE embed_texts call inside search_extraction_chunks_dense_multi_query.
     # ------------------------------------------------------------------
-    entity_dense, field_dense = await search_extraction_chunks_dense_multi_query(
+    entity_dense, field_dense, row_cosines = await search_extraction_chunks_dense_multi_query(
         retrieval_signals, rows, cfg
     )
 
@@ -1059,6 +1063,7 @@ async def search_extraction_chunks_multi_channel_full(
         pattern_hits=pat_hits,
         section_meta=sec_hits,
         table_meta={},
+        row_cosines=row_cosines,
     )
 
     # ------------------------------------------------------------------
@@ -1146,6 +1151,7 @@ async def search_extraction_chunks_multi_channel_full(
                         pattern_hits=pat_hits,
                         section_meta=sec_hits,
                         table_meta={},
+                        row_cosines=row_cosines,
                     )
         except Exception as exc:
             logger.debug(
@@ -1228,7 +1234,7 @@ async def search_extraction_chunks_dense_multi_query(
     retrieval_signals: "PassRetrievalSignals",
     rows: "list[dict]",
     cfg: "RetrievalProfile",
-) -> "tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]]]":
+) -> "tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]], dict[str, dict[str, float]]]":
     """Batched dense entity + per-field cosine scoring over pre-fetched rows.
 
     Pure scoring function — takes pre-fetched ``rows`` (from
@@ -1245,7 +1251,9 @@ async def search_extraction_chunks_dense_multi_query(
     4. ONE ``chunk_matrix @ query_matrix.T`` → (N_chunks × N_queries) scores.
     5. Slice column 0 for entity candidates (top ``cfg.top_n_candidates``).
     6. Slice column i+1 for each field (top ``cfg.field_query_top_k``).
-    7. Return (entity_results, {field_name: [GraphEntityResult, ...]}).
+    7. Build ``row_cosines`` over ALL valid_rows (not just top-k) with three
+       per-row stats: entity_cosine, max_field_cosine, mean_top3_field_cosine.
+    8. Return (entity_results, {field_name: [GraphEntityResult, ...]}, row_cosines).
 
     Parameters
     ----------
@@ -1263,12 +1271,18 @@ async def search_extraction_chunks_dense_multi_query(
 
     Returns
     -------
-    tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]]]
+    tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]], dict[str, dict[str, float]]]
         - entity_results: top ``cfg.top_n_candidates`` chunks by entity-query
           cosine, sorted descending.
         - field_results: mapping field_name → top ``cfg.field_query_top_k``
           chunks by per-field cosine, sorted descending. Keys match
           ``retrieval_signals.field_queries[*].field_name`` exactly.
+        - row_cosines: per-candidate-key dict of
+          ``{"entity_cosine": float, "max_field_cosine": float,
+             "mean_top3_field_cosine": float}`` computed over ALL valid_rows
+          BEFORE any top-k slice (so chunks outside the top-k still carry
+          their true cosine for diagnostics / gate logic).  Empty dict when
+          valid_rows is empty.
     """
     import numpy as np
     from app.services.graph_store import GraphEntityResult
@@ -1304,7 +1318,7 @@ async def search_extraction_chunks_dense_multi_query(
         field_results: dict[str, list[GraphEntityResult]] = {
             fq.field_name: [] for fq in field_queries
         }
-        return entity_results, field_results
+        return entity_results, field_results, {}
 
     chunk_matrix = np.asarray(
         [r["embedding"] for r in valid_rows], dtype=np.float32
@@ -1383,4 +1397,35 @@ async def search_extraction_chunks_dense_multi_query(
         for i, fq in enumerate(field_queries)
     }
 
-    return entity_results, field_results
+    # ------------------------------------------------------------------
+    # 8. Build row_cosines over ALL valid_rows (Task 6 — capture-only).
+    #    Computed AFTER the top-k slices so that chunks ranked outside the
+    #    top-k (per every field column) still carry their true cosines for
+    #    offline diagnostics and future gate logic.
+    #
+    #    Key convention: vertex_id preferred, self_ref fallback — identical
+    #    to _candidate_key() in extraction_candidate_scoring.py.
+    # ------------------------------------------------------------------
+    entity_col = scores[:, 0]  # (N_chunks,)
+    n_fields = len(field_queries)
+    if n_fields > 0:
+        field_block = scores[:, 1:]  # (N_chunks, N_fields)
+        max_field_col = field_block.max(axis=1)  # (N_chunks,)
+        # mean of top min(3, n_fields) per row
+        k_top = min(3, n_fields)
+        sorted_block = np.sort(field_block, axis=1)  # ascending
+        mean_top3_col = sorted_block[:, -k_top:].mean(axis=1)  # (N_chunks,)
+    else:
+        max_field_col = np.zeros(len(valid_rows), dtype=np.float32)
+        mean_top3_col = np.zeros(len(valid_rows), dtype=np.float32)
+
+    row_cosines: dict[str, dict[str, float]] = {}
+    for i, row in enumerate(valid_rows):
+        key = row.get("vertex_id") or row["self_ref"]
+        row_cosines[key] = {
+            "entity_cosine": float(entity_col[i]),
+            "max_field_cosine": float(max_field_col[i]),
+            "mean_top3_field_cosine": float(mean_top3_col[i]),
+        }
+
+    return entity_results, field_results, row_cosines

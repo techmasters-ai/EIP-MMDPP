@@ -82,6 +82,16 @@ class MergedCandidate:
     pass_keyword_hits: int = 0
     entity_anchor_text: int = 0
     entity_anchor_section: int = 0
+    # ------------------------------------------------------------------
+    # Per-row dense cosines from the multi-query matmul (Task 6 — capture-only).
+    # Computed over ALL valid_rows BEFORE any top-k slice in
+    # search_extraction_chunks_dense_multi_query and stamped here via
+    # merge_candidates(row_cosines=...).  Default 0.0 is safe for callers
+    # that pre-date Task 6 (e.g. build_pool_from_multi_channel_state, which
+    # passes row_cosines=None until Task 7 wires the gate union).
+    # ------------------------------------------------------------------
+    max_field_cosine: float = 0.0
+    mean_top3_field_cosine: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +116,9 @@ def merge_candidates(
     pattern_hits: dict[str, dict],   # from C3: {candidate_key: {pattern_hits, supported_fields}}
     section_meta: dict[str, dict],   # may be empty {} for now
     table_meta: dict[str, str],      # content_type keyed by candidate_key; may be {} (Phase D deferred)
+    row_cosines: dict | None = None, # {candidate_key: {entity_cosine, max_field_cosine, mean_top3_field_cosine}}
+                                     # from search_extraction_chunks_dense_multi_query (Task 6).
+                                     # None → both cosine fields default to 0.0 (backward-compat).
 ) -> list[MergedCandidate]:
     """Merge all retrieval sources by candidate_key.
 
@@ -211,6 +224,8 @@ def merge_candidates(
         # At merge time entity_anchor_text == 0, so alias_hits == field_label_hits,
         # byte-identical to the pre-decomposition alias_hits value.
         entity_anchor_text = 0
+        # Task 6 — stamp per-row dense cosines when provided (0.0 default otherwise).
+        rc = (row_cosines or {}).get(key, {})
         out.append(
             MergedCandidate(
                 candidate_key=key,
@@ -233,6 +248,8 @@ def merge_candidates(
                 pass_keyword_hits=pass_keyword_hits,
                 entity_anchor_text=entity_anchor_text,
                 entity_anchor_section=section_hits,
+                max_field_cosine=float(rc.get("max_field_cosine", 0.0)),
+                mean_top3_field_cosine=float(rc.get("mean_top3_field_cosine", 0.0)),
             )
         )
 
@@ -270,6 +287,9 @@ COMPONENT_KEYS: tuple[str, ...] = (
     "pattern_norm",
     "negative_norm",
     "final_score",
+    # Task 6 — per-row dense cosines retained from multi-query matmul (capture-only).
+    "max_field_cosine",
+    "mean_top3_field_cosine",
 )
 
 
@@ -472,6 +492,9 @@ def score_candidates(
             "pattern_norm": float(pattern_norm),
             "negative_norm": float(negative_norm),
             "final_score": final,
+            # Task 6 — capture-only; not a scoring term.
+            "max_field_cosine": mc.max_field_cosine,
+            "mean_top3_field_cosine": mc.mean_top3_field_cosine,
         }
 
         results.append((mc, final, sort_rr, components))

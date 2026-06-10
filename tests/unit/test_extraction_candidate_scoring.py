@@ -770,6 +770,8 @@ def _make_scored_candidate(
     pass_keyword_hits: int = 0,
     entity_anchor_text: int | None = None,
     entity_anchor_section: int | None = None,
+    max_field_cosine: float = 0.0,
+    mean_top3_field_cosine: float = 0.0,
 ) -> dict:
     """Build a dict in the representation score_candidates expects.
 
@@ -808,6 +810,8 @@ def _make_scored_candidate(
         pass_keyword_hits=pass_keyword_hits,
         entity_anchor_text=entity_anchor_text,
         entity_anchor_section=entity_anchor_section,
+        max_field_cosine=max_field_cosine,
+        mean_top3_field_cosine=mean_top3_field_cosine,
     )
     d: dict = {
         "merged_candidate": mc,
@@ -2055,6 +2059,9 @@ _EXPECTED_COMPONENT_KEYS = {
     "negative_norm",
     "final_score",
     "candidate_key",
+    # Task 6 — capture-only dense cosine features
+    "max_field_cosine",
+    "mean_top3_field_cosine",
 }
 
 
@@ -2334,3 +2341,196 @@ class TestScoreComponentsForPool:
         from app.services.extraction_candidate_scoring import score_components_for_pool
 
         assert score_components_for_pool([], _make_profile()) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — max_field_cosine / mean_top3_field_cosine on MergedCandidate
+# ---------------------------------------------------------------------------
+
+
+class TestTask6RowCosines:
+    """merge_candidates stamps row_cosines values onto MergedCandidate;
+    score_candidates surfaces them in the components dict.
+    None / missing-key → both default to 0.0.
+    """
+
+    def _make_ger(self, vid: str, score: float = 0.8):
+        """Minimal GraphEntityResult keyed by vertex_id."""
+        from app.services.graph_store import GraphEntityResult
+        return GraphEntityResult(
+            node_id=vid,
+            name=vid,
+            entity_type="ExtractionChunk",
+            score=score,
+            properties={
+                "vertex_id": vid,
+                "self_ref": f"#{vid}",
+                "chunk_text": f"text {vid}",
+                "chunk_index": 0,
+                "source_refs": [],
+                "token_count": 10,
+                "page_number": None,
+            },
+        )
+
+    def test_merge_stamps_cosines_from_row_cosines(self):
+        """merge_candidates stamps max_field_cosine / mean_top3_field_cosine
+        onto MergedCandidate when row_cosines is provided."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = self._make_ger("run-T:c1")
+        row_cosines = {
+            "run-T:c1": {
+                "entity_cosine": 0.9,
+                "max_field_cosine": 0.75,
+                "mean_top3_field_cosine": 0.65,
+            }
+        }
+        pool = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+            row_cosines=row_cosines,
+        )
+        assert len(pool) == 1
+        mc = pool[0]
+        assert mc.max_field_cosine == pytest.approx(0.75), (
+            f"max_field_cosine must be stamped from row_cosines; got {mc.max_field_cosine}"
+        )
+        assert mc.mean_top3_field_cosine == pytest.approx(0.65), (
+            f"mean_top3_field_cosine must be stamped from row_cosines; got {mc.mean_top3_field_cosine}"
+        )
+
+    def test_merge_defaults_to_zero_when_row_cosines_is_none(self):
+        """row_cosines=None → both fields default to 0.0 (backward-compat)."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = self._make_ger("run-T:c2")
+        pool = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+            row_cosines=None,
+        )
+        assert len(pool) == 1
+        mc = pool[0]
+        assert mc.max_field_cosine == 0.0
+        assert mc.mean_top3_field_cosine == 0.0
+
+    def test_merge_defaults_to_zero_when_key_absent_from_row_cosines(self):
+        """row_cosines present but key missing → 0.0 defaults (not KeyError)."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = self._make_ger("run-T:c3")
+        pool = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+            row_cosines={"run-T:OTHER": {"max_field_cosine": 0.9, "mean_top3_field_cosine": 0.8}},
+        )
+        assert len(pool) == 1
+        mc = pool[0]
+        assert mc.max_field_cosine == 0.0
+        assert mc.mean_top3_field_cosine == 0.0
+
+    def test_component_keys_contains_new_keys(self):
+        """COMPONENT_KEYS must include max_field_cosine and mean_top3_field_cosine."""
+        from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+        assert "max_field_cosine" in COMPONENT_KEYS, (
+            "max_field_cosine must be in COMPONENT_KEYS"
+        )
+        assert "mean_top3_field_cosine" in COMPONENT_KEYS, (
+            "mean_top3_field_cosine must be in COMPONENT_KEYS"
+        )
+
+    def test_score_components_emits_new_keys(self):
+        """score_candidates(return_components=True) must include both new keys
+        in the components dict for each candidate."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        ger_a = self._make_ger("run-T:cA")
+        from app.services.extraction_candidate_scoring import MergedCandidate
+        mc = MergedCandidate(
+            candidate_key="run-T:cA",
+            chunk_index=0,
+            self_ref="#run-T:cA",
+            chunk_text="text",
+            source_refs=[],
+            token_count=10,
+            page_number=None,
+            vector_score=0.8,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+            max_field_cosine=0.72,
+            mean_top3_field_cosine=0.61,
+        )
+        cand = {"merged_candidate": mc, "content_text": "text", "reranker_score": 0.5}
+        result = score_candidates([cand], _make_profile(), return_components=True)
+        _, _, comps = result[0]
+        assert comps["max_field_cosine"] == pytest.approx(0.72), (
+            f"max_field_cosine must flow into components dict; got {comps.get('max_field_cosine')}"
+        )
+        assert comps["mean_top3_field_cosine"] == pytest.approx(0.61), (
+            f"mean_top3_field_cosine must flow into components dict; "
+            f"got {comps.get('mean_top3_field_cosine')}"
+        )
+
+    def test_byte_identical_ordering_with_hot_cosine_values(self):
+        """[HARD SAFETY] max_field_cosine / mean_top3_field_cosine are CAPTURE-ONLY.
+        A pool whose candidates carry non-zero cosine values must produce the SAME
+        ordering and final_scores as the SAME pool with 0.0 defaults — because the
+        new fields are NOT scoring terms."""
+        from app.services.extraction_candidate_scoring import (
+            MergedCandidate,
+            score_candidates,
+        )
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.2, pattern_weight=0.1)
+
+        specs = [
+            dict(reranker_score=0.9, alias_hits=2, pattern_hits=1, section_hits=5),
+            dict(reranker_score=0.5, alias_hits=0, pattern_hits=3, section_hits=2),
+            dict(reranker_score=0.1, alias_hits=4, negative_hits=1, section_hits=1),
+            dict(reranker_score=0.3, alias_hits=3, section_hits=9),
+            dict(alias_hits=1, section_hits=4),  # unscorable (no reranker_score)
+        ]
+
+        baseline_pool = []
+        hot_pool = []
+        for i, kw in enumerate(specs):
+            baseline_pool.append(_make_scored_candidate(f"c{i}", **kw))
+            # HOT cosine values injected — must NOT change ordering or scores.
+            kw_hot = dict(kw)
+            kw_hot.update(max_field_cosine=0.9 - i * 0.1, mean_top3_field_cosine=0.8 - i * 0.1)
+            hot_pool.append(_make_scored_candidate(f"c{i}", **kw_hot))
+
+        res_base = score_candidates(baseline_pool, cfg)
+        res_hot = score_candidates(hot_pool, cfg)
+
+        keys_base = [mc.candidate_key for mc, _ in res_base]
+        keys_hot = [mc.candidate_key for mc, _ in res_hot]
+        scores_base = [s for _, s in res_base]
+        scores_hot = [s for _, s in res_hot]
+
+        assert keys_base == keys_hot, (
+            "ordering must be byte-identical — cosine fields are capture-only"
+        )
+        assert scores_base == scores_hot, (
+            "final_score must be byte-identical — cosine fields are capture-only"
+        )

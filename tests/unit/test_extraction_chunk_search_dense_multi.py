@@ -304,7 +304,7 @@ async def test_dense_multi_returns_entity_candidates_capped_by_top_n():
     mock_embed = _make_embedding_mock(_vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -335,7 +335,7 @@ async def test_dense_multi_returns_per_field_results_capped_by_field_query_top_k
     mock_embed = _make_embedding_mock(_vec(1.0), _vec(1.0), _vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -374,7 +374,7 @@ async def test_dense_multi_identity_fields_absent_from_field_results():
     mock_embed = _make_embedding_mock(_vec(1.0), _vec(1.0), _vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -418,7 +418,7 @@ async def test_dense_multi_result_shape_matches_direct_fetch():
     mock_embed = _make_embedding_mock(_vec(1.0), _vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -464,7 +464,7 @@ async def test_dense_multi_scores_ranked_descending_by_cosine():
     mock_embed = _make_embedding_mock(_vec(1.0))  # entity query → (1,0,...)
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, _ = await search_extraction_chunks_dense_multi_query(
+        entity_results, _, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -492,13 +492,14 @@ async def test_dense_multi_empty_rows_returns_empty_sets():
     mock_embed = _make_embedding_mock(_vec(1.0), _vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, row_cosines = await search_extraction_chunks_dense_multi_query(
             signals, [], cfg
         )
 
     assert entity_results == []
     assert "f1" in field_results
     assert field_results["f1"] == []
+    assert row_cosines == {}, "empty rows → row_cosines must be {}"
 
 
 @pytest.mark.asyncio
@@ -515,7 +516,7 @@ async def test_dense_multi_no_field_queries_returns_empty_field_results():
     mock_embed = _make_embedding_mock(_vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, row_cosines = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -543,7 +544,7 @@ async def test_dense_multi_skips_null_embedding_rows():
     mock_embed = _make_embedding_mock(_vec(1.0))
 
     with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
-        entity_results, _ = await search_extraction_chunks_dense_multi_query(
+        entity_results, _, _rc = await search_extraction_chunks_dense_multi_query(
             signals, rows, cfg
         )
 
@@ -584,7 +585,7 @@ async def test_end_to_end_one_select_zero_hnsw():
         fetched_rows = await fetch_extraction_chunks_for_run(
             store=store, pipeline_run_id="run-A"
         )
-        entity_results, field_results = await search_extraction_chunks_dense_multi_query(
+        entity_results, field_results, _rc = await search_extraction_chunks_dense_multi_query(
             signals, fetched_rows, cfg
         )
 
@@ -794,3 +795,157 @@ async def test_build_pool_from_state_wires_real_section_meta():
     by_key = {mc.candidate_key: mc for mc in pool}
     assert "run-A:chunk_match" in by_key
     assert by_key["run-A:chunk_match"].section_hits >= 1
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — row_cosines: per-row dense cosines retained from the matmul
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_row_cosines_uncensored_outside_top_k():
+    """row_cosines must be computed over ALL valid_rows BEFORE any top-k
+    slice.  Row B has field cosines that rank it OUTSIDE field_query_top_k=1
+    for EVERY field column — yet row_cosines[key_B]["max_field_cosine"] must
+    equal the hand-computed value (not 0.0 / absent).
+
+    Layout (3 rows, 2 field queries; all vectors are unit-norm in 2D):
+      - entity query  → (1, 0)
+      - field_a query → (0, 1)
+      - field_b query → (1/√2, 1/√2)
+      - row A  emb  → (1, 0)   entity_cos=1.0, f_a=0.0,    f_b=1/√2
+      - row B  emb  → (0, 1)   entity_cos=0.0, f_a=1.0,    f_b=1/√2
+      - row C  emb  → (1/√2, 1/√2) entity_cos=1/√2, f_a=1/√2, f_b=1.0
+
+    field_query_top_k=1 → per field column only ONE chunk is returned:
+      - field_a col: B (score 1.0) → A and C excluded from field_results
+      - field_b col: C (score 1.0) → A and B excluded from field_results
+    But row_cosines[key_B] must still carry the true values.
+    """
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_dense_multi_query,
+    )
+
+    # 2D unit vectors (1024-dim with rest zeros; normalisation makes them unit).
+    vec_a  = _norm(_vec(1.0, 0.0))            # row A
+    vec_b  = _norm(_vec(0.0, 1.0))            # row B
+    vec_c  = _norm(_vec(1.0, 1.0))            # row C → norm gives (1/√2, 1/√2, ...)
+
+    q_entity = _norm(_vec(1.0, 0.0))          # entity query
+    q_fa     = _norm(_vec(0.0, 1.0))          # field_a query
+    q_fb     = _norm(_vec(1.0, 1.0))          # field_b query
+
+    rows = [
+        _row("A", vec_a, vertex_id="run-T:A"),
+        _row("B", vec_b, vertex_id="run-T:B"),
+        _row("C", vec_c, vertex_id="run-T:C"),
+    ]
+    signals = _make_retrieval_signals(
+        entity_query="entity q",
+        field_queries=(
+            _make_field_query("field_a", "fa"),
+            _make_field_query("field_b", "fb"),
+        ),
+    )
+    cfg = _make_cfg(top_n_candidates=10, field_query_top_k=1)  # top-1 per field
+
+    mock_embed = _make_embedding_mock(q_entity, q_fa, q_fb)
+
+    with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
+        entity_results, field_results, row_cosines = await search_extraction_chunks_dense_multi_query(
+            signals, rows, cfg
+        )
+
+    # field_results["field_b"] top-k=1 → only C (score≈1.0 after normalization)
+    fb_keys = {r.properties.get("vertex_id") for r in field_results["field_b"]}
+    assert "run-T:B" not in fb_keys, (
+        "Row B must be outside field_b top-k=1 (sanity check that the uncensored "
+        "test is meaningful)"
+    )
+
+    # row_cosines must contain ALL three rows
+    assert "run-T:A" in row_cosines
+    assert "run-T:B" in row_cosines
+    assert "run-T:C" in row_cosines
+
+    # For row B:
+    #   entity_cosine = dot((0,1,...), (1,0,...)) = 0.0
+    #   field_a cosine = dot((0,1,...), (0,1,...)) = 1.0
+    #   field_b cosine = dot((0,1,...), (1/√2,1/√2,...)) = 1/√2
+    #   max_field_cosine = max(1.0, 1/√2) = 1.0
+    #   mean_top3 (k=min(3,2)=2) = mean(1/√2, 1.0) = (1 + 1/√2) / 2
+    rc_b = row_cosines["run-T:B"]
+    assert isinstance(rc_b["entity_cosine"], float)
+    assert isinstance(rc_b["max_field_cosine"], float)
+    assert isinstance(rc_b["mean_top3_field_cosine"], float)
+
+    assert rc_b["entity_cosine"] == pytest.approx(0.0, abs=1e-5), (
+        f"entity_cosine for B must be 0.0; got {rc_b['entity_cosine']}"
+    )
+    assert rc_b["max_field_cosine"] == pytest.approx(1.0, abs=1e-5), (
+        f"max_field_cosine for B must be 1.0 (field_a cosine); got {rc_b['max_field_cosine']}"
+    )
+    expected_mean = (1.0 + (1.0 / 2 ** 0.5)) / 2
+    assert rc_b["mean_top3_field_cosine"] == pytest.approx(expected_mean, abs=1e-5), (
+        f"mean_top3_field_cosine for B must be {expected_mean:.6f}; "
+        f"got {rc_b['mean_top3_field_cosine']}"
+    )
+
+    # For row A — entity cosine should be highest (≈1.0).
+    rc_a = row_cosines["run-T:A"]
+    assert rc_a["entity_cosine"] == pytest.approx(1.0, abs=1e-5), (
+        f"entity_cosine for A must be 1.0; got {rc_a['entity_cosine']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_row_cosines_zero_field_queries():
+    """When there are no field queries, max_field_cosine and
+    mean_top3_field_cosine must both be 0.0 for every row."""
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_dense_multi_query,
+    )
+
+    rows = [
+        _row("r0", _norm(_vec(1.0, 0.0)), vertex_id="run-T:r0"),
+        _row("r1", _norm(_vec(0.5, 0.5)), vertex_id="run-T:r1"),
+    ]
+    signals = _make_retrieval_signals(entity_query="q", field_queries=())
+    cfg = _make_cfg(top_n_candidates=10)
+    mock_embed = _make_embedding_mock(_norm(_vec(1.0, 0.0)))
+
+    with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
+        _, _, row_cosines = await search_extraction_chunks_dense_multi_query(
+            signals, rows, cfg
+        )
+
+    assert len(row_cosines) == 2
+    for key, rc in row_cosines.items():
+        assert rc["max_field_cosine"] == pytest.approx(0.0), (
+            f"max_field_cosine for {key} must be 0.0 with no field queries; got {rc}"
+        )
+        assert rc["mean_top3_field_cosine"] == pytest.approx(0.0), (
+            f"mean_top3_field_cosine for {key} must be 0.0 with no field queries; got {rc}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_row_cosines_empty_rows_returns_empty_dict():
+    """Empty rows → row_cosines must be {}."""
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_dense_multi_query,
+    )
+
+    signals = _make_retrieval_signals(
+        entity_query="q",
+        field_queries=(_make_field_query("f1", "field 1"),),
+    )
+    cfg = _make_cfg()
+    mock_embed = _make_embedding_mock(_norm(_vec(1.0)), _norm(_vec(0.0, 1.0)))
+
+    with patch("app.services.extraction_chunk_search.embed_texts", mock_embed):
+        _, _, row_cosines = await search_extraction_chunks_dense_multi_query(
+            signals, [], cfg
+        )
+
+    assert row_cosines == {}, f"Empty rows must yield empty row_cosines; got {row_cosines}"
