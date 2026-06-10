@@ -1728,6 +1728,10 @@ class TestScoreComponentsAllFullPool:
         "entity_anchor_section", "anchor_section_norm",
         "section_norm", "is_table", "pattern_norm", "negative_norm",
         "final_score", "candidate_key",
+        # Task 6 — capture-only dense cosine features
+        "max_field_cosine", "mean_top3_field_cosine",
+        # Task 7 — G1 gate-union membership flag (capture-only, 1.0/0.0)
+        "unit_gate",
     }
 
     def _make_mc_pass_def(self):

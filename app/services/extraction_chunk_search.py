@@ -73,10 +73,22 @@ from app.services.embedding import embed_texts  # noqa: E402
 # section_path / headings columns projected onto candidate rows below. Imported
 # at module scope (extraction_chunk_index does NOT import this module, so no
 # cycle); keeps the property-dict construction free of inline imports.
+# Task 7 (G1 gate union): read_chunk_index / read_chunk_source_refs /
+# read_chunk_token_count back the row-built gated MergedCandidates.
 from app.services.extraction_chunk_index import (  # noqa: E402
     read_chunk_headings,
+    read_chunk_index,
     read_chunk_section_path,
+    read_chunk_source_refs,
+    read_chunk_token_count,
 )
+
+# Task 7 — G1 unit-signature recall gate (guarded-ranker spec §3). The gate
+# predicate is the SAME matcher the value-grounding label uses (one matcher,
+# no drift); nfc() is the label's normaliser. Neither module imports this one
+# (extraction_unit_gate → field_value_grounding only) — no cycle.
+from app.services.extraction_unit_gate import chunk_passes_unit_gate  # noqa: E402
+from app.services.field_value_grounding import nfc  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -698,9 +710,12 @@ class MultiChannelDiagnostics:
     field_dense_total_count: int   # sum of all per-field dense candidates (pre-merge)
     lexical_hit_count: int         # chunks with at least one lexical hit (C2)
     pattern_hit_count: int         # chunks with at least one pattern hit (C3)
-    pool_size: int                 # merged pool size AFTER cap
+    pool_size: int                 # merged pool size AFTER cap (incl. gate-union extras)
     per_field_dense_counts: dict   # {field_name: int} — per-field candidate counts (C7)
     filter_strategy: str = "multi_channel"
+    # Task 7 — G1 unit gate. Defaults keep pre-Task-7 constructors working.
+    unit_gate_total: int = 0       # chunks passing the gate over ALL rows of the run
+    unit_gate_added: int = 0       # gated chunks ADDED to the pool beyond the top_n cap
 
 
 @dataclass
@@ -899,6 +914,12 @@ def build_pool_from_multi_channel_state(
     merged_pool.sort(
         key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
     )
+    # TODO(Task 18): the G1 gate union (cap-exempt gated chunks; see step 7b in
+    # search_extraction_chunks_multi_channel_full) is intentionally NOT applied
+    # on this fallback-rebuild path — the E2 ladder already relaxes recall
+    # upward (relaxed_dense raises the cap; lexical_table/identity_anchor add
+    # candidates). When the Task 18 cut helper lands, route both the primary
+    # and fallback pools through it so cap exemption has ONE implementation.
     return merged_pool[:cap]
 
 
@@ -1177,12 +1198,111 @@ async def search_extraction_chunks_multi_channel_full(
                 mc.alias_hits += anchor_hit_count
 
     # ------------------------------------------------------------------
+    # 6c. G1 unit-signature gate scan (Task 7 — guarded-ranker spec §3).
+    #     Scans ALL rows of the run (NOT just the merged pool): a chunk
+    #     containing a digit + a pass-unit-signature token is force-kept in
+    #     the candidate pool EXEMPT from the top_n_candidates cap below, so
+    #     it flows through rerank + C5 scoring and appears in the
+    #     score_components_all capture (the recall FLOOR; the value-grounding
+    #     label re-checks precision downstream).
+    #     `is True` (not truthiness) so MagicMock-shaped cfgs in endpoint
+    #     tests can never accidentally enable the gate. Default off
+    #     (RetrievalProfile.unit_gate=False) → gated_keys stays empty and the
+    #     pool below is byte-identical to the legacy path.
+    # ------------------------------------------------------------------
+    unit_signature = tuple(getattr(retrieval_signals, "unit_signature", ()) or ())
+    gated_keys: set[str] = set()
+    if getattr(cfg, "unit_gate", False) is True and unit_signature:
+        for row in rows:
+            text = nfc(row.get("chunk_text") or "")
+            if chunk_passes_unit_gate(text, unit_signature):
+                gated_keys.add(row.get("vertex_id") or row.get("self_ref") or "")
+        gated_keys.discard("")
+
+    # ------------------------------------------------------------------
     # 7. Order by best dense score (vector_score desc; None last), then cap.
     # ------------------------------------------------------------------
     merged_pool.sort(
         key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
     )
     capped_pool = merged_pool[: cfg.top_n_candidates]
+
+    # ------------------------------------------------------------------
+    # 7b. G1 gate union — gated chunks are cap-EXEMPT (Task 7).
+    #     Final pool order: dense-capped first, then beyond-cap gated members
+    #     in merged_pool order, then row-built gated members sorted by
+    #     candidate_key (determinism). The three groups are mutually exclusive
+    #     by construction; the assert below guards the invariant anyway.
+    # ------------------------------------------------------------------
+    gate_extras: list[MergedCandidate] = []
+    if gated_keys:
+        in_pool_keys = {mc.candidate_key for mc in capped_pool}
+
+        # (a) Gated members already INSIDE the cap: mark in place — no dup.
+        for mc in capped_pool:
+            if mc.candidate_key in gated_keys:
+                mc.gate_flags.add("unit")
+                mc.retrieval_sources.add("unit_gate")
+
+        # (b) Gated members of merged_pool BEYOND the cap: re-admit the
+        #     EXISTING objects (channel evidence — field_scores, sources,
+        #     hit counts — is preserved), in merged_pool (sorted) order.
+        merged_keys = {mc.candidate_key for mc in merged_pool}
+        for mc in merged_pool[cfg.top_n_candidates:]:
+            if mc.candidate_key in gated_keys and mc.candidate_key not in in_pool_keys:
+                mc.gate_flags.add("unit")
+                mc.retrieval_sources.add("unit_gate")
+                gate_extras.append(mc)
+                in_pool_keys.add(mc.candidate_key)
+
+        # (c) Gated keys absent from merged_pool entirely: build minimal
+        #     MergedCandidates from the raw rows (same field-by-field pattern
+        #     as _build_lexical_table_candidates in extraction_routing).
+        #     vector_score / cosines come from the Task 6 row_cosines (keyed
+        #     identically: vertex_id-or-self_ref); rows without embeddings
+        #     have no row_cosines entry → vector_score None, cosines 0.0.
+        missing = sorted(gated_keys - merged_keys)
+        if missing:
+            rows_by_key = {
+                (r.get("vertex_id") or r.get("self_ref") or ""): r for r in rows
+            }
+            for key in missing:
+                if key in in_pool_keys:  # dedup guard (unreachable by construction)
+                    continue
+                row = rows_by_key.get(key)
+                if row is None:
+                    continue
+                rc = (row_cosines or {}).get(key) or {}
+                gate_extras.append(
+                    MergedCandidate(
+                        candidate_key=key,
+                        chunk_index=read_chunk_index(row),
+                        self_ref=row.get("self_ref", ""),
+                        chunk_text=row.get("chunk_text", ""),
+                        source_refs=read_chunk_source_refs(row),
+                        token_count=read_chunk_token_count(row),
+                        page_number=row.get("page_number"),
+                        vector_score=rc.get("entity_cosine"),
+                        field_scores={},
+                        alias_hits=0,
+                        pattern_hits=0,
+                        negative_hits=0,
+                        section_hits=0,
+                        content_type=None,
+                        retrieval_sources={"unit_gate"},
+                        supported_field_hints=set(),
+                        max_field_cosine=float(rc.get("max_field_cosine", 0.0)),
+                        mean_top3_field_cosine=float(rc.get("mean_top3_field_cosine", 0.0)),
+                        gate_flags={"unit"},
+                    )
+                )
+                in_pool_keys.add(key)
+
+        capped_pool = capped_pool + gate_extras
+        final_keys = [mc.candidate_key for mc in capped_pool]
+        assert len(set(final_keys)) == len(final_keys), (
+            "G1 gate union produced duplicate candidate_keys"
+        )
 
     diag = MultiChannelDiagnostics(
         raw_row_count=raw_row_count,
@@ -1195,6 +1315,8 @@ async def search_extraction_chunks_multi_channel_full(
             field_name: len(results)
             for field_name, results in field_dense.items()
         },
+        unit_gate_total=len(gated_keys),
+        unit_gate_added=len(gate_extras),
     )
     return capped_pool, diag, state
 

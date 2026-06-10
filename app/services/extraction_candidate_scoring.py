@@ -27,7 +27,7 @@ Normalization choices (min-max throughout — pinned here for test contract):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.extraction_chunk_index import (
@@ -92,6 +92,14 @@ class MergedCandidate:
     # ------------------------------------------------------------------
     max_field_cosine: float = 0.0
     mean_top3_field_cosine: float = 0.0
+    # ------------------------------------------------------------------
+    # G1 gate flags (Task 7 — guarded-ranker spec §3). Names of the recall
+    # gates that force-kept this candidate in the pool (currently only
+    # "unit").  CAPTURE-ONLY: surfaced via the "unit_gate" component
+    # (1.0/0.0) and the unit_gate_* diagnostics — NEVER a final_score term.
+    # default_factory keeps existing positional construction unaffected.
+    # ------------------------------------------------------------------
+    gate_flags: set[str] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +298,9 @@ COMPONENT_KEYS: tuple[str, ...] = (
     # Task 6 — per-row dense cosines retained from multi-query matmul (capture-only).
     "max_field_cosine",
     "mean_top3_field_cosine",
+    # Task 7 — G1 gate-union membership (capture-only, 1.0/0.0). Appended at
+    # the END so the offline calibration CSV column order stays append-only.
+    "unit_gate",
 )
 
 
@@ -495,6 +506,8 @@ def score_candidates(
             # Task 6 — capture-only; not a scoring term.
             "max_field_cosine": mc.max_field_cosine,
             "mean_top3_field_cosine": mc.mean_top3_field_cosine,
+            # Task 7 — G1 gate-union membership; capture-only, not a scoring term.
+            "unit_gate": 1.0 if "unit" in mc.gate_flags else 0.0,
         }
 
         results.append((mc, final, sort_rr, components))
@@ -554,8 +567,9 @@ def field_coverage(candidates: list[MergedCandidate]) -> dict[str, int]:
     """
     counts: dict[str, int] = {}
     for mc in candidates:
-        for field in mc.supported_field_hints:
-            counts[field] = counts.get(field, 0) + 1
+        # named field_name (not `field`) — `dataclasses.field` is imported above
+        for field_name in mc.supported_field_hints:
+            counts[field_name] = counts.get(field_name, 0) + 1
     return counts
 
 

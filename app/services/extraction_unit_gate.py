@@ -8,13 +8,14 @@ No equipment names, no config: the signature derives from schema field-name
 suffixes only.
 """
 import re
+from collections.abc import Iterable
 
 from app.services.field_value_grounding import has_unit_token, units_for
 
 _DIGIT = re.compile(r"\d")
 
 
-def signature_for_fields(field_names) -> tuple[str, ...]:
+def signature_for_fields(field_names: Iterable[str]) -> tuple[str, ...]:
     """Sorted union of unit synonyms over the pass's field names."""
     units: set[str] = set()
     for name in field_names:
@@ -22,7 +23,7 @@ def signature_for_fields(field_names) -> tuple[str, ...]:
     return tuple(sorted(units))
 
 
-def chunk_passes_unit_gate(text_nfc: str, signature) -> bool:
+def chunk_passes_unit_gate(text_nfc: str, signature: Iterable[str]) -> bool:
     """True iff the (already nfc()-folded) chunk text could ground ANY
     numeric+unit value of this pass — digit present + signature unit token."""
     if not signature or not text_nfc:

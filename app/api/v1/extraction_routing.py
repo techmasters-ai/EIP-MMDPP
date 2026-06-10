@@ -1489,10 +1489,19 @@ async def chunk_scope(
         # a SEPARATE entry point from score_candidates, so endpoint tests that
         # monkeypatch score_candidates do not perturb this full-pool breakdown.
         # The existing top_k score_components above is left UNCHANGED.
-        # reranked_pool is the authoritative final pool fed into C5 scoring; cap
-        # to top_n_candidates so the payload stays bounded (≤ 50).
+        # reranked_pool is the authoritative final pool fed into C5 scoring.
+        # Task 7 (G1 gate union): NO top_n_candidates cap here — gated chunks
+        # are cap-EXEMPT pool members and MUST appear in the capture. The pool
+        # is naturally bounded (top_n + gate extras); the 4x guard below flags
+        # a runaway gate without dropping data.
         _sca_pool = [d for d in reranked_pool if "merged_candidate" in d]
-        _sca_pool = _sca_pool[: profile.top_n_candidates]
+        if len(_sca_pool) > 4 * profile.top_n_candidates:
+            logger.warning(
+                "score_components_all pool unexpectedly large: %d candidates "
+                "(top_n_candidates=%d, pass=%s) — G1 unit-gate union may be "
+                "over-admitting",
+                len(_sca_pool), profile.top_n_candidates, body.pass_name,
+            )
         _c7_score_components_all = score_components_for_pool(_sca_pool, profile)
 
         # fallback_level: set by E2 ladder ("none" on the happy path).

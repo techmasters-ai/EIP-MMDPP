@@ -116,6 +116,31 @@ class TestChunkPassesUnitGate:
         sig = signature_for_fields(["nominal_rf_mhz"])  # mhz, ghz, khz
         assert chunk_passes_unit_gate(nfc("weight is 50 kg"), sig) is False
 
+    def test_gate_fires_where_same_chunk_label_tier_rejects(self):
+        """INTENTIONAL gate-label gap (Task 7 / Task 5 polish).
+
+        The SAME_CHUNK label tier requires >=2 digits in the number to avoid
+        coincidental single-digit hits, so a single-digit value with a
+        DETACHED unit is NOT labelable via SAME_CHUNK.  The gate has no value
+        knowledge — digit + signature unit token is enough — so it force-keeps
+        the chunk anyway.  This is correct BY DESIGN: the gate is the recall
+        FLOOR (cheap, value-free, must never drop a potentially groundable
+        chunk); the label re-checks precision downstream and rejects what it
+        cannot ground.
+        """
+        from app.services.extraction_unit_gate import chunk_passes_unit_gate
+        from app.services.field_value_grounding import value_in_chunk
+
+        # Adjacent single-digit form: gate fires.
+        assert chunk_passes_unit_gate(nfc("weight 7 kg"), ("kg",)) is True
+
+        # Detached single-digit form: gate STILL fires (recall floor) ...
+        detached = nfc("weight 7 and the unit column header says kg")
+        assert chunk_passes_unit_gate(detached, ("kg",)) is True
+        # ... although the SAME_CHUNK label tier rejects it (single digit "7"
+        # fails the >=2-digit rule; no ADJACENT match either).
+        assert value_in_chunk({"7"}, ("kg",), detached) is None
+
 
 # ---------------------------------------------------------------------------
 # 3. Gate is superset of label: fixture-driven

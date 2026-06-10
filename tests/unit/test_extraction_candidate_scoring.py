@@ -2062,6 +2062,8 @@ _EXPECTED_COMPONENT_KEYS = {
     # Task 6 — capture-only dense cosine features
     "max_field_cosine",
     "mean_top3_field_cosine",
+    # Task 7 — G1 gate-union membership flag (capture-only, 1.0/0.0)
+    "unit_gate",
 }
 
 
@@ -2534,3 +2536,128 @@ class TestTask6RowCosines:
         assert scores_base == scores_hot, (
             "final_score must be byte-identical — cosine fields are capture-only"
         )
+
+
+# ===========================================================================
+# Task 7 — G1 gate union: "unit_gate" component (capture-only, 1.0/0.0)
+# ===========================================================================
+#
+# MergedCandidate gains gate_flags: set[str] (default empty). The components
+# dict gains a trailing "unit_gate" key: 1.0 iff "unit" in mc.gate_flags else
+# 0.0. The flag is NEVER a final_score term — byte-identical scoring with hot
+# gate_flags is a HARD safety contract (same pattern as the decomposed-lexical
+# and Task 6 cosine capture-only fields above).
+# ===========================================================================
+
+
+class TestUnitGateComponent:
+
+    def test_gate_flags_defaults_empty_set(self):
+        """gate_flags defaults to an empty set and is per-instance (no shared
+        mutable default)."""
+        from app.services.extraction_candidate_scoring import MergedCandidate
+
+        a = _make_scored_candidate("a")["merged_candidate"]
+        b = _make_scored_candidate("b")["merged_candidate"]
+        assert a.gate_flags == set()
+        a.gate_flags.add("unit")
+        assert b.gate_flags == set(), "gate_flags must not be shared across instances"
+
+    def test_unit_gate_in_component_keys_last(self):
+        """COMPONENT_KEYS gains 'unit_gate' at the END (append-only contract
+        for the offline calibration CSV column order)."""
+        from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+        assert "unit_gate" in COMPONENT_KEYS
+        assert COMPONENT_KEYS[-1] == "unit_gate"
+
+    def test_unit_gate_component_emitted_one_and_zero(self):
+        """'unit_gate' is 1.0 for a candidate with gate_flags={'unit'} and 0.0
+        otherwise."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        gated = _make_scored_candidate("c_gated", reranker_score=0.4)
+        gated["merged_candidate"].gate_flags.add("unit")
+        plain = _make_scored_candidate("c_plain", reranker_score=0.8)
+
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(
+                [gated, plain], _make_profile(), return_components=True
+            )
+        }
+        assert comps["c_gated"]["unit_gate"] == 1.0
+        assert comps["c_plain"]["unit_gate"] == 0.0
+
+    def test_byte_identical_scores_with_hot_gate_flags(self):
+        """[HARD SAFETY] gate_flags is CAPTURE-ONLY. A pool whose candidates
+        carry gate_flags={'unit'} must produce the SAME ordering and
+        final_scores as the SAME pool without flags — the final_score formula
+        is untouched by Task 7."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.2, pattern_weight=0.1)
+
+        specs = [
+            dict(reranker_score=0.9, alias_hits=2, pattern_hits=1, section_hits=5),
+            dict(reranker_score=0.5, alias_hits=0, pattern_hits=3, section_hits=2),
+            dict(reranker_score=0.1, alias_hits=4, negative_hits=1, section_hits=1),
+            dict(reranker_score=0.3, alias_hits=3, section_hits=9),
+            dict(alias_hits=1, section_hits=4),  # unscorable (no reranker_score)
+        ]
+
+        baseline_pool = [
+            _make_scored_candidate(f"c{i}", **kw) for i, kw in enumerate(specs)
+        ]
+        hot_pool = [
+            _make_scored_candidate(f"c{i}", **kw) for i, kw in enumerate(specs)
+        ]
+        for d in hot_pool:
+            d["merged_candidate"].gate_flags.add("unit")
+            d["merged_candidate"].retrieval_sources.add("unit_gate")
+
+        res_base = score_candidates(baseline_pool, cfg)
+        res_hot = score_candidates(hot_pool, cfg)
+
+        assert [mc.candidate_key for mc, _ in res_base] == [
+            mc.candidate_key for mc, _ in res_hot
+        ], "ordering must be byte-identical — gate_flags is capture-only"
+        assert [s for _, s in res_base] == [s for _, s in res_hot], (
+            "final_score must be byte-identical — gate_flags is capture-only"
+        )
+
+
+class TestScoreComponentsPoolNoCap:
+    """Capture-slice widening (Task 7): the endpoint no longer truncates the
+    score_components_all pool to top_n_candidates, because gate-union extras
+    are cap-EXEMPT pool members and must appear in the capture.
+
+    The endpoint-level test for this lives with TestScoreComponentsAllFullPool
+    in tests/unit/test_v1_extraction_routing.py, which is currently
+    infra-bound (among the 21 known pre-existing failures), so the mockable
+    contract is pinned HERE: score_components_for_pool itself emits one dict
+    per candidate with NO internal cap, including the 'unit_gate' key."""
+
+    def test_components_cover_pool_larger_than_top_n(self):
+        from app.services.extraction_candidate_scoring import (
+            score_components_for_pool,
+        )
+
+        cfg = _make_profile(top_n_candidates=10)
+        # 14 candidates — 4 beyond the configured top_n (gate-union extras).
+        pool = [
+            _make_scored_candidate(f"c{i:02d}", reranker_score=0.9 - i * 0.01)
+            for i in range(14)
+        ]
+        for d in pool[10:]:
+            d["merged_candidate"].gate_flags.add("unit")
+
+        comps = score_components_for_pool(pool, cfg)
+        assert len(comps) == 14, (
+            f"components must cover the WHOLE pool (no top_n cap); got {len(comps)}"
+        )
+        assert all("unit_gate" in d for d in comps)
+        gated_flags = sorted(
+            d["candidate_key"] for d in comps if d["unit_gate"] == 1.0
+        )
+        assert gated_flags == [f"c{i:02d}" for i in range(10, 14)]
