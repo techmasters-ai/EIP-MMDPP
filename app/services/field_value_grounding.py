@@ -39,8 +39,15 @@ SUFFIX_UNITS: dict[str, list[str]] = {
     "kw": ["kw"], "mw": ["mw"], "dbw": ["dbw"], "dbm": ["dbm"],
     "deg": ["deg", "°", "degree", "degrees", "град"], "kg": ["kg", "кг"],
     "mm": ["mm"], "cm": ["cm"], "kmh": ["km/h", "kph"], "mps": ["m/s"],
-    "mach": ["mach", "m="], "kn": ["kn", "knot"], "us": ["µs", "us", "microsec"],
-    "ms": ["ms"], "s": ["s", "sec", "second", "seconds"], "m": ["m", "metre", "meter"],
+    "mach": ["mach", "m="],
+    "kn": ["kn", "knot", "knots"],             # plural added: token-bounded matching kills substring "knot"→"knots"
+    "dbi": ["dbi"],                             # gain in dBi (e.g. gain_dbi)
+    "usec": ["µs", "us", "microsec"],           # microsecond fields ending in _usec (e.g. nominal_pri_usec)
+    "us": ["µs", "us", "microsec"],
+    "ms": ["ms"],
+    "sec": ["s", "sec", "second", "seconds"],   # time fields ending in _sec (e.g. scan_period_sec, *_time_sec)
+    "s": ["s", "sec", "second", "seconds"],
+    "m": ["m", "metre", "meter", "metres", "meters"],  # plural added: token-bounded matching kills "metre"→"metres"
 }
 
 # Match tiers returned by ``value_in_chunk`` (highest→lowest confidence).
