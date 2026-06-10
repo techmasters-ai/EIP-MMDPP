@@ -45,7 +45,7 @@
   {
    "id": 6,
    "subject": "Task 6: Retain per-row dense cosines (max_field_cosine) in multi-query scorer",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Stop discarding the cosine matrix: row_cosines (entity/max-field/mean-top3) for ALL rows; capture-only.\n\n**Files:**\n- app/services/extraction_chunk_search.py\n- app/services/extraction_candidate_scoring.py\n- tests/unit/test_extraction_chunk_search_dense_multi.py\n\n**Acceptance Criteria:**\n- [ ] row_cosines over ALL rows before top-k slice\n- [ ] uncensored max_field_cosine proven\n- [ ] COMPONENT_KEYS += max_field_cosine, mean_top3_field_cosine\n- [ ] final_score byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_chunk_search_dense_multi.py tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_chunk_search.py\", \"app/services/extraction_candidate_scoring.py\", \"tests/unit/test_extraction_chunk_search_dense_multi.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_chunk_search_dense_multi.py tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"row_cosines over ALL rows before top-k slice\", \"uncensored max_field_cosine proven\", \"COMPONENT_KEYS += max_field_cosine, mean_top3_field_cosine\", \"final_score byte-identical\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T15:00:00Z"
+ "lastUpdated": "2026-06-10T16:00:00Z"
 }
