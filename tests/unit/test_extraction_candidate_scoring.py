@@ -2071,6 +2071,38 @@ _EXPECTED_COMPONENT_KEYS = {
 }
 
 
+def test_component_keys_exact_ordered_tuple():
+    """Hard pin of the COMPLETE ordered COMPONENT_KEYS tuple (append-only
+    contract for the calibration CSV columns). Any insertion, reorder, or
+    rename must update this test DELIBERATELY."""
+    from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+    assert COMPONENT_KEYS == (
+        "candidate_key",
+        "cosine",
+        "rerank_norm",
+        "field_label_hits",
+        "field_label_norm",
+        "pass_keyword_hits",
+        "pass_keyword_norm",
+        "entity_anchor_text",
+        "anchor_text_norm",
+        "entity_anchor_section",
+        "anchor_section_norm",
+        "section_norm",
+        "is_table",
+        "pattern_norm",
+        "negative_norm",
+        "final_score",
+        "max_field_cosine",
+        "mean_top3_field_cosine",
+        "unit_gate",
+        "digit_density",
+        "label_value_lines",
+        "unit_token_count",
+    )
+
+
 class TestScoreCandidatesReturnComponents:
     def test_legacy_two_tuple_default_unchanged(self):
         """Without return_components, the return shape is still list[(mc, float)]."""

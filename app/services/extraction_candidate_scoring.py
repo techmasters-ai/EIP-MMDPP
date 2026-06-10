@@ -535,6 +535,9 @@ def score_candidates(
         # Task 8 — structural text features computed below ONLY when
         # return_components is True (the hot path short-circuits before here).
         # One nfc() fold per candidate; reused for all three features.
+        _digit_density = 0.0
+        _label_value_lines = 0
+        _unit_token_count = 0
         if return_components:
             _text_nfc = _nfc(mc.chunk_text)
             _text_len = len(_text_nfc)
@@ -565,9 +568,9 @@ def score_candidates(
             "unit_gate": 1.0 if "unit" in mc.gate_flags else 0.0,
             # Task 8 — structural text features; capture-only, not scoring terms.
             # Computed only under return_components=True (see block above).
-            "digit_density": _digit_density if return_components else 0.0,
-            "label_value_lines": _label_value_lines if return_components else 0,
-            "unit_token_count": _unit_token_count if return_components else 0,
+            "digit_density": _digit_density,
+            "label_value_lines": _label_value_lines,
+            "unit_token_count": _unit_token_count,
         }
 
         results.append((mc, final, sort_rr, components))
