@@ -80,6 +80,19 @@ complete data lineage.
 
 ## 2. Phase 0 — Ground truth (label fix + re-baseline)
 
+- **Harden the unit matcher FIRST (before any label re-export).** Today
+  `value_in_chunk` has no token discipline: the SAME_CHUNK tier tests unit
+  presence with plain substring (`u in text_nfc`,
+  `app/services/field_value_grounding.py:103`) and the ADJACENT tier has no
+  trailing boundary after the unit (`"50 sites"` matches unit `s`). Add a
+  trailing non-alphanumeric boundary after unit tokens and token-bounded
+  SAME_CHUNK unit presence (boundary definition must handle symbol units:
+  `°`, `m/s`, `km/h`). Apply identically to the docling-graph mirror
+  `_vg_value_in_chunk` (`docker/docling-graph/app/provenance.py:1050-1067`) —
+  that image uses COPY semantics, so a container rebuild is required — and
+  extend the existing mirror tests to pin both copies to the same fixtures.
+  Without this, adding `s`-class suffixes multiplies label false positives,
+  and G1 (which must share this matcher) inherits them.
 - Add to `SUFFIX_UNITS`: `"sec"` → same synonym list as `"s"`, `"usec"` → same
   list as `"us"`, `"dbi"` → `["dbi"]`.
 - New audit script: enumerate every field of every pass in `air_defense_v3`,
@@ -110,15 +123,31 @@ without knowing values:
   the floor covers table-serialized text (`Peak Power [kW] 180.0`).
 - **G2 (table gate):** force-keep `is_table` chunks that are unit-bearing
   (available once is_table is wired, Phase 2).
+- **Gate candidate source = ALL `ExtractionChunk` rows for the run, not the
+  merged pool.** Merged retrieval caps the pool on dense-score order BEFORE
+  rerank (`extraction_chunk_search.py:1179`), and the selection slices run
+  later (`extraction_routing.py:650,766,833,891`) — a gate that only runs in
+  the cut helper cannot recover a true-source chunk the cap already excluded.
+  G1/G2 are therefore computed over the full per-run row set (already fetched
+  in-memory by `fetch_extraction_chunks_for_run`), and gated chunks are
+  UNIONED into the merged pool exempt from the `top_n_candidates` cap, so
+  they flow through rerank and C5 scoring, carry full score components, and
+  appear in the `score_components_all` capture (pool-relative norms and the
+  capture slice must account for the enlarged pool).
 - Gates only ever ADD keeps. Failure mode is "gate didn't fire" → ranker +
   `k_min` floor; `fallback_to_full` remains the last resort. Gates never
-  remove anything.
+  remove anything. **Gate keeps are exempt from `k_max`** — `k_max` bounds
+  only ranker-added keeps; a cap that can evict a forced keep is no recall
+  floor. On dense spec sheets total keeps may approach the gate count; that
+  cost is measured at Phase 3 via per-pool `gate_keeps` / `ranker_keeps`
+  diagnostics.
 - **Acceptance test (literal):** gate coverage = 100% of positives in the
   re-exported dataset. Any miss is a unit-lexicon bug by construction.
-- Unit-match semantics must guard against substring collisions (`m` inside
-  words, `s` plurals): unit tokens match with word-ish boundaries, mirroring
-  `value_in_chunk`'s existing token discipline (reuse that module — native
-  reuse, not a parallel regex dialect).
+- G1 imports the SAME unit matcher as the label (the Phase 0-hardened
+  `field_value_grounding` module — one source, never a parallel regex
+  dialect). Gate and label semantics must never drift: a substring-grounded
+  positive with a boundary-matched gate (or vice versa) silently breaks the
+  by-construction floor.
 
 Selectivity comes from per-pass signatures (GHz does not fire the kinematics
 gate). Unit collisions across passes (km) cost pruning, never recall.
@@ -138,7 +167,7 @@ infrastructure). Feature set (all zero-label except where noted):
 | feature | source | status |
 |---|---|---|
 | cosine | existing | proven generalizable (LODO 0.857) |
-| max_field_cosine (+ mean-top-3) | `field_scores`, already computed | new capture, zero cost |
+| max_field_cosine (+ mean-top-3) | retained per-row in the multi-query scorer | new (see below) |
 | rerank_norm | existing | keep (watch S75-Dvina inversion) |
 | negative_norm | existing | keep (held up 0.718) |
 | is_table | Phase 2 wiring | new |
@@ -147,6 +176,17 @@ infrastructure). Feature set (all zero-label except where noted):
 | unit_token_count (pass signature) | G1 machinery | new |
 | pass_keyword_norm, field_label_norm, anchor_text_norm | existing | **excluded** until §5 re-validates |
 | section_norm | duplicate of anchor_section_norm | dropped |
+
+**max_field_cosine is NOT free as currently stored:** `field_scores` is only
+populated for chunks that survive each field's `field_query_top_k` slice
+(`extraction_chunk_search.py:1382`, consumed at
+`extraction_candidate_scoring.py:148-159`) — candidates outside a field's
+top-k have censored scores. The full cosine matrix (all rows × all queries)
+is already computed inside `search_extraction_chunks_dense_multi_query`;
+retain the per-row max (and mean-top-3) over field-query columns BEFORE the
+per-field top-k slice and attach it to every candidate the guarded ranker can
+see, including gate-unioned chunks. No new embedding calls — a small change
+in that scorer, not a new channel.
 
 New features are appended to `COMPONENT_KEYS` /
 `score_components_all` (additive, diagnostics-only) so they appear in capture
@@ -159,10 +199,17 @@ without touching `final_score`.
    override-when-empty). Safe: feeds `pass_keyword_hits`, which is
    diagnostics-only today.
 2. **Header projection:** table-derived chunks carry column/row headers +
-   caption + nearest section heading in a SEPARATE matching/embedding haystack
-   field. Raw `chunk_text`, `source_refs`, page lineage stay verbatim (hard
-   lineage requirement; the value-grounding haystack is unchanged). First step
-   is diagnostic: inspect `_render_table_chunk` output and merged-mode chunk
+   caption + nearest section heading in a new nullable `match_text` property
+   on `ExtractionChunk` (declared in `arcadedb_schema.py`; application-side
+   accessor defaults `match_text → chunk_text` for legacy rows, the existing
+   pattern). Consumers of `match_text`: (a) the embedding input at index time,
+   (b) the lexical/keyword/pattern matching haystack, (c) the reranker's
+   `content_text` (`reranker.py:52` currently scores raw `chunk_text` only).
+   NON-consumers — guaranteed untouched: `chunk_text` itself, `source_refs`,
+   page lineage (the exact-source-text lineage requirement), and the
+   value-grounding label haystack, which always reads raw `chunk_text` so
+   labels are never grounded against injected headers. First step is
+   diagnostic: inspect `_render_table_chunk` output and merged-mode chunk
    text for one known table positive to determine whether this is a rendering
    fix or a chunk-splitting fix. Requires re-embed → lands before the Phase 3
    re-collection.
@@ -210,12 +257,16 @@ in data at the Phase 3 re-collection.
 
 - `RetrievalProfile.selection_mode: topk | guarded_quantile` (default `topk`),
   plus `quantile_q`, `k_min`, `k_max`, and ranker weights as profile fields.
-- One shared cut helper (natural home: `extraction_candidate_scoring.py`)
-  replaces the four `[:profile.top_k]` slice sites
-  (`extraction_routing.py:650,766,833,891`); per-element legacy path
-  unchanged.
-- Diagnostics record per pool: gate keeps (G1/G2 counts), chosen k, threshold,
-  score-distribution stats — enabling offline A/B from capture alone.
+- Two touch points, not one: (a) the **gate union** in
+  `search_extraction_chunks_multi_channel_full` — gated chunks join the
+  merged pool exempt from the `top_n_candidates` cap (see §3) so they exist
+  by the time any cut runs; (b) one shared **cut helper** (natural home:
+  `extraction_candidate_scoring.py`) replacing the four `[:profile.top_k]`
+  slice sites (`extraction_routing.py:650,766,833,891`), with gate keeps
+  exempt from `k_max`; per-element legacy path unchanged.
+- Diagnostics record per pool: `gate_keeps` (G1/G2 counts), `ranker_keeps`,
+  chosen k, threshold, score-distribution stats — enabling offline A/B from
+  capture alone.
 - Manifest/schema edits land in `air_defense_v3` first, then the 3 sibling
   bundles. New env vars mirrored into `.env` and `.env.example` with comments.
 - Production `narrow_only` flip is OUT of this design; it follows a separate
@@ -231,10 +282,16 @@ collection are a separate discussion (existing memory:
 
 ## 10. Testing
 
-- Unit tests: `units_for` additions + audit script; G1 signature derivation and
-  unit-boundary matching; cut helper (topk default byte-identical, quantile
-  mode, k_min/k_max, gate union); is_table threading; word-boundary keyword
-  matcher; header-projection haystack separation (lineage text untouched).
+- Unit tests: `units_for` additions + audit script; hardened unit matcher
+  (trailing boundaries, symbol units) with shared fixtures pinning the
+  docling-graph `_vg_value_in_chunk` mirror to identical behavior; G1
+  signature derivation; gate union (a gated chunk absent from the dense pool
+  reaches selection; gate keeps survive `k_max`); cut helper (topk default
+  byte-identical, quantile mode, k_min/k_max); max_field_cosine retention
+  (uncensored for non-top-k and gate-unioned candidates); is_table threading;
+  word-boundary keyword matcher; header-projection consumer matrix
+  (`match_text` feeds embed/lexical/rerank; `chunk_text`/lineage/grounding
+  untouched).
 - Dataset-level acceptance: gate coverage 100% of positives; re-export
   determinism.
 - Byte-identical default: existing legacy-default tests extended to
