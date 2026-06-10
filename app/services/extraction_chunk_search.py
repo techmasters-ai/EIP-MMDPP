@@ -1399,8 +1399,9 @@ async def search_extraction_chunks_dense_multi_query(
 
     # ------------------------------------------------------------------
     # 8. Build row_cosines over ALL valid_rows (Task 6 — capture-only).
-    #    Computed AFTER the top-k slices so that chunks ranked outside the
-    #    top-k (per every field column) still carry their true cosines for
+    #    Computed from the UNSLICED scores matrix (this block merely sits
+    #    after the top-k calls; it does not depend on their output) so chunks
+    #    ranked outside the top-k still carry their true cosines for
     #    offline diagnostics and future gate logic.
     #
     #    Key convention: vertex_id preferred, self_ref fallback — identical

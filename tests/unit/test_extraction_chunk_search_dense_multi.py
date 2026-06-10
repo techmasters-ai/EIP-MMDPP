@@ -524,6 +524,7 @@ async def test_dense_multi_no_field_queries_returns_empty_field_results():
         f"No field queries → field_results must be empty dict; got {field_results!r}"
     )
     assert len(entity_results) >= 0  # may have entity results
+    assert row_cosines  # entity cosines populated even with no field queries
 
 
 @pytest.mark.asyncio
