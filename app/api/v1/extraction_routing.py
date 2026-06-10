@@ -1502,7 +1502,15 @@ async def chunk_scope(
                 "over-admitting",
                 len(_sca_pool), profile.top_n_candidates, body.pass_name,
             )
-        _c7_score_components_all = score_components_for_pool(_sca_pool, profile)
+        # Task 8 — structural text features: thread unit_signature through so
+        # unit_token_count is non-trivial when the pass has unit fields.
+        # signals is in scope here (multi-channel path only; per-element legacy
+        # path does not reach this site — its score_candidates calls are
+        # selection-only and do not produce components).
+        _c7_score_components_all = score_components_for_pool(
+            _sca_pool, profile,
+            unit_signature=getattr(signals, "unit_signature", ()),
+        )
 
         # fallback_level: set by E2 ladder ("none" on the happy path).
         _c7_fallback_level = _e2_fallback_level

@@ -27,6 +27,7 @@ Normalization choices (min-max throughout — pinned here for test contract):
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -35,10 +36,26 @@ from app.services.extraction_chunk_index import (
     read_chunk_source_refs,
     read_chunk_token_count,
 )
+from app.services.extraction_unit_gate import count_unit_tokens as _count_unit_tokens
+from app.services.field_value_grounding import nfc as _nfc
 
 if TYPE_CHECKING:
     from app.services.graph_store import GraphEntityResult
     from app.services.ontology_bundles import RetrievalProfile
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — module-level compiled regex for label_value_lines feature.
+#
+# Matches the "- <label>: <value>" shape that table normalization emits, as
+# well as bare "<label>: <value>" prose lines.  Pattern:
+#   ^\s*[-•]?\s*[^:\n]{2,40}:\s*\S
+# Rationale: optional leading bullet/dash, label body 2–40 chars (no colon,
+# no newline), colon separator, at least one non-space value character.
+# Compiled once here; reused on every score_candidates call with
+# return_components=True (the hot selection path skips it entirely).
+# ---------------------------------------------------------------------------
+_LABEL_VALUE_RE = re.compile(r"^\s*[-•]?\s*[^:\n]{2,40}:\s*\S", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +318,16 @@ COMPONENT_KEYS: tuple[str, ...] = (
     # Task 7 — G1 gate-union membership (capture-only, 1.0/0.0). Appended at
     # the END so the offline calibration CSV column order stays append-only.
     "unit_gate",
+    # Task 8 — structural text features (capture-only, diagnostics-only).
+    # Computed from chunk_text at score time ONLY under return_components=True
+    # (the hot selection path skips them). Appended at the END per append-only
+    # discipline.
+    #   digit_density     = digit chars / max(1, len(text))
+    #   label_value_lines = count of "- <label>: <value>" shaped lines, capped 20
+    #   unit_token_count  = distinct signature unit synonyms matched, capped 20
+    "digit_density",
+    "label_value_lines",
+    "unit_token_count",
 )
 
 
@@ -309,6 +336,7 @@ def score_candidates(
     cfg: "RetrievalProfile",
     *,
     return_components: bool = False,
+    unit_signature: tuple[str, ...] = (),
 ) -> (
     list[tuple["MergedCandidate", float]]
     | list[tuple["MergedCandidate", float, dict[str, Any]]]
@@ -382,6 +410,23 @@ def score_candidates(
       simply also emitted. ``final_score`` inside the dict is identical to the
       float in the pair, and ``cosine`` mirrors ``mc.vector_score`` (None → 0.0)
       so the offline calibration can read the absolute dense channel too.
+
+    Task 8 — structural text features (``return_components=True`` only):
+      Three name-free text statistics per candidate are appended at the end of
+      the components dict (keys ``digit_density``, ``label_value_lines``,
+      ``unit_token_count``). They are computed ONLY when ``return_components``
+      is True — the hot selection path (``return_components=False``) skips them
+      entirely to stay byte-identical with pre-Task-8 behavior.
+
+      All three features are computed on the NFC-folded text (one ``nfc()``
+      fold per candidate, reused for all three), which lowercases and
+      normalises Unicode. This is the right choice for consistency with the
+      unit matcher (which also operates on nfc-folded text) and has no
+      meaningful impact on digit counting or label-value line detection.
+
+      ``unit_signature`` — keyword-only, default ``()`` — is passed through
+      from the caller (``score_components_for_pool`` → ``extraction_routing``
+      capture site). When empty, ``unit_token_count`` is always 0.
     """
     if not candidates:
         return []
@@ -486,6 +531,16 @@ def score_candidates(
         # the SAME values used for final above — no recompute/drift. cosine is
         # the absolute dense channel (mc.vector_score; None → 0.0), not a C5
         # term. Keys match COMPONENT_KEYS.
+        #
+        # Task 8 — structural text features computed below ONLY when
+        # return_components is True (the hot path short-circuits before here).
+        # One nfc() fold per candidate; reused for all three features.
+        if return_components:
+            _text_nfc = _nfc(mc.chunk_text)
+            _text_len = len(_text_nfc)
+            _digit_density = sum(1 for ch in _text_nfc if ch.isdigit()) / max(1, _text_len)
+            _label_value_lines = min(20, len(_LABEL_VALUE_RE.findall(_text_nfc)))
+            _unit_token_count = _count_unit_tokens(_text_nfc, unit_signature)
         components: dict[str, Any] = {
             "candidate_key": mc.candidate_key,
             "cosine": float(mc.vector_score) if mc.vector_score is not None else 0.0,
@@ -508,6 +563,11 @@ def score_candidates(
             "mean_top3_field_cosine": mc.mean_top3_field_cosine,
             # Task 7 — G1 gate-union membership; capture-only, not a scoring term.
             "unit_gate": 1.0 if "unit" in mc.gate_flags else 0.0,
+            # Task 8 — structural text features; capture-only, not scoring terms.
+            # Computed only under return_components=True (see block above).
+            "digit_density": _digit_density if return_components else 0.0,
+            "label_value_lines": _label_value_lines if return_components else 0,
+            "unit_token_count": _unit_token_count if return_components else 0,
         }
 
         results.append((mc, final, sort_rr, components))
@@ -525,6 +585,7 @@ def score_candidates(
 def score_components_for_pool(
     candidates: list[dict[str, Any]],
     cfg: "RetrievalProfile",
+    unit_signature: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     """Return the per-candidate component dict for EVERY candidate in the pool.
 
@@ -538,8 +599,12 @@ def score_components_for_pool(
 
     Purely additive: it does not score, select, sort-differently, or mutate the
     pool. Keys per dict are :data:`COMPONENT_KEYS`.
+
+    ``unit_signature`` threads through to ``score_candidates`` for the Task 8
+    structural text features (``unit_token_count``).  Default ``()`` → count
+    is always 0 when the caller does not supply a signature.
     """
-    scored = score_candidates(candidates, cfg, return_components=True)
+    scored = score_candidates(candidates, cfg, return_components=True, unit_signature=unit_signature)
     return [comps for _mc, _final, comps in scored]
 
 

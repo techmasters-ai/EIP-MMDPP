@@ -2064,6 +2064,10 @@ _EXPECTED_COMPONENT_KEYS = {
     "mean_top3_field_cosine",
     # Task 7 — G1 gate-union membership flag (capture-only, 1.0/0.0)
     "unit_gate",
+    # Task 8 — structural text features (capture-only, diagnostics-only)
+    "digit_density",
+    "label_value_lines",
+    "unit_token_count",
 }
 
 
@@ -2563,13 +2567,22 @@ class TestUnitGateComponent:
         a.gate_flags.add("unit")
         assert b.gate_flags == set(), "gate_flags must not be shared across instances"
 
-    def test_unit_gate_in_component_keys_last(self):
-        """COMPONENT_KEYS gains 'unit_gate' at the END (append-only contract
-        for the offline calibration CSV column order)."""
+    def test_unit_gate_in_component_keys(self):
+        """COMPONENT_KEYS contains 'unit_gate' (append-only contract for the
+        offline calibration CSV column order). Task 8 appended three more keys
+        after unit_gate, so it is no longer the last entry — but it must still
+        precede the Task 8 keys (digit_density, label_value_lines,
+        unit_token_count)."""
         from app.services.extraction_candidate_scoring import COMPONENT_KEYS
 
         assert "unit_gate" in COMPONENT_KEYS
-        assert COMPONENT_KEYS[-1] == "unit_gate"
+        # unit_gate must appear before all Task 8 keys (append-only discipline).
+        ug_idx = COMPONENT_KEYS.index("unit_gate")
+        for task8_key in ("digit_density", "label_value_lines", "unit_token_count"):
+            t8_idx = COMPONENT_KEYS.index(task8_key)
+            assert ug_idx < t8_idx, (
+                f"unit_gate (idx {ug_idx}) must precede {task8_key} (idx {t8_idx})"
+            )
 
     def test_unit_gate_component_emitted_one_and_zero(self):
         """'unit_gate' is 1.0 for a candidate with gate_flags={'unit'} and 0.0
@@ -2661,3 +2674,243 @@ class TestScoreComponentsPoolNoCap:
             d["candidate_key"] for d in comps if d["unit_gate"] == 1.0
         )
         assert gated_flags == [f"c{i:02d}" for i in range(10, 14)]
+
+
+# ===========================================================================
+# Task 8 — structural text features (digit_density, label_value_lines,
+#           unit_token_count)
+# ===========================================================================
+#
+# Three name-free text statistics per candidate, computed at scoring time
+# ONLY under return_components=True (diagnostics path). The hot selection
+# path (return_components=False) skips them entirely — final_score and
+# ordering are byte-identical whether or not a unit_signature is passed.
+#
+# Features:
+#   digit_density     = digit chars / max(1, len(text))   [0.0 – 1.0]
+#   label_value_lines = count of lines matching
+#                       r"^\s*[-•]?\s*[^:\n]{2,40}:\s*\S"  capped at 20
+#   unit_token_count  = distinct pass-signature unit synonyms present,
+#                       capped at 20; 0 when signature empty
+#
+# All three run on the NFC-folded text for consistency with the unit matcher.
+# ===========================================================================
+
+
+class TestTask8StructuralFeatures:
+    """Core spec-block vs. prose ordering + boundary values."""
+
+    _SPEC = "- Peak Power: 180 kW\n- PRF: 2.8 kHz"
+    _PROSE = "the radar was developed in the early sixties"
+
+    def _pool(self, texts: list[str], sig: tuple[str, ...] = ()) -> list[dict]:
+        """Build a minimal scoring pool from a list of chunk texts."""
+        pool = []
+        for i, t in enumerate(texts):
+            pool.append(_make_scored_candidate(f"c{i}", chunk_text=t, reranker_score=0.8 - i * 0.1))
+        return pool
+
+    def test_digit_density_spec_above_prose(self):
+        """Spec-block has higher digit_density than prose text."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        pool = self._pool([self._SPEC, self._PROSE])
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True)
+        }
+        assert comps["c0"]["digit_density"] > comps["c1"]["digit_density"], (
+            f"spec digit_density={comps['c0']['digit_density']:.4f} must exceed "
+            f"prose={comps['c1']['digit_density']:.4f}"
+        )
+
+    def test_label_value_lines_spec_two_prose_zero(self):
+        """Spec block has 2 label-value lines; prose has 0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        pool = self._pool([self._SPEC, self._PROSE])
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True)
+        }
+        assert comps["c0"]["label_value_lines"] == 2, (
+            f"spec-block must yield 2 label_value_lines; got {comps['c0']['label_value_lines']}"
+        )
+        assert comps["c1"]["label_value_lines"] == 0, (
+            f"prose must yield 0 label_value_lines; got {comps['c1']['label_value_lines']}"
+        )
+
+    def test_unit_token_count_spec_two_prose_zero(self):
+        """With signature ('kw','khz'), spec gets 2 and prose gets 0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        sig = ("kw", "khz")
+        pool = self._pool([self._SPEC, self._PROSE])
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True, unit_signature=sig)
+        }
+        assert comps["c0"]["unit_token_count"] == 2, (
+            f"spec with sig=('kw','khz') must yield 2; got {comps['c0']['unit_token_count']}"
+        )
+        assert comps["c1"]["unit_token_count"] == 0, (
+            f"prose must yield 0; got {comps['c1']['unit_token_count']}"
+        )
+
+    def test_label_value_lines_capped_at_20(self):
+        """25 label-value lines → capped at 20."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        # Build 25 label-value lines
+        lines = "\n".join(f"- Field{i}: value{i}" for i in range(25))
+        pool = [_make_scored_candidate("c0", chunk_text=lines)]
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True)
+        }
+        assert comps["c0"]["label_value_lines"] == 20, (
+            f"label_value_lines must be capped at 20; got {comps['c0']['label_value_lines']}"
+        )
+
+    def test_unit_token_count_empty_signature_zero(self):
+        """Empty signature → unit_token_count == 0 for any text."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        pool = [_make_scored_candidate("c0", chunk_text=self._SPEC)]
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True, unit_signature=())
+        }
+        assert comps["c0"]["unit_token_count"] == 0
+
+    def test_unit_token_count_distinct_not_occurrences(self):
+        """'50 kw and 60 kw' with signature ('kw',) → 1 (distinct, not occurrences)."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        pool = [_make_scored_candidate("c0", chunk_text="50 kw and 60 kw")]
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(pool, cfg, return_components=True, unit_signature=("kw",))
+        }
+        assert comps["c0"]["unit_token_count"] == 1, (
+            "distinct semantics: 'kw' appears twice but counts as 1 distinct synonym"
+        )
+
+
+class TestTask8ComponentKeysPosition:
+    """COMPONENT_KEYS has the three new keys at the END (append-only contract)."""
+
+    def test_new_keys_at_end_of_component_keys(self):
+        """digit_density, label_value_lines, unit_token_count must be the LAST
+        three entries in COMPONENT_KEYS, in that order, preserving the
+        append-only column-order discipline for the offline calibration CSV."""
+        from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+        assert COMPONENT_KEYS[-3] == "digit_density", (
+            f"digit_density must be 3rd-from-last; COMPONENT_KEYS[-3:]={COMPONENT_KEYS[-3:]}"
+        )
+        assert COMPONENT_KEYS[-2] == "label_value_lines", (
+            f"label_value_lines must be 2nd-from-last"
+        )
+        assert COMPONENT_KEYS[-1] == "unit_token_count", (
+            f"unit_token_count must be last"
+        )
+
+    def test_all_three_keys_in_component_keys(self):
+        from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+        for key in ("digit_density", "label_value_lines", "unit_token_count"):
+            assert key in COMPONENT_KEYS, f"{key} missing from COMPONENT_KEYS"
+
+
+class TestTask8EmittedForEveryCandidate:
+    """All three features appear in every candidate's component dict via
+    score_components_for_pool — even for candidates with empty/zero text."""
+
+    def test_all_three_emitted_by_score_components_for_pool(self):
+        from app.services.extraction_candidate_scoring import score_components_for_pool
+
+        cfg = _make_profile()
+        pool = [
+            _make_scored_candidate("c0", chunk_text="- Peak Power: 50 kW\n- PRF: 10 kHz",
+                                   reranker_score=0.9),
+            _make_scored_candidate("c1", chunk_text="plain prose no spec lines",
+                                   reranker_score=0.5),
+            _make_scored_candidate("c2", chunk_text="", reranker_score=0.3),
+        ]
+        comps = score_components_for_pool(pool, cfg, unit_signature=("kw", "khz"))
+        assert len(comps) == 3
+        for d in comps:
+            assert "digit_density" in d, f"digit_density missing for {d.get('candidate_key')}"
+            assert "label_value_lines" in d
+            assert "unit_token_count" in d
+
+    def test_empty_chunk_text_yields_zero_features(self):
+        """Empty chunk_text → digit_density=0.0, label_value_lines=0, unit_token_count=0."""
+        from app.services.extraction_candidate_scoring import score_components_for_pool
+
+        cfg = _make_profile()
+        pool = [_make_scored_candidate("c0", chunk_text="")]
+        comps = score_components_for_pool(pool, cfg, unit_signature=("km",))
+        d = comps[0]
+        assert d["digit_density"] == pytest.approx(0.0)
+        assert d["label_value_lines"] == 0
+        assert d["unit_token_count"] == 0
+
+
+class TestTask8HotFeaturesEqualityNoImpactOnScore:
+    """HARD SAFETY: the three structural features are CAPTURE-ONLY.
+
+    A pool whose candidates carry different chunk_text values (which would
+    yield different structural features) must produce IDENTICAL final_score
+    and ordering compared to a pool with all the same OTHER scoring fields
+    but different chunk_text — because chunk_text is never read by the
+    scoring formula itself.  The structural features live only in the
+    components dict; they are NOT final_score terms.
+
+    Per the task spec (:1801 pattern): compare pools scored WITH vs WITHOUT
+    unit_signature — the scores must be identical since unit_token_count is
+    not a weight term.
+    """
+
+    def test_unit_signature_presence_does_not_alter_final_score(self):
+        """Scoring with unit_signature=('kw','mhz') vs unit_signature=() gives
+        identical final_score and ordering — the signature only feeds the
+        capture feature, not the formula."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.2)
+        pool_sig = [
+            _make_scored_candidate("c0", chunk_text="50 kw at 100 mhz", reranker_score=0.9),
+            _make_scored_candidate("c1", chunk_text="some prose text", reranker_score=0.5),
+            _make_scored_candidate("c2", chunk_text="- Range: 50 km\n- Speed: 800 kmh",
+                                   reranker_score=0.3),
+        ]
+        pool_nosig = [
+            _make_scored_candidate("c0", chunk_text="50 kw at 100 mhz", reranker_score=0.9),
+            _make_scored_candidate("c1", chunk_text="some prose text", reranker_score=0.5),
+            _make_scored_candidate("c2", chunk_text="- Range: 50 km\n- Speed: 800 kmh",
+                                   reranker_score=0.3),
+        ]
+        # Score with signature
+        res_sig = score_candidates(pool_sig, cfg, unit_signature=("kw", "mhz"))
+        # Score without signature (components not requested → hot path)
+        res_nosig = score_candidates(pool_nosig, cfg)
+
+        keys_sig = [mc.candidate_key for mc, _ in res_sig]
+        keys_nosig = [mc.candidate_key for mc, _ in res_nosig]
+        scores_sig = [s for _, s in res_sig]
+        scores_nosig = [s for _, s in res_nosig]
+
+        assert keys_sig == keys_nosig, (
+            "ordering must be byte-identical whether or not unit_signature is supplied"
+        )
+        assert scores_sig == scores_nosig, (
+            "final_score must be byte-identical — unit_signature is capture-only"
+        )

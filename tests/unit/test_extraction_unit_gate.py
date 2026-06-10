@@ -259,6 +259,113 @@ class TestRetrievalProfileUnitGate:
 
 
 # ---------------------------------------------------------------------------
+# 6. count_unit_tokens — Task 8 structural text feature
+# ---------------------------------------------------------------------------
+
+class TestCountUnitTokens:
+    """count_unit_tokens(text_nfc, signature) → int, capped at 20.
+
+    Counts DISTINCT matching synonyms, not occurrences. Uses the same
+    _compiled_unit_re matcher as chunk_passes_unit_gate so semantics
+    can never drift between the gate and this counter.
+    """
+
+    def test_import(self):
+        from app.services.extraction_unit_gate import count_unit_tokens  # noqa: F401
+
+    def test_basic_single_synonym_match(self):
+        """Single synonym present → 1."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("range is 50 km"), ("km",)) == 1
+
+    def test_two_synonyms_matched(self):
+        """Two distinct synonyms present → 2."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("50 kw at 60 mhz"), ("kw", "mhz")) == 2
+
+    def test_distinct_not_occurrences(self):
+        """Synonym appears multiple times but counts only once (distinct)."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        # "kw" appears twice; should count as 1 (distinct synonym, not occurrence)
+        assert count_unit_tokens(nfc("50 kw and 60 kw"), ("kw",)) == 1
+
+    def test_unmatched_synonym_not_counted(self):
+        """Synonym absent from text → not counted."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("range is 50 km"), ("mhz", "dbw")) == 0
+
+    def test_partial_match_word_boundary(self):
+        """'s' does NOT match 'sites' — token-bounded matching must apply.
+
+        The canonical word-boundary test from the task spec:
+          "50 sites" with ("s",) → 0
+        """
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        # "s" is a suffix of "sites"; token boundary must prevent the match
+        assert count_unit_tokens(nfc("50 sites"), ("s",)) == 0
+
+    def test_no_word_boundary_false_positive_months(self):
+        """'m' does NOT match 'months'."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("9 months of operation"), ("m",)) == 0
+
+    def test_empty_signature_returns_zero(self):
+        """Empty signature → always 0."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("50 km"), ()) == 0
+
+    def test_empty_text_returns_zero(self):
+        """Empty text → always 0."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens("", ("km",)) == 0
+
+    def test_cap_at_twenty(self):
+        """Signature with more than 20 matching synonyms → capped at 20."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+        from app.services.field_value_grounding import SUFFIX_UNITS
+
+        # Build a text that contains one token from every known unit group.
+        # There are more than 20 groups in SUFFIX_UNITS; each synonyms list
+        # has at least one entry. Build a signature of all known synonyms.
+        all_syns: list[str] = []
+        for syns in SUFFIX_UNITS.values():
+            all_syns.extend(syns)
+        # De-duplicate while preserving order (signature_for_fields yields sorted unique).
+        seen: set[str] = set()
+        sig: list[str] = []
+        for s in all_syns:
+            if s not in seen:
+                seen.add(s)
+                sig.append(s)
+        # Build a text that actually matches every synonym.
+        # Use "50 <syn>" patterns, one per synonym.
+        text = " ".join(f"50 {s}" for s in sig)
+        result = count_unit_tokens(nfc(text), tuple(sig))
+        assert result == 20, f"expected 20 (cap), got {result}"
+
+    def test_cyrillic_unit_synonym(self):
+        """Cyrillic unit synonym км is counted."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        assert count_unit_tokens(nfc("дальность 50 км"), ("км",)) == 1
+
+    def test_signature_with_unmatched_synonyms_counts_only_matched(self):
+        """Only matched synonyms count; unmatched ones are ignored."""
+        from app.services.extraction_unit_gate import count_unit_tokens
+
+        # Text has km but not mhz or dbw.
+        assert count_unit_tokens(nfc("range 50 km"), ("km", "mhz", "dbw")) == 1
+
+
+# ---------------------------------------------------------------------------
 # Helpers (local)
 # ---------------------------------------------------------------------------
 
