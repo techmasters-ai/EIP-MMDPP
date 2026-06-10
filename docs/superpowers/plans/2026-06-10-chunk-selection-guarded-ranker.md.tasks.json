@@ -36,7 +36,7 @@
   {
    "id": 5,
    "subject": "Task 5: Unit-signature derivation + G1 gate predicate module",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Schema-derived per-pass unit signature + pure G1 predicate (digit AND signature-unit token) via the shared matcher.\n\n**Files:**\n- app/services/extraction_unit_gate.py\n- app/services/extraction_query_builder.py\n- app/services/ontology_bundles.py\n- tests/unit/test_extraction_unit_gate.py\n\n**Acceptance Criteria:**\n- [ ] signature from record_cls.model_fields union of units_for\n- [ ] gate = digit AND has_unit_token (shared matcher)\n- [ ] gate superset of label on fixture\n- [ ] RetrievalProfile.unit_gate default False\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_extraction_query_builder.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_unit_gate.py\", \"app/services/extraction_query_builder.py\", \"app/services/ontology_bundles.py\", \"tests/unit/test_extraction_unit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_extraction_query_builder.py -v\", \"acceptanceCriteria\": [\"signature from record_cls.model_fields union of units_for\", \"gate = digit AND has_unit_token (shared matcher)\", \"gate superset of label on fixture\", \"RetrievalProfile.unit_gate default False\"]}\n```",
    "blockedBy": [
     1
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T14:00:00Z"
+ "lastUpdated": "2026-06-10T15:00:00Z"
 }
