@@ -25,7 +25,7 @@
   {
    "id": 4,
    "subject": "Task 4: Suspect-label audit + dataset re-export + re-baseline report (USER GATE)",
-   "status": "pending",
+   "status": "completed",
    "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** Regenerate 8-doc ground truth under hardened matcher + suffixes; audit suspect positive; Phase-0 report; PHASE GATE before Phase 1.\n\n**Files:**\n- reports/dataset_v1_relabel/\n- docs/operational/phase0-relabel-report-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] re-export same 8 runs into dataset_v1_relabel (never overwrite reports/dataset)\n- [ ] old-vs-new positive table + activated passes\n- [ ] SA2-SR71 c16 audited with (field,value,tier) evidence + decision\n- [ ] AUROC both LODO conventions\n- [ ] read-only DB\n- [ ] user go-ahead before Phase 1\n\n**Verify:** ls reports/dataset_v1_relabel/bakeoff_dataset.csv docs/operational/phase0-relabel-report-2026-06.md\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"reports/dataset_v1_relabel/\", \"docs/operational/phase0-relabel-report-2026-06.md\"], \"verifyCommand\": \"ls reports/dataset_v1_relabel/bakeoff_dataset.csv docs/operational/phase0-relabel-report-2026-06.md\", \"acceptanceCriteria\": [\"re-export same 8 runs into dataset_v1_relabel (never overwrite reports/dataset)\", \"old-vs-new positive table + activated passes\", \"SA2-SR71 c16 audited with (field,value,tier) evidence + decision\", \"AUROC both LODO conventions\", \"read-only DB\", \"user go-ahead before Phase 1\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"old\", \"dataset_v1\", \"35 positives\"], [\"new\", \"dataset_v1_relabel\", \"relabel\"]]}\n```",
    "blockedBy": [
     1,
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T12:30:00Z"
+ "lastUpdated": "2026-06-10T14:00:00Z"
 }
