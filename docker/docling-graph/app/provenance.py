@@ -1059,6 +1059,8 @@ def _vg_units_for(field: str) -> list[str]:
 
 
 def _vg_num_variants(value: Any) -> set[str]:
+    # Mirrors app/services/field_value_grounding.num_variants — update together.
+    # Two-decimal rendering ("10.60") matches trailing-zero table prints (Task 4b).
     out: set[str] = set()
     try:
         fv = float(value)
@@ -1070,6 +1072,7 @@ def _vg_num_variants(value: Any) -> set[str]:
         out.add(str(int(fv)))
     out.add(f"{fv:g}")
     out.add(str(value))
+    out.add(f"{fv:.2f}")
     return {s for s in out if s}
 
 

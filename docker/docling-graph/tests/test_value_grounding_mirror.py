@@ -85,3 +85,11 @@ def test_mirror_value_in_chunk(case):
     text = prov._vg_nfc(case["text"])
     got = prov._vg_value_in_chunk(set(case["num_strs"]), case["units"], text)
     assert got is (case["expect"] is not None)
+
+
+def test_mirror_num_variants_equivalence():
+    # pyproject pythonpath=["."] puts the worktree root on sys.path, so this
+    # resolves to the REAL app/services (not dg_app — see _load_dg_provenance).
+    from app.services.field_value_grounding import num_variants as app_nv
+    for v in (10.6, 2391, 2391.0, 0.5, "1,250", float("inf")):
+        assert prov._vg_num_variants(v) == app_nv(v), v

@@ -14,7 +14,7 @@ extraction pass on one document.
   pass extracted (target = `lineage_grounded`: a numeric+unit field value of one of
   the pass's OWN fields is found in the chunk text). This is the honest
   ground-truth for "did this chunk need to be sent to the LLM for this pass".
-- 116 positives / 1692 candidates (6.9%) — heavily imbalanced.
+- 35 positives / 1692 candidates (2.1%) — heavily imbalanced.
 
 ## Features (model inputs) — 10 columns
 cosine, rerank_norm, field_label_norm, pass_keyword_norm, anchor_text_norm, anchor_section_norm, section_norm, is_table, pattern_norm, negative_norm
@@ -33,13 +33,13 @@ cosine, rerank_norm, field_label_norm, pass_keyword_norm, anchor_text_norm, anch
 
 ## Per-document breakdown
 - SA-2 Guideline _ Зенитный Ракетный Комплекс С-75 Двина_ candidates= 450  positives=5
-- SA-2_and_SR-71_17_Apr_2020.pdf                          candidates= 378  positives=11
-- SA-2 Surface-to-Air Missile _ National Museum of the Un candidates=  90  positives=4
+- SA-2_and_SR-71_17_Apr_2020.pdf                          candidates= 378  positives=3
+- SA-2 Surface-to-Air Missile _ National Museum of the Un candidates=  90  positives=1
 - SNR-75 - Wikipedia.pdf                                  candidates=  63  positives=0
 - S-75 Dvina.pdf                                          candidates=  63  positives=1
 - V-75 SA-2 GUIDELINE.pdf                                 candidates=  54  positives=1
 - Images_Demo_Doc.pdf                                     candidates= 144  positives=1
-- Engagement and Fire Control Radars (S-Band, X-band).pdf candidates= 450  positives=93
+- Engagement and Fire Control Radars (S-Band, X-band).pdf candidates= 450  positives=23
 
 ## Two LODO conventions (read this — they differ on this small/imbalanced data)
 - **mean-per-fold** (what the analysis reports): train on N-1 docs, score the

@@ -1,6 +1,6 @@
 {
   "fit_n": 1692,
-  "fit_n_used": 116,
+  "fit_n_used": 35,
   "features": [
     "cosine",
     "rerank_norm",
@@ -14,21 +14,21 @@
     "negative_norm"
   ],
   "recall_floor": 1.0,
-  "fit_cv_auroc": 0.7461740236974139,
+  "fit_cv_auroc": 0.8603532819235509,
   "learned_weights": {
-    "cosine": 0.594755369706648,
-    "rerank_norm": 0.0019054687108469384,
-    "field_label_norm": -0.41559406832507784,
-    "pass_keyword_norm": -0.5560343179101933,
-    "anchor_text_norm": -0.25738840549719344,
-    "anchor_section_norm": 0.1926205987681475,
-    "section_norm": 0.1926205987681475,
+    "cosine": 1.4353229905649836,
+    "rerank_norm": 0.2711141051740361,
+    "field_label_norm": -0.5960715371029086,
+    "pass_keyword_norm": 0.2297302838825523,
+    "anchor_text_norm": -0.3158661305590549,
+    "anchor_section_norm": 0.3524131071693347,
+    "section_norm": 0.3524131071693347,
     "is_table": 0.0,
-    "pattern_norm": 0.20228209753581547,
-    "negative_norm": 0.16823796461725096
+    "pattern_norm": 0.14453858385210008,
+    "negative_norm": 0.34983645182995476
   },
   "fit_threshold_point": {
-    "threshold": 0.0014384692137091966,
+    "threshold": 4.3095358890442836e-05,
     "kept": 1692,
     "kept_frac": 1.0,
     "recall": 1.0

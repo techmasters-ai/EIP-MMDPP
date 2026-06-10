@@ -1,7 +1,7 @@
 {
   "target": "lineage_grounded",
   "n_candidates": 1692,
-  "n_positives": 116,
+  "n_positives": 35,
   "n_docs": 8,
   "features": [
     "cosine",
@@ -29,13 +29,13 @@
       "document_id": "128e48f9-06f9-459a-b2f0-6d42bf62c42d",
       "doc_filename": "SA-2_and_SR-71_17_Apr_2020.pdf",
       "candidates": 378,
-      "positives": 11
+      "positives": 3
     },
     "58767f3f-5112-4816-9427-e61d5d8c068b": {
       "document_id": "1915cd62-dc8e-45b9-9a11-2a3b8ff898af",
       "doc_filename": "SA-2 Surface-to-Air Missile _ National Museum of the United States Air Force\u2122 _ Display.pdf",
       "candidates": 90,
-      "positives": 4
+      "positives": 1
     },
     "e79a4866-750b-41e3-a4b4-521f3e31ff26": {
       "document_id": "10b39886-5322-4191-bb7c-96a57589dd60",
@@ -65,7 +65,7 @@
       "document_id": "dbb4edee-5f33-493e-8372-8c8890b9ff7e",
       "doc_filename": "Engagement and Fire Control Radars (S-Band, X-band).pdf",
       "candidates": 450,
-      "positives": 93
+      "positives": 23
     }
   }
 }

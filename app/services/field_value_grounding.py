@@ -75,10 +75,12 @@ def units_for(field: str) -> list[str]:
 def num_variants(value) -> set[str]:
     """String renderings of a numeric value to search for in chunk text.
 
-    Covers the integer form (``50``), the ``%g`` form (``50``/``2391.5``), and
-    the raw ``str(value)`` — so ``50.0`` matches the document's ``50``, and
-    ``2391.0`` matches ``2391``. Non-numeric values yield an empty set (caller
-    falls through to the anchor logic)."""
+    Covers the integer form (``50``), the ``%g`` form (``50``/``2391.5``), the
+    raw ``str(value)``, and the two-decimal form (``10.60``/``2391.00``) — so
+    ``50.0`` matches the document's ``50``, ``2391.0`` matches ``2391``, and
+    ``10.6`` matches a table's trailing-zero ``10.60`` (Task 4b). These are
+    only search needles; extra renderings are harmless. Non-numeric values
+    yield an empty set (caller falls through to the anchor logic)."""
     out: set[str] = set()
     try:
         fv = float(value)
@@ -90,6 +92,7 @@ def num_variants(value) -> set[str]:
         out.add(str(int(fv)))
     out.add(f"{fv:g}")
     out.add(str(value))
+    out.add(f"{fv:.2f}")
     return {s for s in out if s}
 
 

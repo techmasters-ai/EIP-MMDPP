@@ -52,10 +52,16 @@ def test_units_for_unitless_returns_empty():
 
 # --- num_variants ------------------------------------------------------------
 def test_num_variants_int_and_float_forms():
-    assert num_variants(50.0) == {"50", "50.0"}
-    assert num_variants(50) == {"50"}
+    assert num_variants(50.0) == {"50", "50.0", "50.00"}
+    assert num_variants(50) == {"50", "50.00"}
     # a true float keeps its %g + raw str forms.
     assert "2391" in num_variants(2391.0)
+
+
+def test_num_variants_two_decimal_rendering():
+    # docs print '10.60'; %g gives '10.6' only  (Task 4b, label authority fix)
+    assert "10.60" in num_variants(10.6)
+    assert "2391.00" in num_variants(2391)
 
 
 def test_num_variants_non_numeric_empty():
