@@ -51,6 +51,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "magnetron"
+        - "klystron"
+        - "traveling wave tube"
+        - "TWT"
+        - "duplexer"
+        - "power amplifier"
+        - "RF output"
+        - "average power"
+        - "duty cycle"
 
   - name: missile_identity
     phase: identity
@@ -84,6 +94,14 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "engagement envelope"
+        - "kill zone"
+        - "no-escape zone"
+        - "engagement boundary"
+        - "intercept envelope"
+        - "footprint"
+        - "slant range"
 
   - name: system_links
     phase: relationship

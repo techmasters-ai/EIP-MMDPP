@@ -56,15 +56,17 @@ from app.services.extraction_candidate_scoring import (
 )
 from app.services.extraction_query_builder import (
     build_retrieval_profile,
+    derive_pass_keywords,
     _record_cls_from_pass_cls,
 )
-from app.services.ontology_bundles import load_bundle_manifest
+from app.services.ontology_bundles import RetrievalProfile, load_bundle_manifest
 from app.services.ontology_templates import UnknownBundleError
 from app.services import reranker as rrk
 from app.services.table_normalization.tokens import count_bge_m3_tokens
 
 if TYPE_CHECKING:
     from app.services.graph_store import GraphEntityResult
+    from app.services.extraction_query_builder import PassRetrievalSignals
 
 router = APIRouter(tags=["extraction"])
 logger = logging.getLogger(__name__)
@@ -73,6 +75,42 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+
+def inject_pass_keywords(
+    profile: "RetrievalProfile | None",
+    signals: "PassRetrievalSignals",
+) -> "RetrievalProfile":
+    """Populate ``RetrievalProfile.lexical_keywords`` from the schema-derived
+    units when (and only when) the manifest left it empty.
+
+    The lexical-keyword router channel (``keyword_hit_counts`` →
+    ``pass_keyword_hits``) reads ``profile.lexical_keywords``, which is empty
+    everywhere because no manifest sets it — the signal is dead.  We back-fill
+    it with ``derive_pass_keywords(signals)`` (the per-field ``units`` deduped
+    against the alias vocabulary), giving the channel a generalizable,
+    instance-free needle list.
+
+    Precedence:
+      * If the manifest supplied a NON-EMPTY ``lexical_keywords`` list, keep it
+        verbatim (manifest overrides the derivation).
+      * Otherwise replace the empty list with the derived units.
+
+    ``RetrievalProfile`` is a pydantic ``BaseModel`` with ``extra="forbid"``;
+    the declared field is updated via ``model_copy(update=...)`` (immutable
+    update).  ``profile=None`` (no retrieval block) yields a default
+    ``RetrievalProfile`` carrying only the derived keywords.
+
+    Pure: no side effects, returns a new object.
+    """
+    base = profile if profile is not None else RetrievalProfile()
+
+    # Manifest override: a non-empty list always wins.
+    if base.lexical_keywords:
+        return base
+
+    derived = derive_pass_keywords(signals)
+    return base.model_copy(update={"lexical_keywords": derived})
 
 
 def _resolve_template_class(bundle_key: str, pass_def) -> type:
@@ -349,6 +387,14 @@ async def chunk_scope(
         template_cls = _resolve_template_class(body.bundle_key, pass_def)
         signals = build_retrieval_profile(pass_def, template_cls)
         query_text = signals.entity_query  # byte-identical to build_retrieval_query output
+        # Per-pass keyword population: back-fill profile.lexical_keywords from the
+        # schema-derived units when the manifest left it empty. The keyword router
+        # channel (keyword_hit_counts -> pass_keyword_hits) is otherwise dead because
+        # no manifest sets lexical_keywords. A manifest-supplied non-empty list is
+        # kept verbatim (inject_pass_keywords enforces that precedence). This only
+        # makes the raw feature non-constant; whether it CONTRIBUTES to the score is
+        # gated later by lexical_decomposed / pass_keyword_weight (calibration).
+        profile = inject_pass_keywords(profile, signals)
     except Exception as exc:
         logger.warning(
             "chunk-scope: template resolution failed for pass=%s: %r — "

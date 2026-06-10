@@ -447,14 +447,102 @@ class TestSectionHitCounts:
         result = section_hit_counts(rows, ["", None, "  "])
         assert result["r11"]["section_hits"] == 0
 
-    def test_likely_sections_accepted_optional_arg(self):
-        # v1 matches anchors; likely_sections is accepted but reserved for a
-        # later flag. Passing it must not raise and must not change v1 results.
+
+class TestSectionHitCountsLikelySections:
+    """Anchor-INDEPENDENT section signal — the ``likely_sections`` branch.
+
+    These schema-typed section-name strings (instance-free) come from each
+    field's ``json_schema_extra['retrieval']['likely_sections']`` and are
+    available at field-pass routing time even when ``anchors`` is empty (the
+    dispatch-ordering bug). They give the otherwise-dead ``section_norm`` /
+    ``anchor_section_norm`` feature a non-constant source.
+    """
+
+    def test_likely_section_in_section_path_with_empty_anchors(self):
+        # (a) EMPTY anchors but a likely_sections term in the section_path.
+        #     Proves the signal is anchor-independent.
+        rows = [_srow("ls1", section_path="Chapter 3 > Performance Characteristics")]
+        result = section_hit_counts(
+            rows, [], likely_sections=["Performance Characteristics"]
+        )
+        assert result["ls1"]["section_hits"] >= 1
+
+    def test_likely_section_in_headings(self):
+        # (b) likely_sections matching in the `headings` list.
+        rows = [_srow("ls2", headings=["Chapter 3", "Technical Specifications"])]
+        result = section_hit_counts(
+            rows, [], likely_sections=["Technical Specifications"]
+        )
+        assert result["ls2"]["section_hits"] >= 1
+
+    def test_anchors_and_likely_sections_combine(self):
+        # (c) BOTH an anchor AND a likely_sections term present → counts add.
+        rows = [_srow(
+            "ls3",
+            headings=["SNR-75 Fire Control", "Performance Characteristics"],
+        )]
+        result = section_hit_counts(
+            rows, ["SNR-75"], likely_sections=["Performance Characteristics"]
+        )
+        # 1 anchor match + 1 likely_section match = 2.
+        assert result["ls3"]["section_hits"] == 2
+
+    def test_neither_anchor_nor_likely_section_matches(self):
+        # (d) Neither matches → 0.
+        rows = [_srow("ls4", headings=["General Description"])]
+        result = section_hit_counts(
+            rows, ["SNR-75"], likely_sections=["Performance Characteristics"]
+        )
+        assert result["ls4"]["section_hits"] == 0
+
+    def test_likely_section_case_insensitive(self):
+        rows = [_srow("ls5", headings=["technical specifications"])]
+        result = section_hit_counts(
+            rows, [], likely_sections=["Technical Specifications"]
+        )
+        assert result["ls5"]["section_hits"] >= 1
+
+    def test_likely_section_cyrillic_nfc_parity(self):
+        composed = "Й"  # U+0419 (NFC)
+        decomposed = unicodedata.normalize("NFD", composed)  # U+0418 U+0306
+        assert composed != decomposed
+        rows = [_srow("ls6", headings=[f"Раздел {decomposed}"])]
+        result = section_hit_counts(
+            rows, [], likely_sections=[f"Раздел {composed}"]
+        )
+        assert result["ls6"]["section_hits"] >= 1
+
+    def test_blank_and_none_likely_sections_ignored(self):
+        # Defensive: empty-string / None likely_sections must not match all.
+        rows = [_srow("ls7", headings=["General Description"])]
+        result = section_hit_counts(rows, [], likely_sections=["", None, "  "])
+        assert result["ls7"]["section_hits"] == 0
+
+    def test_likely_section_absent_counts_zero(self):
+        rows = [_srow("ls8", headings=["General Description"])]
+        result = section_hit_counts(
+            rows, [], likely_sections=["Performance Characteristics"]
+        )
+        assert result["ls8"]["section_hits"] == 0
+
+    def test_default_likely_sections_preserves_anchor_only_behaviour(self):
+        # Omitting likely_sections (defaults to ()) must equal anchor-only v1.
+        rows = [_srow("ls9", headings=["SNR-75 fire control"])]
+        with_default = section_hit_counts(rows, ["SNR-75"])
+        explicit_empty = section_hit_counts(rows, ["SNR-75"], likely_sections=[])
+        assert with_default == explicit_empty
+        assert with_default["ls9"]["section_hits"] == 1
+
+    def test_likely_sections_now_contribute_additively(self):
+        # likely_sections is now an ACTIVE anchor-independent needle source.
+        # The heading "SNR-75 fire control" carries BOTH the anchor "SNR-75"
+        # (1) and the likely_section "fire control" (1) → additive 2.
+        # (Supersedes the old "accepted-but-unused" v1 contract.)
         rows = [_srow("r12", headings=["SNR-75 fire control"])]
         result = section_hit_counts(
             rows, ["SNR-75"], likely_sections=("fire control",),
         )
-        assert result["r12"]["section_hits"] == 1
+        assert result["r12"]["section_hits"] == 2
 
 
 # ---------------------------------------------------------------------------

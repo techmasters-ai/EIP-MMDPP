@@ -737,6 +737,174 @@ class TestCallExtractPass:
             )
             assert result == clean_empty
 
+    def test_clean_empty_pipeline_error_does_not_retry(self):
+        """The library raises ExtractionError on ANY empty extraction, so an
+        off-domain pass (e.g. missile pass on a radar-only doc) arrives as a
+        pipeline_error stub. When the quality gate failed ONLY for
+        empty_output / missing_root_instance, no batch errored, and no hard-
+        failure log signature fired, the LLM simply found nothing — a retry at
+        temp=0.1 is deterministically futile. Treat it as a legitimate
+        ZERO_YIELD (return the stub) instead of raising PassRetryable.
+
+        Mirrors the real EWIRDB missile-pass stub shape.
+        """
+        from app.workers.pipeline import _call_extract_pass
+
+        clean_empty_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {
+                    "ok": False,
+                    "reasons": ["missing_root_instance", "empty_output"],
+                },
+                "batch_errors": {},
+                "library_log": (
+                    "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                    "empty_output | path_counts={}\n"
+                    "[Extraction] Error extracting from DoclingDocument: "
+                    "Failed to extract data from DoclingDocument\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=clean_empty_stub),
+        ):
+            result = _call_extract_pass(
+                {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                 "document_id": "doc-1"},
+                timeout=10.0,
+            )
+            assert result == clean_empty_stub
+
+    def test_clean_empty_detected_from_library_log_when_structured_gate_absent(self):
+        """When the structured quality_gate field is missing, the detector
+        must fall back to the always-present captured library_log signature
+        ("Quality gate failed: <reasons>") to recognise the clean empty.
+        """
+        from app.workers.pipeline import _call_extract_pass
+
+        stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "library_log": (
+                    "[DeltaExtraction] Quality gate failed: empty_output | "
+                    "path_counts={}\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=stub),
+        ):
+            result = _call_extract_pass(
+                {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                 "document_id": "doc-1"},
+                timeout=10.0,
+            )
+            assert result == stub
+
+    def test_pipeline_error_with_hard_failure_signature_still_retries(self):
+        """A pipeline_error whose log carries a HARD-failure signature
+        (LLM returned no valid JSON — a transient parse/truncation failure)
+        must STILL raise PassRetryable. A retry can genuinely recover it.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        hard_fail_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {"ok": False, "reasons": ["empty_output"]},
+                "library_log": (
+                    "[LlmBackend] No valid JSON returned from LLM after retries\n"
+                    "[DeltaExtraction] Quality gate failed: empty_output\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=hard_fail_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    def test_pipeline_error_with_batch_errors_still_retries(self):
+        """A pipeline_error with non-empty batch_errors means a batch genuinely
+        failed (not a clean off-domain empty) — must STILL raise PassRetryable.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        batch_err_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {"ok": False, "reasons": ["empty_output"]},
+                "batch_errors": {"3": "JSONDecodeError: unterminated string"},
+                "library_log": "[DeltaExtraction] Quality gate failed: empty_output\n",
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=batch_err_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    def test_pipeline_error_without_empty_signal_still_retries(self):
+        """A bare pipeline_error with NO quality-gate / log empty signal is
+        ambiguous (could be a real internal failure) — conservative default is
+        to retry, exactly as before this change.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        bare_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "PipelineError",
+                    "message": "stage 'Extraction' failed",
+                },
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=bare_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
 
 # ---------------------------------------------------------------------------
 # Plan Task 9 — _parse_pass_response reads response_json["table_overlay"]

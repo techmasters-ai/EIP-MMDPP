@@ -41,6 +41,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "magnetron"
+        - "klystron"
+        - "traveling wave tube"
+        - "TWT"
+        - "duplexer"
+        - "power amplifier"
+        - "RF output"
+        - "average power"
+        - "duty cycle"
 
   - name: radar_antenna
     phase: field_group
@@ -58,6 +68,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "reflector"
+        - "feed horn"
+        - "parabolic"
+        - "phased array"
+        - "sidelobe"
+        - "boresight"
+        - "radome"
+        - "array face"
+        - "aperture"
 
   - name: radar_timing
     phase: field_group
@@ -75,6 +95,14 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "antenna rotation"
+        - "rotation period"
+        - "scan rate"
+        - "revisit"
+        - "pulse repetition interval"
+        - "interpulse"
+        - "rpm"
 
   - name: radar_modulation
     phase: field_group
@@ -92,6 +120,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "pulse compression"
+        - "matched filter"
+        - "chirp"
+        - "Barker"
+        - "coherent integration"
+        - "frequency agility"
+        - "phase coding"
+        - "modulation on pulse"
+        - "MOP"
 
   - name: missile_identity
     phase: identity
@@ -121,6 +159,14 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "engagement envelope"
+        - "kill zone"
+        - "no-escape zone"
+        - "engagement boundary"
+        - "intercept envelope"
+        - "footprint"
+        - "slant range"
 
   - name: missile_guidance
     phase: field_group
@@ -138,6 +184,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "seeker"
+        - "homing"
+        - "midcourse"
+        - "proportional navigation"
+        - "command link"
+        - "datalink"
+        - "illuminator"
+        - "gimbal"
+        - "terminal phase"
 
   - name: missile_airframe
     phase: field_group
@@ -155,6 +211,16 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "fuselage"
+        - "fins"
+        - "canard"
+        - "wingspan"
+        - "fin span"
+        - "control surfaces"
+        - "nose cone"
+        - "airframe"
+        - "warhead"
 
   - name: missile_speed_timing
     phase: field_group
@@ -172,6 +238,15 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "burnout"
+        - "boost phase"
+        - "coast phase"
+        - "flyout"
+        - "terminal velocity"
+        - "supersonic"
+        - "hypersonic"
+        - "mach"
 
   - name: missile_propulsion
     phase: field_group
@@ -189,6 +264,17 @@ passes:
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
+      lexical_keywords:
+        - "rocket motor"
+        - "propellant"
+        - "nozzle"
+        - "specific impulse"
+        - "solid propellant"
+        - "liquid propellant"
+        - "oxidizer"
+        - "grain"
+        - "thrust"
+        - "fuel"
 
   - name: system_links
     phase: relationship

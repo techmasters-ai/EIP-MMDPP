@@ -18,11 +18,13 @@ Each test builds:
     ``load_pass_output``, ``_claim_and_dispatch_pass``, ``claim_phase``,
     ``mark_phase_dispatched``, and ``celery_app.send_task``.
 
-Invariants tested (C1.6r):
-  (a) Branch 1 (entity): identity and field_group share the cap; identity-
-      first ordering is scheduling preference only, NOT a hard gate.
-  (b) Concurrent entity dispatch: field_group passes are eligible while
-      identity passes are still in-flight (no serialization gate).
+Invariants tested (C1.6r + C8 anchor gate):
+  (a) Branch 1 (entity): identity passes dispatch first; a field_group pass is
+      eligible ONLY once ALL identity passes are terminal (C8 anchor-channel
+      hard gate — identity entities must be committed before any field pass
+      dispatches).
+  (b) Identity gate: field_group passes are NOT eligible while any identity
+      pass is still in-flight; they flow in once the identity gate opens.
   (c) All-entity-terminal gate: system_links is NOT dispatched until ALL
       entity passes (identity ∪ field_group) are terminal.
   (d) Relationship-terminal-before-merge: merge is NOT dispatched until
@@ -153,10 +155,12 @@ class TestBranch1EntityDispatch:
     def test_dispatches_first_identity_when_none_in_flight(self):
         """With no passes dispatched yet, Branch 1 dispatches the first identity pass."""
         calls = self._run({})
-        assert len(calls) == 1
-        assert calls[0] in ("radar_identity", "missile_identity"), (
-            f"Expected an identity pass (first in list), got {calls[0]!r}"
-        )
+        # Loop-fill: the cold-start wave dispatches identity passes up to the
+        # concurrency cap (field passes are gated until all identity terminal),
+        # not exactly one.
+        assert len(calls) >= 1 and all(
+            c in ("radar_identity", "missile_identity") for c in calls
+        ), f"Expected only identity passes in the cold-start wave, got {calls!r}"
 
     def test_dispatches_second_identity_when_first_in_flight(self):
         """One identity in-flight, cap=4 → second identity dispatched (identity first in list)."""
@@ -176,26 +180,24 @@ class TestBranch1EntityDispatch:
         calls = self._run(dispatched_phases, concurrency_cap=2)
         assert len(calls) == 0
 
-    def test_field_group_dispatched_when_identity_in_flight_and_cap_allows(self):
-        """C1.6r: field_group passes are eligible while identity is in-flight.
+    def test_field_group_NOT_dispatched_while_an_identity_pass_in_flight(self):
+        """C8 anchor fix: field_group passes are GATED on ALL identity terminal.
 
         With radar_identity in-flight, missile_identity terminal, and cap=4,
-        Branch 1 dispatches the next un-started entity pass from the ordered
-        list (identity first, then field_group).  missile_identity is
-        terminal, so the next eligible pass is radar_power_rf (field_group).
-        This confirms the strict serialization gate is removed.
+        identity is NOT all-terminal (radar_identity still running) so field
+        passes are not yet eligible.  The only remaining identity pass
+        (radar_identity) is in-flight, so there is no eligible entity pass and
+        Branch 1 dispatches nothing.  This is the core C8 ordering guarantee:
+        no field pass slips in before all identity passes terminalize (and
+        commit their identity-entity anchors).
         """
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "dispatched"},   # in-flight
             "entity_pass_missile_identity": {"state": "completed"},   # terminal
         }
         calls = self._run(dispatched_phases, concurrency_cap=4)
-        # Branch 1 should dispatch the next un-started entity: radar_power_rf
-        # (first field_group pass, since missile_identity is already terminal and
-        # radar_identity is in-flight).
-        assert len(calls) == 1
-        assert calls[0] in ("radar_power_rf", "missile_kinematics"), (
-            f"Expected a field_group pass (identity in-flight but cap allows); got {calls}"
+        assert len(calls) == 0, (
+            f"Field pass must NOT dispatch while an identity pass is in-flight; got {calls}"
         )
 
 
@@ -204,10 +206,22 @@ class TestBranch1EntityDispatch:
 # ---------------------------------------------------------------------------
 
 class TestConcurrentEntityDispatch:
-    """C1.6r: field_group passes are eligible alongside identity — no serialization gate."""
+    """C8 anchor fix: field_group passes are GATED on ALL identity terminal.
 
-    def test_field_group_eligible_while_identity_in_flight(self):
-        """Both identity passes in-flight, cap=4 → field_group dispatched next."""
+    (Renamed-in-spirit from the C1.6r "no serialization gate" semantics: the C8
+    anchor channel requires identity entities to be committed BEFORE any field
+    pass dispatches, so field passes are now hard-gated on all-identity-terminal.
+    A FAILED-optional identity pass still counts as terminal, preserving
+    fail-open.)
+    """
+
+    def test_field_group_NOT_eligible_while_identity_in_flight(self):
+        """Both identity passes in-flight, cap=4 → field GATED → no dispatch.
+
+        Identity is not all-terminal (both still running) so field passes are
+        not eligible, and both identity passes are already in-flight, so there
+        is nothing left to dispatch.
+        """
         manifest = _make_manifest(_FULL_PASSES)
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "dispatched"},
@@ -229,10 +243,43 @@ class TestConcurrentEntityDispatch:
              patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        # identity passes in-flight, cap=4 → field_group is next in list
-        assert len(dispatched_calls) == 1
-        assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
-            f"Expected field_group dispatch while identity in-flight; got {dispatched_calls}"
+        # identity passes in-flight (not terminal) → field GATED → no dispatch
+        assert len(dispatched_calls) == 0, (
+            f"Field pass must NOT dispatch while identity in-flight (C8 gate); got {dispatched_calls}"
+        )
+
+    def test_field_group_eligible_once_all_identity_terminal(self):
+        """Both identity terminal, cap=4 → first field_group pass dispatched.
+
+        Once the identity gate opens, field passes flow in (identity-then-field
+        ordering).  This is the positive counterpart to the gate test above.
+        """
+        manifest = _make_manifest(_FULL_PASSES)
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "completed"},
+            "entity_pass_missile_identity": {"state": "completed"},
+        }
+        run = _make_run(dispatched_phases)
+        db = _make_db(run)
+
+        dispatched_calls = []
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
+            dispatched_calls.append(pass_name)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        # Loop-fill: once the identity gate opens, field passes dispatch up to
+        # the concurrency cap (not one-per-finisher). The manifest has 2
+        # field_group passes — both dispatched, identity-then-field order.
+        assert dispatched_calls == ["radar_power_rf", "missile_kinematics"], (
+            f"Expected both field_group passes (cap-fill) once identity all-terminal; got {dispatched_calls}"
         )
 
     def test_failed_optional_entity_pass_counts_as_terminal(self):
@@ -269,10 +316,10 @@ class TestConcurrentEntityDispatch:
              patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        # FAILED-optional identity counts as terminal; next entity pass dispatched.
-        assert len(dispatched_calls) == 1
-        assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
-            f"Expected a field_group pass after FAILED-optional identity; got {dispatched_calls!r}"
+        # FAILED-optional identity counts as terminal; loop-fill then dispatches
+        # the field_group passes up to the concurrency cap.
+        assert dispatched_calls == ["radar_power_rf", "missile_kinematics"], (
+            f"Expected both field_group passes after FAILED-optional identity; got {dispatched_calls!r}"
         )
 
     def test_no_dispatch_when_all_entity_in_flight_at_cap(self):
@@ -631,11 +678,15 @@ class TestBackCompatNoFieldGroupPasses:
 # (g) One-dispatch-per-finisher rule preserved
 # ---------------------------------------------------------------------------
 
-class TestOneDispatchPerFinisher:
-    """_try_advance_phase must return after exactly one dispatch."""
+class TestCapFill:
+    """_try_advance_phase fills the concurrency cap (loop-dispatch), not one
+    dispatch per finisher — this restores field-pass concurrency once the
+    identity gate opens (see _next_entity_pass_to_dispatch). Pre-fix this
+    collapsed field-pass concurrency to 1 and serialized the field phase."""
 
-    def test_only_one_dispatch_per_call(self):
-        """With many eligible passes, only one is dispatched per invocation."""
+    def test_fills_cap_with_identity_wave_at_cold_start(self):
+        """With many eligible passes and cap=4, the cold-start wave dispatches
+        identity passes up to the cap (field gated until identity terminal)."""
         manifest = _make_manifest(_FULL_PASSES)
         # Nothing dispatched yet.
         dispatched_phases = {}
@@ -655,8 +706,10 @@ class TestOneDispatchPerFinisher:
              patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        assert len(dispatched_calls) == 1, (
-            f"Expected exactly 1 dispatch but got {len(dispatched_calls)}: {dispatched_calls}"
+        # Loop-fill: both identity passes dispatched to fill the cap (field
+        # passes gated until identity terminal). Was "exactly 1" pre-fix.
+        assert dispatched_calls == ["radar_identity", "missile_identity"], (
+            f"Expected the identity wave to fill the cap; got {dispatched_calls}"
         )
 
 

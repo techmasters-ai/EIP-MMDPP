@@ -721,6 +721,13 @@ class MultiChannelState:
     lex_hits: "dict[str, dict]"              # C2 lexical hit counts keyed by candidate_key
     pat_hits: "dict[str, dict]"              # C3 pattern hit counts keyed by candidate_key
     raw_row_count: int                       # snapshot of len(rows)
+    # SECTION signal (anchor-independent): the pass's expected section names,
+    # already NFC+casefolded ONCE — the union of each field's
+    # ``json_schema_extra['retrieval']['likely_sections']``. Threaded so the
+    # E2 fallback ladder (build_pool_from_multi_channel_state) can reuse it
+    # without access to the PassRetrievalSignals. Empty list when the pass has
+    # no likely_sections → byte-identical to the anchor-only behaviour.
+    likely_sections: "list[str]" = field(default_factory=list)
 
 
 def build_pool_from_multi_channel_state(
@@ -768,14 +775,22 @@ def build_pool_from_multi_channel_state(
     cap = top_n_override if top_n_override is not None else cfg.top_n_candidates
 
     # SECTION signal (router-scoring): normalise anchors ONCE and compute the
-    # anchor-vs-heading hit counts over the pre-fetched rows. Empty anchors →
-    # sec_hits keyed-but-zero, byte-identical to the old section_meta={} literal.
+    # anchor-vs-heading hit counts over the pre-fetched rows. The pass's
+    # anchor-independent ``likely_sections`` needles ride on ``state`` (already
+    # NFC+casefolded once by search_extraction_chunks_multi_channel_full), so
+    # the section signal stays live across the fallback ladder even when anchors
+    # are empty. Empty anchors AND empty likely_sections → sec_hits keyed-but-
+    # zero, byte-identical to the old section_meta={} literal.
     normalised_anchors = [
         unicodedata.normalize("NFC", a).casefold()
         for a in (identity_anchors or [])
         if a
     ]
-    sec_hits = section_hit_counts(state.rows, normalised_anchors)
+    sec_hits = section_hit_counts(
+        state.rows,
+        normalised_anchors,
+        likely_sections=getattr(state, "likely_sections", ()) or (),
+    )
 
     # If no identity anchors, re-run merge as-is (same dense inputs, same lex/pat).
     # This is useful for relaxed_dense (larger cap) without C8.
@@ -927,6 +942,20 @@ async def search_extraction_chunks_multi_channel_full(
     )
     raw_row_count = len(rows)
 
+    # SECTION signal (anchor-independent): the pass's expected section names —
+    # the union of each field's ``likely_sections`` already aggregated onto
+    # ``retrieval_signals.likely_sections`` by build_retrieval_profile. NFC +
+    # casefold ONCE (consistent with normalised_anchors below) and thread onto
+    # the state so the E2 fallback ladder can reuse it. These are schema-typed
+    # section-name strings (instance-free) → available even when anchors arrive
+    # empty at field-pass routing time, giving the section_norm feature a live
+    # source. Empty → byte-identical to the prior anchor-only behaviour.
+    normalised_likely_sections = [
+        unicodedata.normalize("NFC", s).casefold()
+        for s in getattr(retrieval_signals, "likely_sections", ()) or ()
+        if s and s.strip()
+    ]
+
     _empty_state = MultiChannelState(
         rows=rows,
         entity_dense=[],
@@ -934,6 +963,7 @@ async def search_extraction_chunks_multi_channel_full(
         lex_hits={},
         pat_hits={},
         raw_row_count=raw_row_count,
+        likely_sections=normalised_likely_sections,
     )
 
     if not rows:
@@ -999,7 +1029,12 @@ async def search_extraction_chunks_multi_channel_full(
         for a in (identity_anchors or [])
         if a
     ]
-    sec_hits = section_hit_counts(rows, normalised_anchors)
+    # Anchor matches + likely_section matches both feed section_hits. The
+    # likely_sections needles are anchor-independent (see above) so the section
+    # signal is non-constant even when anchors are empty.
+    sec_hits = section_hit_counts(
+        rows, normalised_anchors, likely_sections=normalised_likely_sections
+    )
 
     # Capture state for E2 fallback ladder BEFORE any mutation (C8 may mutate
     # merged_pool but the underlying entity_dense / field_dense are not mutated).
@@ -1010,6 +1045,7 @@ async def search_extraction_chunks_multi_channel_full(
         lex_hits=lex_hits,
         pat_hits=pat_hits,
         raw_row_count=raw_row_count,
+        likely_sections=normalised_likely_sections,
     )
 
     # ------------------------------------------------------------------

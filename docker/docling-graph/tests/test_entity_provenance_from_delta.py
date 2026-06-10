@@ -253,3 +253,194 @@ def test_path_bridge_keys_carry_list_suffix():
     # The bare (buggy) key must NOT be present — that is the exact miss the
     # old helper produced against the real delta catalog.
     assert "radar_systems" not in mapping
+
+
+# --- Per-field chunk origin from __property_provenance (the lineage fix) ------
+#
+# merge_delta_graphs stamps node["__property_provenance"][field] = [<batch
+# provenance dict>, ...] — one stamp per 1-chunk batch that emitted that
+# field's value. With 1-chunk batches each stamp's chunk_indexes/self_refs/
+# page_numbers point at the EXACT chunk the field's value came from. The
+# builder must stamp each field row with ITS field's batch origin, not the
+# entity node's aggregate (first-seen) span. This is the "50 km lives in
+# chunk 9, not the chunk where the name appears" fix.
+_BAND_ORIGIN_TEXT = "The radar operates in the X band."
+
+
+def _make_ctx_with_property_provenance():
+    """Entity SNR-75 is first-seen in chunk 0 (top-level provenance), but its
+    `band` field value was emitted in a DIFFERENT batch — chunk 5, page 25 —
+    recorded in __property_provenance. The merged top-level provenance keeps
+    the first-seen (chunk 0) span; only __property_provenance knows band's true
+    origin."""
+    return _Ctx({
+        "nodes": [
+            {
+                "path": RADAR_NODE_PATH,
+                "node_type": "RadarSystemEntity",
+                "ids": {"system_name": "SNR-75"},
+                "properties": {"system_name": "SNR-75", "band": "X"},
+                "__delta_node_uid": "b0:n0",
+                # Top-level (entity) provenance = the FIRST batch the entity was
+                # seen in (chunk 0, where the NAME appears) — NOT where band's
+                # value lives.
+                "provenance": {
+                    "self_refs": ["#/texts/3"],
+                    "chunk_indexes": [0],
+                    "page_numbers": [19],
+                    "cited_refs": ["#/texts/3"],
+                    "evidence_ids": ["#/texts/3"],
+                    "property_evidence": {},
+                },
+                # Per-field origin recorded by merge_delta_graphs: band came
+                # from chunk 5 (page 25), system_name from chunk 0 (page 19).
+                "__property_provenance": {
+                    "system_name": [{
+                        "self_refs": ["#/texts/3"],
+                        "chunk_indexes": [0],
+                        "page_numbers": [19],
+                        "evidence_ids": ["#/texts/3"],
+                    }],
+                    "band": [{
+                        "self_refs": ["#/texts/40"],
+                        "chunk_indexes": [5],
+                        "page_numbers": [25],
+                        "evidence_ids": ["#/texts/40"],
+                    }],
+                },
+            },
+        ],
+        "relationships": [],
+    })
+
+
+_PROPERTY_PROV_EVIDENCE_UNITS = {
+    0: [{"evidence_id": "#/texts/3", "text": "The SNR-75 is a radar system."}],
+    5: [{"evidence_id": "#/texts/40", "text": _BAND_ORIGIN_TEXT}],
+}
+
+
+def test_field_provenance_uses_per_field_chunk_origin_not_entity_span():
+    """THE FIX: band's value was emitted in chunk 5 (page 25), recorded in
+    __property_provenance — even though the entity node's top-level provenance
+    is chunk 0 (page 19, where the name appears). The band field row MUST carry
+    chunk 5 / page 25 / #/texts/40 — its OWN batch origin — not the entity's
+    first-seen chunk 0 span."""
+    ctx = _make_ctx_with_property_provenance()
+    entity_rows, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None,
+        chunk_to_evidence_units=_PROPERTY_PROV_EVIDENCE_UNITS,
+    )
+    band_row = next(f for f in field_rows if f.field_name == "band")
+    # band's PRECISE per-field origin — chunk 5, NOT the entity's chunk 0.
+    assert band_row.chunk_indexes == [5], band_row.chunk_indexes
+    assert band_row.chunk_index == 5
+    assert band_row.self_refs == ["#/texts/40"]
+    assert band_row.element_uid == "#/texts/40"
+    assert band_row.page == 25
+    # snippet resolved from the field's OWN chunk-5 evidence unit.
+    assert band_row.supporting_snippet == _BAND_ORIGIN_TEXT
+    # the entity row still reflects the first-seen chunk 0 (unchanged).
+    assert entity_rows[0].chunk_indexes == [0]
+
+
+def test_field_provenance_unions_multiple_batch_origins():
+    """A field emitted in TWO batches (chunk 5 and chunk 9) carries the UNION
+    of both origins so the field's lineage spans every chunk that produced its
+    value."""
+    ctx = _make_ctx_with_property_provenance()
+    node = ctx._delta_merged_graph["nodes"][0]
+    node["__property_provenance"]["band"].append({
+        "self_refs": ["#/texts/90"],
+        "chunk_indexes": [9],
+        "page_numbers": [31],
+        "evidence_ids": ["#/texts/90"],
+    })
+    _entity_rows, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None,
+        chunk_to_evidence_units=_PROPERTY_PROV_EVIDENCE_UNITS,
+    )
+    band_row = next(f for f in field_rows if f.field_name == "band")
+    assert band_row.chunk_indexes == [5, 9], band_row.chunk_indexes
+    assert set(band_row.self_refs) == {"#/texts/40", "#/texts/90"}
+
+
+def test_field_provenance_falls_back_to_entity_span_without_property_provenance():
+    """Backward compat: when a node has NO __property_provenance (legacy /
+    pre-merge-stamp graphs), field rows inherit the entity's positional span
+    exactly as before — no regression for the existing precise path."""
+    ctx = _make_ctx()  # the original fixture: no __property_provenance
+    _entity_rows, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None,
+        chunk_to_evidence_units=_EVIDENCE_UNITS,
+    )
+    band_row = next(f for f in field_rows if f.field_name == "band")
+    assert band_row.chunk_indexes == [0, 1]
+    assert band_row.self_refs == ["#/texts/3", "#/texts/4"]
+
+
+# --- VALUE-GROUNDING: a numeric field's row attributes to the chunk whose text
+#     CONTAINS the value, not the LLM's emission chunk (over-emission fix, #67).
+def _make_ctx_value_grounding():
+    """max_range_km=50 was EMITTED on chunk 0 (prose, no value), but the value
+    '50 km' physically lives in chunk 5. The committed lineage must point at
+    chunk 5 (where the value is), not chunk 0 (where the LLM emitted it)."""
+    return _Ctx({
+        "nodes": [
+            {
+                "path": RADAR_NODE_PATH,
+                "node_type": "RadarSystemEntity",
+                "ids": {"system_name": "SNR-75"},
+                "properties": {"system_name": "SNR-75", "max_range_km": 50},
+                "__delta_node_uid": "b0:n0",
+                "provenance": {
+                    "self_refs": ["#/texts/3"], "chunk_indexes": [0],
+                    "page_numbers": [19], "evidence_ids": ["#/texts/3"],
+                },
+                "__property_provenance": {
+                    "max_range_km": [{
+                        "self_refs": ["#/texts/3"], "chunk_indexes": [0],   # EMISSION chunk (no value)
+                        "page_numbers": [19], "evidence_ids": ["#/texts/3"],
+                    }],
+                },
+            },
+        ],
+        "relationships": [],
+    })
+
+
+_VG_EVIDENCE_UNITS = {
+    0: [{"evidence_id": "#/texts/3", "text": "The SNR-75 is a fire-control radar."}],   # no value
+    5: [{"evidence_id": "#/texts/40", "text": "The maximum range is 50 km against targets."}],
+}
+
+
+def test_field_row_value_grounds_to_chunk_containing_the_value():
+    ctx = _make_ctx_value_grounding()
+    _entity_rows, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None, chunk_to_evidence_units=_VG_EVIDENCE_UNITS,
+    )
+    row = next(f for f in field_rows if f.field_name == "max_range_km")
+    # value '50 km' lives in chunk 5 → row must point there, NOT emission chunk 0
+    assert row.chunk_indexes == [5], row.chunk_indexes
+    assert row.self_refs == ["#/texts/40"]
+    assert row.element_uid == "#/texts/40"
+
+
+def test_field_row_falls_back_to_emission_when_value_not_groundable():
+    """Non-text/null/unitless fields (or value absent from all chunks) keep the
+    emission-chunk attribution — value-grounding only overrides on a real hit."""
+    ctx = _make_ctx_value_grounding()
+    # blank the value text everywhere → nothing to ground
+    units = {0: [{"evidence_id": "#/texts/3", "text": "no numbers here"}],
+             5: [{"evidence_id": "#/texts/40", "text": "still no numbers"}]}
+    _e, field_rows = build_entity_provenance_from_delta_graph(
+        ctx, _Template, ExtractionProvenance, ExtractionFieldProvenance,
+        chunk_to_self_refs=None, chunk_to_evidence_units=units,
+    )
+    row = next(f for f in field_rows if f.field_name == "max_range_km")
+    assert row.chunk_indexes == [0]  # emission fallback unchanged

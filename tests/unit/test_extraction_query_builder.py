@@ -855,3 +855,124 @@ class TestB4FieldMetadataLoaded:
         assert "peak thrust" in fq_map["booster_thrust"].aliases
         assert "cruise thrust" in fq_map["sustain_thrust"].aliases
         assert "gas generator" in fq_map["ejector_thrust"].aliases
+
+
+# ---------------------------------------------------------------------------
+# 11. derive_pass_keywords — generalizable per-pass keyword population
+# ---------------------------------------------------------------------------
+
+def _make_signals(field_queries, lexical_terms):
+    """Build a minimal PassRetrievalSignals for keyword-derivation tests."""
+    from app.services.extraction_query_builder import PassRetrievalSignals
+
+    return PassRetrievalSignals(
+        pass_name="example_pass",
+        entity_doc="",
+        entity_query="",
+        field_queries=tuple(field_queries),
+        lexical_terms=tuple(lexical_terms),
+        negative_terms=(),
+        likely_sections=(),
+        evidence_patterns=(),
+    )
+
+
+def _make_fq(field_name, units, aliases=()):
+    """Build a minimal FieldRetrievalQuery carrying only the parts under test."""
+    from app.services.extraction_query_builder import FieldRetrievalQuery
+
+    return FieldRetrievalQuery(
+        field_name=field_name,
+        query_text="",
+        aliases=tuple(aliases),
+        negative_terms=(),
+        evidence_patterns=(),
+        likely_sections=(),
+        units=tuple(units),
+    )
+
+
+class TestDerivePassKeywords:
+    """derive_pass_keywords mines per-field ``units`` (generalizable, instance-free)
+    and dedupes them against the alias vocabulary already counted as field-label
+    hits, so it adds NEW lexical signal rather than double-counting."""
+
+    def test_returns_union_of_units_across_fields(self):
+        """Result is the insertion-ordered union of every field's units when no
+        alias overlaps."""
+        from app.services.extraction_query_builder import derive_pass_keywords
+
+        signals = _make_signals(
+            field_queries=[
+                _make_fq("erp_dbw", units=("dBW", "dBm", "W", "kW")),
+                _make_fq("nominal_rf_mhz", units=("MHz", "GHz", "kHz")),
+                _make_fq("tx_peak_power_kw", units=("kW", "W", "MW", "dBW")),
+            ],
+            lexical_terms=("ERP", "operating frequency", "peak power"),
+        )
+        result = derive_pass_keywords(signals)
+        # Union, insertion-ordered, deduped (kW/W/dBW appear in >1 field).
+        assert result == ["dBW", "dBm", "W", "kW", "MHz", "GHz", "kHz", "MW"]
+
+    def test_returns_list(self):
+        from app.services.extraction_query_builder import derive_pass_keywords
+
+        signals = _make_signals(
+            field_queries=[_make_fq("f", units=("km",))],
+            lexical_terms=("max range",),
+        )
+        result = derive_pass_keywords(signals)
+        assert isinstance(result, list)
+        assert result == ["km"]
+
+    def test_excludes_unit_that_is_also_an_alias(self):
+        """A unit string that ALSO appears in the alias vocabulary is dropped —
+        dedup is NFC + casefold, so case-insensitive overlap is removed."""
+        from app.services.extraction_query_builder import derive_pass_keywords
+
+        signals = _make_signals(
+            field_queries=[
+                # 'dBW' is also an alias of this field -> must be excluded.
+                _make_fq("erp_dbw", units=("dBW", "dBm")),
+            ],
+            # alias vocab carries 'DBW' in a different case to prove casefold dedup.
+            lexical_terms=("ERP", "DBW"),
+        )
+        result = derive_pass_keywords(signals)
+        assert "dBW" not in result
+        assert "dBm" in result
+        assert result == ["dBm"]
+
+    def test_empty_units_yields_empty_list(self):
+        from app.services.extraction_query_builder import derive_pass_keywords
+
+        signals = _make_signals(
+            field_queries=[_make_fq("f", units=())],
+            lexical_terms=("some alias",),
+        )
+        assert derive_pass_keywords(signals) == []
+
+    def test_no_field_queries_yields_empty_list(self):
+        from app.services.extraction_query_builder import derive_pass_keywords
+
+        signals = _make_signals(field_queries=[], lexical_terms=())
+        assert derive_pass_keywords(signals) == []
+
+    def test_real_radar_power_rf_derives_units(self):
+        """End-to-end against the production schema: derived keywords are the
+        radar_power_rf units, none of which collide with that pass's aliases."""
+        from app.services.extraction_query_builder import (
+            build_retrieval_profile,
+            derive_pass_keywords,
+        )
+
+        RadarPowerRfPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_power_rf",
+            "RadarPowerRfPass",
+        )
+        signals = build_retrieval_profile(None, RadarPowerRfPass)
+        result = derive_pass_keywords(signals)
+        assert result == ["dBW", "dBm", "W", "kW", "MW", "MHz", "GHz", "kHz"]
+        # None of the derived keywords may already be an alias (would double-count).
+        alias_cf = {a.casefold() for a in signals.lexical_terms}
+        assert not [kw for kw in result if kw.casefold() in alias_cf]

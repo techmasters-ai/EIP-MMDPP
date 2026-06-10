@@ -1323,3 +1323,94 @@ class TestE3DiagnosticsPopulated:
             "field_coverage_before_fallback must be a dict on multi-channel path; "
             f"got {type(diag['field_coverage_before_fallback'])!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-pass keyword injection — inject_pass_keywords
+# ---------------------------------------------------------------------------
+
+class TestInjectPassKeywords:
+    """The chunk-scope endpoint populates RetrievalProfile.lexical_keywords from
+    the schema-derived units (via derive_pass_keywords) ONLY when the manifest
+    left it empty. A manifest-supplied non-empty list always wins (override).
+
+    inject_pass_keywords encapsulates exactly that decision so it can be unit-
+    tested without spinning up the full ASGI endpoint.
+    """
+
+    @staticmethod
+    def _signals_with_units():
+        from app.services.extraction_query_builder import (
+            FieldRetrievalQuery,
+            PassRetrievalSignals,
+        )
+
+        fq = FieldRetrievalQuery(
+            field_name="erp_dbw",
+            query_text="",
+            aliases=("ERP",),
+            negative_terms=(),
+            evidence_patterns=(),
+            likely_sections=(),
+            units=("dBW", "dBm"),
+        )
+        return PassRetrievalSignals(
+            pass_name="radar_power_rf",
+            entity_doc="",
+            entity_query="",
+            field_queries=(fq,),
+            lexical_terms=("ERP",),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+        )
+
+    def test_populates_when_empty(self):
+        """profile.lexical_keywords == [] → set to derive_pass_keywords(signals)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.ontology_bundles import RetrievalProfile
+
+        profile = RetrievalProfile()  # lexical_keywords defaults to []
+        assert profile.lexical_keywords == []
+
+        out = inject_pass_keywords(profile, self._signals_with_units())
+        assert out.lexical_keywords == ["dBW", "dBm"]
+        # Other declared fields are preserved through the model_copy.
+        assert out.min_similarity == profile.min_similarity
+
+    def test_does_not_override_manifest_supplied(self):
+        """A non-empty manifest lexical_keywords is kept verbatim (manifest wins)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.ontology_bundles import RetrievalProfile
+
+        profile = RetrievalProfile(lexical_keywords=["custom_keyword"])
+        out = inject_pass_keywords(profile, self._signals_with_units())
+        assert out.lexical_keywords == ["custom_keyword"]
+
+    def test_none_profile_builds_default_and_injects(self):
+        """profile=None → a default RetrievalProfile is built and populated."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.ontology_bundles import RetrievalProfile
+
+        out = inject_pass_keywords(None, self._signals_with_units())
+        assert isinstance(out, RetrievalProfile)
+        assert out.lexical_keywords == ["dBW", "dBm"]
+
+    def test_empty_derivation_leaves_empty(self):
+        """No units to mine → lexical_keywords stays empty (no spurious needles)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.extraction_query_builder import PassRetrievalSignals
+        from app.services.ontology_bundles import RetrievalProfile
+
+        signals = PassRetrievalSignals(
+            pass_name="p",
+            entity_doc="",
+            entity_query="",
+            field_queries=(),
+            lexical_terms=(),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+        )
+        out = inject_pass_keywords(RetrievalProfile(), signals)
+        assert out.lexical_keywords == []

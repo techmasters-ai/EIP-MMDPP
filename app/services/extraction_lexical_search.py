@@ -256,32 +256,41 @@ def section_hit_counts(
         count; the SAME anchor listed twice contributes twice (mirrors
         ``lexical_hit_counts`` per-alias counting).
     likely_sections:
-        Accepted but UNUSED in v1 (reserved for a later flag that will also
-        boost chunks from sections named in the pass's ``likely_sections``).
-        Passing it must not change v1 results.
+        Anchor-INDEPENDENT section needles. These are the pass's expected
+        section-name strings (schema-typed, instance-free) — the union of each
+        field's ``json_schema_extra['retrieval']['likely_sections']``. Unlike
+        ``anchors`` (committed entity NAMES, which are empty at field-pass
+        routing time), they are available whenever the pass runs, so they give
+        the otherwise-constant ``section_norm`` feature a real source. Matched
+        against the SAME heading haystack as ``anchors`` (NFC + casefold
+        substring). Blank / ``None`` entries are skipped. Each matching term
+        contributes 1, ADDED to the anchor matches for that chunk. Defaults to
+        ``()`` → byte-identical to the anchor-only behaviour.
 
     Returns
     -------
     dict[str, dict]
         Keyed by candidate_key (``vertex_id`` preferred, ``self_ref``
         fallback). Each value has:
-        - ``section_hits`` (int) — number of ``anchors`` found in the chunk's
-          heading haystack.
+        - ``section_hits`` (int) — number of ``anchors`` PLUS ``likely_sections``
+          terms found in the chunk's heading haystack.
 
     Pure: no DB / no network. Consumed by C4 ``merge_candidates`` as the
     ``section_meta`` argument.
     """
-    # ``likely_sections`` is reserved for a later flag (v1 matches anchors).
-    # Reference it so linters don't flag the parameter as dead and so the
-    # intent (accepted-but-optional) is explicit.
-    _ = likely_sections
-
-    # Pre-normalise anchors once (NFC + casefold), dropping blanks / Nones so
-    # an empty needle can't substring-match every heading.
+    # Pre-normalise BOTH needle sources once (NFC + casefold), dropping blanks /
+    # Nones so an empty needle can't substring-match every heading. The two
+    # contributions are additive but tracked through the same single pass over
+    # the haystack — anchor matches + likely_section matches → section_hits.
     norm_anchors = [
         _nfc(a).casefold()
         for a in anchors
         if a and a.strip()
+    ]
+    norm_likely_sections = [
+        _nfc(s).casefold()
+        for s in likely_sections
+        if s and s.strip()
     ]
 
     result: dict[str, dict] = {}
@@ -305,6 +314,9 @@ def section_hit_counts(
         if haystack:
             for anchor in norm_anchors:
                 if anchor in haystack:
+                    section_hits += 1
+            for section in norm_likely_sections:
+                if section in haystack:
                     section_hits += 1
 
         result[key] = {"section_hits": section_hits}

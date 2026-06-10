@@ -30,6 +30,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Literal, Optional
@@ -2128,6 +2129,12 @@ def _resolve_field_evidence_chunk_ids(
 ):
     """Resolve a RESOLVED chunk_id onto every ``_field_evidence`` row of an
     entity (mutates rows in place).
+
+    Each field row already carries its PRECISE per-field source ref — the
+    docling-graph provenance builder now stamps every field with the chunk of
+    the batch that emitted that field's value (read from the merge-time
+    ``__property_provenance`` map), so the row's ``element_uid`` / ``self_refs``
+    point at the field's true origin chunk, not the entity's first-seen span.
 
     Per spec / Task 5 acceptance (Fix K — precise scalar anchor):
       * the SCALAR ``chunk_id`` is the row's OWN PRECISE per-field anchor — its
@@ -4411,6 +4418,84 @@ def _build_extract_pass_request(
     return body
 
 
+# Quality-gate reasons that mean "the LLM ran cleanly across every batch but
+# emitted nothing schema-matching" — i.e. a LEGITIMATE empty extraction (the
+# pass is off-domain for this document). At temp≈0 a retry reproduces the same
+# empty result, so these are NOT worth retrying.
+_CLEAN_EMPTY_GATE_REASONS = frozenset({"empty_output", "missing_root_instance"})
+
+# Captured-library-log substrings that mark a REAL (transient/hard) failure —
+# JSON-parse drift, truncation, a batch watchdog timeout, or a backend retry
+# loop. If any of these fired, the empty output is NOT a clean off-domain miss
+# and a retry can genuinely recover it. Keep this conservative: when in doubt,
+# retry (the pre-existing behavior).
+_HARD_FAILURE_LOG_SIGNATURES = (
+    "No valid JSON returned from LLM",
+    "Structured output failed",
+    "BATCH_HARD_TIMEOUT",
+    "falling back to direct",
+    "LiteLLMClient returned empty",
+    "retrying legacy",
+)
+
+_QUALITY_GATE_LOG_RE = re.compile(r"Quality gate failed:\s*([^|\n]+)")
+
+
+def _quality_gate_reasons(diagnostics: dict) -> set[str]:
+    """Extract the delta quality-gate reasons from a service response's
+    diagnostics. Prefers the structured ``quality_gate.reasons`` list; falls
+    back to parsing the always-present captured ``library_log`` line
+    (``Quality gate failed: a, b | ...``) when the structured field is absent
+    (delta_trace.json not surfaced on some raise paths). Returns an empty set
+    when no quality-gate signal is present at all.
+    """
+    qg = diagnostics.get("quality_gate")
+    if isinstance(qg, dict):
+        reasons = qg.get("reasons")
+        if isinstance(reasons, list) and reasons:
+            return {str(r).strip() for r in reasons if str(r).strip()}
+    log = diagnostics.get("library_log")
+    if isinstance(log, str) and log:
+        m = _QUALITY_GATE_LOG_RE.search(log)
+        if m:
+            return {r.strip() for r in m.group(1).split(",") if r.strip()}
+    return set()
+
+
+def _is_clean_empty_pipeline_error(diagnostics: dict, metadata: dict) -> bool:
+    """True iff a service ``pipeline_error`` stub represents a LEGITIMATE empty
+    extraction (an off-domain pass: the LLM ran cleanly on every batch and
+    found no schema-matching content) rather than a transient/hard failure a
+    retry could fix.
+
+    The upstream library raises ``ExtractionError`` on *any* empty extraction
+    (stages.py: ``if not extracted_model: raise``), so off-domain empties reach
+    the worker as pipeline_error stubs indistinguishable — by exception type
+    alone — from real failures. This classifier recovers the distinction from
+    the diagnostics so the off-domain case can take the ZERO_YIELD path
+    (COMPLETE/EMPTY, no retry) instead of burning ``pass_max_retries``
+    deterministic full-document re-scans.
+
+    Conservative by design: returns True ONLY on positive confirmation. Any
+    ambiguity — nonzero yield, a batch error, a hard-failure log signature, or
+    no quality-gate empty signal at all — falls through to the retry path.
+    """
+    node_count = (metadata or {}).get("node_count", 0) or 0
+    edge_count = (metadata or {}).get("edge_count", 0) or 0
+    if node_count or edge_count:
+        return False  # produced something — not an empty extraction
+    if diagnostics.get("batch_errors"):
+        return False  # a batch genuinely failed → retryable
+    log = diagnostics.get("library_log")
+    if isinstance(log, str):
+        if any(sig in log for sig in _HARD_FAILURE_LOG_SIGNATURES):
+            return False  # transient/hard failure marker → retryable
+    reasons = _quality_gate_reasons(diagnostics)
+    if not reasons:
+        return False  # no positive empty signal → keep current (retry) behavior
+    return reasons.issubset(_CLEAN_EMPTY_GATE_REASONS)
+
+
 def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     """Synchronous HTTP POST to the docling-graph /extract-pass endpoint.
 
@@ -4451,18 +4536,37 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     pass_name = request_body.get("pass_name", "?")
     document_id = request_body.get("document_id", "?")
     if pipeline_err:
-        logger.error(
-            "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
-            "error_type=%s error_msg=%s — service stubbed the response; "
-            "raising PassRetryable so the worker can retry instead of "
-            "silently treating it as success.",
-            bundle_key, pass_name, document_id,
-            pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
-        )
-        raise PassRetryable(
-            f"service pipeline_error: type={pipeline_err.get('type', '?')} "
-            f"msg={pipeline_err.get('message', '?')[:200]}"
-        )
+        if _is_clean_empty_pipeline_error(diagnostics, metadata):
+            # The library raised on an empty extraction, but every batch ran
+            # clean (no batch errors, no hard-failure log marker) and the
+            # quality gate failed only for off-domain emptiness. This pass is
+            # legitimately empty for this document — a retry at temp≈0 would
+            # deterministically reproduce the same empty result. Treat it as a
+            # ZERO_YIELD (COMPLETE/EMPTY) instead of FAILED-after-N-retries.
+            logger.error(
+                "EXTRACT_PASS_CLEAN_EMPTY bundle=%s pass=%s document_id=%s "
+                "error_type=%s quality_gate_reasons=%s — library raised on an "
+                "empty extraction but all batches ran clean; treating as a "
+                "legitimate off-domain ZERO_YIELD (COMPLETE/EMPTY), not "
+                "retrying a deterministic empty.",
+                bundle_key, pass_name, document_id,
+                pipeline_err.get("type", "?"),
+                sorted(_quality_gate_reasons(diagnostics)),
+            )
+            # Fall through to the ZERO_YIELD log + ``return payload`` below.
+        else:
+            logger.error(
+                "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
+                "error_type=%s error_msg=%s — service stubbed the response; "
+                "raising PassRetryable so the worker can retry instead of "
+                "silently treating it as success.",
+                bundle_key, pass_name, document_id,
+                pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
+            )
+            raise PassRetryable(
+                f"service pipeline_error: type={pipeline_err.get('type', '?')} "
+                f"msg={pipeline_err.get('message', '?')[:200]}"
+            )
     if node_count == 0 and edge_count == 0:
         logger.error(
             "EXTRACT_PASS_ZERO_YIELD bundle=%s pass=%s document_id=%s "
@@ -8008,6 +8112,51 @@ def _update_summary_stage_run(
         row.error_message = error
 
 
+def _next_entity_pass_to_dispatch(
+    identity_names: list[str],
+    field_names: list[str],
+    terminal_names,
+    in_flight_names,
+) -> str | None:
+    """Pick the next entity pass to dispatch under identity-first, field-gated ordering.
+
+    Selection rule (C8 anchor-channel fix): IDENTITY passes are dispatched first;
+    a FIELD-GROUP pass is only eligible once *every* identity pass is terminal.
+    This guarantees that by the time any field_group pass dispatches, the committed
+    identity-entity names exist in ``pipeline_pass_outputs`` so
+    ``_collect_committed_identity_anchors`` can populate the C8 anchor channel
+    (which is otherwise inert when a field pass dispatches concurrently with an
+    identity pass, before any identity entity is committed).
+
+    Terminality is FAIL-OPEN: ``terminal_names`` is derived from
+    ``mark_phase_terminal`` (state=='completed'), which covers SUCCEEDED +
+    FAILED + SKIPPED.  A FAILED-optional identity pass therefore counts as
+    terminal and does NOT block field passes from proceeding.
+
+    Edge cases:
+      - Zero identity passes → ``all(... for p in [])`` is True → field passes
+        are immediately eligible (no deadlock for identity-less bundles).
+      - All passes terminal/in-flight → returns None (caller dispatches nothing).
+
+    Args:
+        identity_names: identity-phase pass names, in manifest order.
+        field_names: field_group-phase pass names, in manifest order.
+        terminal_names: container of pass names already terminal (membership-tested).
+        in_flight_names: container of pass names currently claimed/dispatched.
+
+    Returns:
+        The next pass name to dispatch (identity preferred, field gated on all
+        identity terminal), or None when nothing is eligible.
+    """
+    identity_all_terminal = all(p in terminal_names for p in identity_names)
+    candidates = (identity_names + field_names) if identity_all_terminal else identity_names
+    return next(
+        (p for p in candidates
+         if p not in terminal_names and p not in in_flight_names),
+        None,
+    )
+
+
 def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     """Dispatch the next pass based on phase ordering (C1.6r — concurrent entity dispatch).
 
@@ -8086,10 +8235,10 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     _pass_def_by_name = {p.name: p for p in manifest.passes}
 
     # Combined entity passes: identity first (manifest order), then field_group.
-    # Identity entries appear before field_group in the list so when in_flight <
-    # cap, identity slots are filled preferentially — but this is scheduling
-    # preference, NOT a hard gate.  field_group passes become eligible
-    # immediately alongside identity passes.
+    # Identity entries appear before field_group in the list.  C8 anchor fix:
+    # field_group dispatch is now HARD-GATED on ALL identity passes being
+    # terminal (see _next_entity_pass_to_dispatch) so the committed-identity
+    # anchor channel is live by the time any field pass dispatches.
     all_entity_passes = identity_passes + field_group_passes
 
     # Shared helper: names of all entity passes (identity + field_group) that are
@@ -8111,32 +8260,53 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     # ------------------------------------------------------------------
     # Branch 1 — Entity (identity + field_group): dispatch next un-started
     # entity pass within the per-document concurrency budget.
-    # Identity passes are listed first so they get priority when cap space
-    # opens up, but field_group passes are NOT blocked on identity completion.
+    # Identity passes are dispatched first; a field_group pass is only eligible
+    # once ALL identity passes are terminal (C8 anchor-channel fix — see
+    # _next_entity_pass_to_dispatch).  FAIL-OPEN: a FAILED identity pass is in
+    # terminal_entity_names (mark_phase_terminal writes state='completed') so it
+    # still unblocks field passes.  Zero identity passes → field eligible at once.
     # ------------------------------------------------------------------
-    if in_flight < settings.pass_concurrency_per_document:
-        next_entity = next(
-            (p for p in all_entity_passes
-             if p not in terminal_entity_names and p not in in_flight_entity_names),
-            None,
+    # Loop-dispatch up to the per-document concurrency cap.  (Was: one dispatch
+    # per finisher — which collapsed field-pass concurrency to 1.  Once the
+    # identity gate opened, only the LAST identity finisher dispatched a single
+    # field pass and the freed cap slots were never refilled, so the field
+    # passes ran strictly serially.)  Filling the cap restores cap-wide
+    # concurrency for BOTH the identity wave and the field passes.  The gate is
+    # UNCHANGED: _next_entity_pass_to_dispatch still withholds every field pass
+    # until ALL identity passes are terminal, so both identity passes finish
+    # before any field pass starts.  Mirrors the initial-wave loop in the
+    # dispatcher.  claim_phase makes each dispatch atomic (lost claims no-op), so
+    # concurrent finishers cannot exceed the cap.
+    _local_in_flight = set(in_flight_entity_names)
+    _dispatched_any = False
+    while len(_local_in_flight) < settings.pass_concurrency_per_document:
+        next_entity = _next_entity_pass_to_dispatch(
+            identity_passes,
+            field_group_passes,
+            terminal_entity_names,
+            _local_in_flight,
         )
-        if next_entity is not None:
-            # IMPORTANT #1 (rev 18): read vr_index_built from PipelineRun.metrics
-            # to propagate the build result to _claim_and_dispatch_pass.  Refresh
-            # metrics from DB (may have been written by the initial dispatcher on a
-            # different session).  Default True (build succeeded) when the flag is
-            # absent — safe fail-open: if the endpoint is unavailable the HTTP call
-            # will fail-open via _call_chunk_scope_endpoint's try/except.
-            db.expire(run, ["metrics"])
-            db.refresh(run, ["metrics"])
-            _vr_index_built = (run.metrics or {}).get("vr_index_built", True)
-            _claim_and_dispatch_pass(
-                db, document_id, run_id, next_entity,
-                pass_def=_pass_def_by_name.get(next_entity),
-                bundle_key=run.ontology_bundle_key,
-                build_index_failed=not _vr_index_built,
-            )
-            return  # one dispatch per finisher
+        if next_entity is None:
+            break
+        # IMPORTANT #1 (rev 18): read vr_index_built from PipelineRun.metrics to
+        # propagate the build result to _claim_and_dispatch_pass.  Refresh metrics
+        # from DB (may have been written by the initial dispatcher on a different
+        # session).  Default True (build succeeded) when absent — safe fail-open:
+        # if the endpoint is unavailable the HTTP call fail-opens via
+        # _call_chunk_scope_endpoint's try/except.
+        db.expire(run, ["metrics"])
+        db.refresh(run, ["metrics"])
+        _vr_index_built = (run.metrics or {}).get("vr_index_built", True)
+        _claim_and_dispatch_pass(
+            db, document_id, run_id, next_entity,
+            pass_def=_pass_def_by_name.get(next_entity),
+            bundle_key=run.ontology_bundle_key,
+            build_index_failed=not _vr_index_built,
+        )
+        _local_in_flight.add(next_entity)
+        _dispatched_any = True
+    if _dispatched_any:
+        return  # dispatched to fill the cap
 
     # Guard: ALL entity passes (identity ∪ field_group) must be terminal
     # (any of SUCCEEDED/FAILED/SKIPPED) before relationship dispatch.
@@ -9769,18 +9939,19 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             }
 
         manifest = load_bundle_manifest(bundle_key)
-        # C1.6r: initial wave queues identity AND field_group passes up to the
-        # per-document concurrency cap.  Identity entries appear before
-        # field_group in the manifest, so identity slots fill first when cap
-        # space is limited — but identity completion is no longer a hard gate
-        # on field_group dispatch.  The strict identity-first serialization
-        # introduced in C1.6 was a C4a roster-dependency requirement; C4a is
-        # deferred indefinitely (rev 5 Q4), and VR uses schema-derived queries
-        # that do not require identity-pass output as an input.
-        entity_passes = [
-            p for p in manifest.passes
-            if p.phase in ("identity", "field_group")
+        # C8 anchor fix: the initial wave is IDENTITY-passes-only.  field_group
+        # passes flow in later via _try_advance_phase once ALL identity passes
+        # terminalize, so the committed-identity anchor channel is live before
+        # any field pass dispatches (a field pass racing the identity pass in the
+        # first wave finds an empty anchor set).  Selection reuses the shared
+        # _next_entity_pass_to_dispatch helper (Site A == Site B): at cold start
+        # (no terminal, no in-flight) it only ever yields identity passes, never
+        # a field pass, because identity is never all-terminal mid-wave.
+        _identity_pass_names = [p.name for p in manifest.passes if p.phase == "identity"]
+        _field_group_pass_names = [
+            p.name for p in manifest.passes if p.phase == "field_group"
         ]
+        _pass_def_by_name = {p.name: p for p in manifest.passes}
 
         # VR C.4 (rev 14 caller contract + rev 6 M5): load doc_json and build
         # the ExtractionChunk index BEFORE dispatching any field_group passes.
@@ -9895,11 +10066,29 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # reports the correct queued count in the except handler below.
         db2 = _get_db()
         try:
-            for pass_def in entity_passes[: settings.pass_concurrency_per_document]:
+            # Build the initial wave via the shared selector.  At cold start the
+            # terminal set is empty, so _next_entity_pass_to_dispatch only yields
+            # identity passes (field passes are gated on all-identity-terminal),
+            # giving an identity-only first wave up to the concurrency cap.  As
+            # each pass is dispatched we add it to _initial_in_flight so the next
+            # call advances to the following identity pass.  When there are no
+            # identity passes the selector immediately yields field passes, so
+            # identity-less bundles still fan out (no deadlock).
+            _initial_in_flight: set[str] = set()
+            for _ in range(settings.pass_concurrency_per_document):
+                next_name = _next_entity_pass_to_dispatch(
+                    _identity_pass_names,
+                    _field_group_pass_names,
+                    set(),  # cold start: nothing terminal yet
+                    _initial_in_flight,
+                )
+                if next_name is None:
+                    break
+                _initial_in_flight.add(next_name)
                 _claim_and_dispatch_pass(
-                    db2, document_id, str(run_id), pass_def.name,
+                    db2, document_id, str(run_id), next_name,
                     queued_counter=queued_counter,
-                    pass_def=pass_def,
+                    pass_def=_pass_def_by_name.get(next_name),
                     bundle_key=bundle_key,
                     build_index_failed=_build_index_failed,
                 )
