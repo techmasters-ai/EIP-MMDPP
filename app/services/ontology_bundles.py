@@ -273,6 +273,15 @@ class RetrievalProfile(BaseModel):
             "(byte-identical final_score)."
         ),
     )
+    unit_gate: bool = Field(
+        default=False,
+        description=(
+            "Enable the G1 unit-signature recall gate: chunks containing a digit "
+            "+ a pass-unit token join the candidate pool exempt from the "
+            "top_n_candidates cap (guarded-ranker spec §3). Default False "
+            "(byte-identical legacy pool)."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # §9 Subset-schema extraction (opt-in; default off) (B5)

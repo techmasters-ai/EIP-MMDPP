@@ -17,6 +17,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from app.services.ontology_bundles import PassManifest
 
+from app.services.extraction_unit_gate import signature_for_fields
+
 
 # ---------------------------------------------------------------------------
 # Typed retrieval-signal containers (B1)
@@ -48,6 +50,7 @@ class PassRetrievalSignals:
     negative_terms:     tuple[str, ...]               # union of all field negative_terms (dedup)
     likely_sections:    tuple[str, ...]               # union (dedup)
     evidence_patterns:  tuple[str, ...]               # union (dedup)
+    unit_signature:     tuple[str, ...] = ()          # G1 gate: sorted union of unit synonyms
 
 # Fields that are identity, not field-relevance — never included in queries.
 _SKIP_FIELDS: frozenset[str] = frozenset({"system_name"})
@@ -200,6 +203,11 @@ def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> Pas
     # pass_name: prefer pass_def.name when provided; fall back to class name.
     pass_name = getattr(pass_def, "name", None) or template_cls.__name__
 
+    # G1 gate: derive unit signature from the FULL record_cls.model_fields
+    # (not field_queries, which excludes system_name + INTERNAL fields).
+    # units_for() returns [] for non-unit fields, so over-inclusion is harmless.
+    unit_sig = signature_for_fields(record_cls.model_fields.keys()) if record_cls is not None else ()
+
     return PassRetrievalSignals(
         pass_name=pass_name,
         entity_doc=entity_doc,
@@ -209,7 +217,59 @@ def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> Pas
         negative_terms=all_negative_terms,
         likely_sections=all_likely_sections,
         evidence_patterns=all_evidence_patterns,
+        unit_signature=unit_sig,
     )
+
+
+def derive_pass_keywords(signals: PassRetrievalSignals) -> list[str]:
+    """Derive a generalizable per-pass keyword list from the schema ``units``.
+
+    Each extraction field carries ``json_schema_extra["retrieval"]["units"]``
+    (e.g. ``("dBW", "dBm", "W", "kW")`` for power fields), already parsed into
+    ``FieldRetrievalQuery.units`` by ``build_retrieval_profile``.  Units are
+    per-pass-distinctive, domain-general, and contain ZERO instance names —
+    making them ideal generalizable keyword needles for the lexical router
+    channel (``RetrievalProfile.lexical_keywords`` → ``keyword_hit_counts``),
+    which is otherwise empty everywhere (dead signal).
+
+    Strategy:
+      1. Union all ``fq.units`` across ``signals.field_queries``
+         (insertion-ordered dedup via the shared ``_union`` helper).
+      2. Drop any unit that is ALREADY in the alias vocabulary counted as
+         field_label hits (``signals.lexical_terms``).  Dedup is NFC +
+         casefold so case-insensitive overlap is removed.  The result therefore
+         contains ONLY terms NOT already counted as aliases — it adds NEW
+         signal rather than double-counting.
+
+    Guardrail: this mines ``units`` ONLY.  It never touches field ``examples``,
+    pass-edge ``examples``, or ``description`` token-splits — those carry
+    literal equipment designations and would violate the no-instance-names
+    rule.  ``units`` and ``aliases`` are both curated, instance-free.
+
+    Pure function — no side effects, no literal domain terms.
+
+    Args:
+        signals: The pass's structured retrieval signals.
+
+    Returns:
+        Insertion-ordered list of unit keywords not already present in the
+        alias vocabulary.  Empty list when no units are declared.
+    """
+    all_units = _union(*(fq.units for fq in signals.field_queries))
+
+    # NFC + casefold alias vocabulary for instance-free dedup.
+    import unicodedata  # noqa: PLC0415 (module-local; mirrors lexical-search normalisation)
+
+    alias_cf = {
+        unicodedata.normalize("NFC", term).casefold()
+        for term in signals.lexical_terms
+    }
+
+    return [
+        unit
+        for unit in all_units
+        if unicodedata.normalize("NFC", unit).casefold() not in alias_cf
+    ]
 
 
 def build_retrieval_query(pass_def: Any, template_cls: type[BaseModel]) -> str:
