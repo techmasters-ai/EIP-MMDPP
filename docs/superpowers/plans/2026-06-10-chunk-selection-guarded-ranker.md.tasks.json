@@ -19,7 +19,7 @@
   {
    "id": 3,
    "subject": "Task 3: Add sec/usec/dbi SUFFIX_UNITS + groundable-fields audit",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** _sec/_usec/_dbi fields groundable; audit test makes suffix gaps hard failures.\n\n**Files:**\n- app/services/field_value_grounding.py\n- scripts/audit_groundable_fields.py\n- tests/unit/test_groundable_fields_audit.py\n\n**Acceptance Criteria:**\n- [ ] new suffixes ground\n- [ ] audit walks record_cls.model_fields of every pass (NOT field_queries)\n- [ ] UNITLESS_OK allowlist explicit\n- [ ] zero GAP rows\n\n**Verify:** python3 -m pytest tests/unit/test_groundable_fields_audit.py -v && python3 -m scripts.audit_groundable_fields\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/field_value_grounding.py\", \"scripts/audit_groundable_fields.py\", \"tests/unit/test_groundable_fields_audit.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_groundable_fields_audit.py -v && python3 -m scripts.audit_groundable_fields\", \"acceptanceCriteria\": [\"new suffixes ground\", \"audit walks record_cls.model_fields of every pass (NOT field_queries)\", \"UNITLESS_OK allowlist explicit\", \"zero GAP rows\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T11:45:00Z"
+ "lastUpdated": "2026-06-10T12:30:00Z"
 }
