@@ -4,7 +4,7 @@
   {
    "id": 1,
    "subject": "Task 1: Harden unit-token matcher in field_value_grounding",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Unit synonyms match as bounded tokens via shared unit_token_regex/has_unit_token; label+gate single source.\n\n**Files:**\n- app/services/field_value_grounding.py\n- docker/docling-graph/tests/fixtures/unit_matcher_cases.json\n- tests/unit/test_field_value_grounding.py\n\n**Acceptance Criteria:**\n- [ ] helpers exported, unicode-aware guards\n- [ ] '50 sites' no longer matches unit s\n- [ ] SAME_CHUNK token-bounded\n- [ ] all fixture + pre-existing tests pass\n\n**Verify:** python3 -m pytest tests/unit/test_field_value_grounding.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/field_value_grounding.py\", \"docker/docling-graph/tests/fixtures/unit_matcher_cases.json\", \"tests/unit/test_field_value_grounding.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_field_value_grounding.py -v\", \"acceptanceCriteria\": [\"helpers exported, unicode-aware guards\", \"'50 sites' no longer matches unit s\", \"SAME_CHUNK token-bounded\", \"all fixture + pre-existing tests pass\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10"
+ "lastUpdated": "2026-06-10T11:00:00Z"
 }
