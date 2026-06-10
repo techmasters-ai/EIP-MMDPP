@@ -1,0 +1,28 @@
+{
+  "comment": "Single source of truth for unit-token matcher behavior. tests/unit/test_field_value_grounding.py (app) and docker/docling-graph/tests/test_value_grounding_mirror.py (mirror) BOTH run every case. Do not fork.",
+  "unit_token_cases": [
+    {"text": "the 50 sites were observed", "units": ["s"], "expect": false},
+    {"text": "elapsed 50 s before launch", "units": ["s"], "expect": true},
+    {"text": "background radiation measured 2391 times", "units": ["kg", "кг"], "expect": false},
+    {"text": "weight , 7 = 2391 , = kg", "units": ["kg", "кг"], "expect": true},
+    {"text": "over 9 months of trials", "units": ["m", "metre", "meter"], "expect": false},
+    {"text": "max speed in m/s shown in table", "units": ["m/s"], "expect": true},
+    {"text": "дальность 50 км", "units": ["km", "км"], "expect": true},
+    {"text": "elevation 45° max", "units": ["deg", "°"], "expect": true},
+    {"text": "the masts were 9 metre tall", "units": ["m", "metre", "meter"], "expect": true},
+    {"text": "pulse width 2.8 µs nominal", "units": ["µs", "us", "microsec"], "expect": true},
+    {"text": "discuss the radar system", "units": ["µs", "us", "microsec"], "expect": false}
+  ],
+  "value_in_chunk_cases": [
+    {"text": "the 50 sites were observed", "num_strs": ["50"], "units": ["s"], "expect": null},
+    {"text": "elapsed 50 s before launch", "num_strs": ["50"], "units": ["s"], "expect": "adjacent"},
+    {"text": "burn time 50s total", "num_strs": ["50"], "units": ["s", "sec", "second", "seconds"], "expect": "adjacent"},
+    {"text": "range 50 km. then home", "num_strs": ["50"], "units": ["km", "км"], "expect": "adjacent"},
+    {"text": "antenna is 9 m wide", "num_strs": ["9"], "units": ["m", "metre", "meter"], "expect": "adjacent"},
+    {"text": "over 9 months of trials", "num_strs": ["9"], "units": ["m", "metre", "meter"], "expect": null},
+    {"text": "weight , 7 = 2391 ... = kg", "num_strs": ["2391"], "units": ["kg", "кг"], "expect": "same_chunk"},
+    {"text": "weight , = 7 ... = kg", "num_strs": ["7"], "units": ["kg", "кг"], "expect": null},
+    {"text": "elevation 45° max", "num_strs": ["45"], "units": ["deg", "°"], "expect": "adjacent"},
+    {"text": "peak power [kw] 180.0 listed", "num_strs": ["180.0", "180"], "units": ["kw"], "expect": "same_chunk"}
+  ]
+}
