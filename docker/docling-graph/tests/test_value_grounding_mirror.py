@@ -61,6 +61,10 @@ def _load_dg_provenance():
             sys.modules.pop("app", None)
         else:
             sys.modules["app"] = real_app
+        # Clean up residual module entries registered during loading
+        sys.modules.pop("app._numeric_evidence", None)
+        sys.modules.pop("dg_app.provenance", None)
+        sys.modules.pop("dg_app", None)
 
     return mod
 

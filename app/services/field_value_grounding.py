@@ -21,6 +21,8 @@ the production lineage stamp.
 
 Pure: no DB, no I/O. Callers supply the chunk text.
 """
+# Mirror: docker/docling-graph/app/provenance.py _vg_* helpers — update together
+# (fixture: docker/docling-graph/tests/fixtures/unit_matcher_cases.json).
 from __future__ import annotations
 
 import math
