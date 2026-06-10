@@ -61,7 +61,7 @@
   {
    "id": 8,
    "subject": "Task 8: Structural text features (digit_density, label_value_lines, unit_token_count)",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Three name-free text statistics in capture for every candidate; PHASE 1 GATE after this task.\n\n**Files:**\n- app/services/extraction_candidate_scoring.py\n- app/services/extraction_unit_gate.py\n- app/api/v1/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] exact formulas per plan\n- [ ] spec-block fixture values\n- [ ] byte-identical final_score\n- [ ] regexes compiled once per call\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_candidate_scoring.py\", \"app/services/extraction_unit_gate.py\", \"app/api/v1/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"exact formulas per plan\", \"spec-block fixture values\", \"byte-identical final_score\", \"regexes compiled once per call\"]}\n```",
    "blockedBy": [
     5
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T17:30:00Z"
+ "lastUpdated": "2026-06-10T18:30:00Z"
 }
