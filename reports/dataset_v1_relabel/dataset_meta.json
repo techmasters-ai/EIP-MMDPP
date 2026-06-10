@@ -1,0 +1,71 @@
+{
+  "target": "lineage_grounded",
+  "n_candidates": 1692,
+  "n_positives": 116,
+  "n_docs": 8,
+  "features": [
+    "cosine",
+    "rerank_norm",
+    "field_label_norm",
+    "pass_keyword_norm",
+    "anchor_text_norm",
+    "anchor_section_norm",
+    "section_norm",
+    "is_table",
+    "pattern_norm",
+    "negative_norm"
+  ],
+  "label_column": "used",
+  "production_score_column": "final_score",
+  "group_column_for_LODO": "run_id (one per document)",
+  "per_doc": {
+    "e864ba84-6b3c-41d8-8da3-688cb3034524": {
+      "document_id": "ddaa9e36-2854-47c3-bc94-ff38d531dafd",
+      "doc_filename": "SA-2 Guideline _ \u0417\u0435\u043d\u0438\u0442\u043d\u044b\u0439 \u0420\u0430\u043a\u0435\u0442\u043d\u044b\u0439 \u041a\u043e\u043c\u043f\u043b\u0435\u043a\u0441 \u0421-75 \u0414\u0432\u0438\u043d\u0430_\u0414\u0435\u0441\u043d\u0430_\u0412\u043e\u043b\u0445\u043e\u0432.pdf",
+      "candidates": 450,
+      "positives": 5
+    },
+    "28a58eb9-f0f3-4b6b-8b07-f55df6efd5ba": {
+      "document_id": "128e48f9-06f9-459a-b2f0-6d42bf62c42d",
+      "doc_filename": "SA-2_and_SR-71_17_Apr_2020.pdf",
+      "candidates": 378,
+      "positives": 11
+    },
+    "58767f3f-5112-4816-9427-e61d5d8c068b": {
+      "document_id": "1915cd62-dc8e-45b9-9a11-2a3b8ff898af",
+      "doc_filename": "SA-2 Surface-to-Air Missile _ National Museum of the United States Air Force\u2122 _ Display.pdf",
+      "candidates": 90,
+      "positives": 4
+    },
+    "e79a4866-750b-41e3-a4b4-521f3e31ff26": {
+      "document_id": "10b39886-5322-4191-bb7c-96a57589dd60",
+      "doc_filename": "SNR-75 - Wikipedia.pdf",
+      "candidates": 63,
+      "positives": 0
+    },
+    "ff35b0e2-6a8a-4444-8a07-ee8e85a49011": {
+      "document_id": "9c8e09c7-e39f-4359-92c0-46330158c73c",
+      "doc_filename": "S-75 Dvina.pdf",
+      "candidates": 63,
+      "positives": 1
+    },
+    "295aea8e-bc3f-4003-81da-7713705c5daa": {
+      "document_id": "f365f1cc-f717-4d29-906c-c7fc00165d83",
+      "doc_filename": "V-75 SA-2 GUIDELINE.pdf",
+      "candidates": 54,
+      "positives": 1
+    },
+    "de6f44d9-69b8-4d3c-bcb3-f0eaa487af19": {
+      "document_id": "29fed6ff-9659-4e76-a4c2-79589b97bbcd",
+      "doc_filename": "Images_Demo_Doc.pdf",
+      "candidates": 144,
+      "positives": 1
+    },
+    "1329caf5-d57b-403d-96ea-1399a7d3d67f": {
+      "document_id": "dbb4edee-5f33-493e-8372-8c8890b9ff7e",
+      "doc_filename": "Engagement and Fire Control Radars (S-Band, X-band).pdf",
+      "candidates": 450,
+      "positives": 93
+    }
+  }
+}
