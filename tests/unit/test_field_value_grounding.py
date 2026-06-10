@@ -63,6 +63,13 @@ def test_num_variants_non_numeric_empty():
     assert num_variants(None) == set()
 
 
+def test_num_variants_nonfinite():
+    # inf/nan must not crash; they ground nothing  (review fix, guarded-ranker Task 1)
+    assert num_variants(float("inf")) == set()
+    assert num_variants(float("nan")) == set()
+    assert num_variants("inf") == set()
+
+
 # --- value_in_chunk: ADJACENT (prose) ---------------------------------------
 def test_adjacent_prose_match():
     """'50 km' in prose → ADJACENT (high confidence)."""

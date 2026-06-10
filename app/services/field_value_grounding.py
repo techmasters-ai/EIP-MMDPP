@@ -23,8 +23,10 @@ Pure: no DB, no I/O. Callers supply the chunk text.
 """
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
+from functools import lru_cache
 from typing import Iterable
 
 # Unit synonyms keyed by the field-name suffix. Schema fields are unit-suffixed:
@@ -73,6 +75,8 @@ def num_variants(value) -> set[str]:
         fv = float(value)
     except (TypeError, ValueError):
         return out
+    if not math.isfinite(fv):
+        return out
     if fv == int(fv):
         out.add(str(int(fv)))
     out.add(f"{fv:g}")
@@ -99,13 +103,18 @@ def unit_token_regex(unit_nfc: str) -> str:
     return pat
 
 
+@lru_cache(maxsize=128)
+def _compiled_unit_re(unit_nfc: str) -> "re.Pattern[str]":
+    return re.compile(unit_token_regex(unit_nfc))
+
+
 def has_unit_token(text_nfc: str, units: Iterable[str]) -> bool:
     """True iff any unit synonym appears as a bounded token in the folded text.
 
     SHARED by the SAME_CHUNK grounding tier and the G1 selection gate — one
     matcher, so label semantics and gate semantics can never drift.
     """
-    return any(re.search(unit_token_regex(nfc(u)), text_nfc) for u in units)
+    return any(_compiled_unit_re(nfc(u)).search(text_nfc) for u in units)
 
 
 def value_in_chunk(num_strs: set[str], units: Iterable[str], text_nfc: str) -> str | None:
