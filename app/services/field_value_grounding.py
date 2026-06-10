@@ -43,10 +43,10 @@ SUFFIX_UNITS: dict[str, list[str]] = {
     "kn": ["kn", "knot", "knots"],             # plural added: token-bounded matching kills substring "knot"→"knots"
     "dbi": ["dbi"],                             # gain in dBi (e.g. gain_dbi)
     "usec": ["µs", "us", "microsec"],           # microsecond fields ending in _usec (e.g. nominal_pri_usec)
-    "us": ["µs", "us", "microsec"],
+    "us": ["µs", "us", "microsec"],             # legacy alias for bare _us suffix; _usec is canonical
     "ms": ["ms"],
     "sec": ["s", "sec", "second", "seconds"],   # time fields ending in _sec (e.g. scan_period_sec, *_time_sec)
-    "s": ["s", "sec", "second", "seconds"],
+    "s": ["s", "sec", "second", "seconds"],     # alias for bare _s suffix; _sec is canonical
     "m": ["m", "metre", "meter", "metres", "meters"],  # plural added: token-bounded matching kills "metre"→"metres"
 }
 

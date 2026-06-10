@@ -14,10 +14,11 @@ Exit 1 if any numeric field is groundable-gap (numeric, no units, not allowliste
 from __future__ import annotations
 
 import importlib
-import sys
+import types
+import typing
 from dataclasses import dataclass, field
 
-from app.services.field_value_grounding import units_for
+from app.services.field_value_grounding import SUFFIX_UNITS, units_for
 from app.services.ontology_bundles import load_bundle_manifest
 from app.services.extraction_query_builder import _record_cls_from_pass_cls
 
@@ -52,13 +53,19 @@ def _is_numeric_annotation(annotation) -> bool:
     """Return True iff the (possibly Optional-wrapped) annotation is int or float.
 
     Handles ``Optional[float]`` (= ``float | None`` = ``Union[float, None]``),
-    plain ``float``, and plain ``int``.
+    plain ``float``, and plain ``int``.  Supports both ``typing.Union`` and the
+    PEP 604 ``types.UnionType`` (``float | None`` syntax, Python ≥ 3.10).
     """
-    import typing
-
     if annotation is None:
         return False
-    # Unwrap Optional / Union
+    # Unwrap PEP 604 union (float | None, Python ≥ 3.10)
+    if isinstance(annotation, types.UnionType):
+        args = typing.get_args(annotation)
+        inner = [a for a in args if a is not type(None)]
+        if len(inner) == 1:
+            return inner[0] in (int, float)
+        return False
+    # Unwrap typing.Union / Optional
     origin = getattr(annotation, "__origin__", None)
     if origin is typing.Union:
         args = typing.get_args(annotation)
@@ -71,8 +78,6 @@ def _is_numeric_annotation(annotation) -> bool:
 
 def _detect_suffix(field_name: str) -> str | None:
     """Return the matched SUFFIX_UNITS key for this field name, or None."""
-    from app.services.field_value_grounding import SUFFIX_UNITS
-
     f = (field_name or "").lower()
     for suf in sorted(SUFFIX_UNITS, key=len, reverse=True):
         if f.endswith("_" + suf):
@@ -141,12 +146,17 @@ def audit_bundle(bundle_key: str) -> list[AuditRow]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def main(argv=None) -> int:
+def main() -> int:
     rows = audit_bundle("air_defense_v3")
 
-    # Group by pass for table display.
+    # Collect resolution errors first — these mean the audit is incomplete.
+    resolution_errors = [r for r in rows if r.field == "<resolution_error>"]
+
+    # Group by pass for table display (non-error rows only).
     by_pass: dict[str, list[AuditRow]] = {}
     for r in rows:
+        if r.field == "<resolution_error>":
+            continue
         by_pass.setdefault(r.pass_name, []).append(r)
 
     gaps: list[AuditRow] = []
@@ -169,10 +179,19 @@ def main(argv=None) -> int:
             print(f"  {r.field:35s} {'numeric':8s} {r.suffix or '—':8s} {status}")
 
     print()
+
+    if resolution_errors:
+        print("RESOLUTION ERRORS — the following passes could not be imported; "
+              "the audit is incomplete:")
+        for r in resolution_errors:
+            print(f"  {r.pass_name}: {r.units[0] if r.units else '(unknown error)'}")
+
     if gaps:
         print(f"FAIL — {len(gaps)} numeric field(s) with no unit suffix and not in UNITLESS_OK:")
         for r in gaps:
             print(f"  {r.pass_name}.{r.field}")
+
+    if resolution_errors or gaps:
         return 1
 
     print(f"PASS — all numeric fields are groundable or explicitly allowlisted "
