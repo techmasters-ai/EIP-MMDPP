@@ -10,7 +10,7 @@
   {
    "id": 2,
    "subject": "Task 2: Mirror matcher hardening in docling-graph provenance",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** _vg_value_in_chunk gets byte-equivalent semantics pinned to the same fixture; registered in run_dg_lineage.\n\n**Files:**\n- docker/docling-graph/app/provenance.py\n- docker/docling-graph/tests/test_value_grounding_mirror.py\n- scripts/run_tests.sh\n\n**Acceptance Criteria:**\n- [ ] mirror matches app matcher on all fixture cases\n- [ ] verbatim helpers + cross-ref comments\n- [ ] registered in run_dg_lineage\n- [ ] delta tests pass\n- [ ] rebuild required at deploy noted\n\n**Verify:** PYTHONPATH=docker/docling-graph/repo python3 -m pytest docker/docling-graph/tests/test_value_grounding_mirror.py docker/docling-graph/tests/test_entity_provenance_from_delta.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/provenance.py\", \"docker/docling-graph/tests/test_value_grounding_mirror.py\", \"scripts/run_tests.sh\"], \"verifyCommand\": \"PYTHONPATH=docker/docling-graph/repo python3 -m pytest docker/docling-graph/tests/test_value_grounding_mirror.py docker/docling-graph/tests/test_entity_provenance_from_delta.py -v\", \"acceptanceCriteria\": [\"mirror matches app matcher on all fixture cases\", \"verbatim helpers + cross-ref comments\", \"registered in run_dg_lineage\", \"delta tests pass\", \"rebuild required at deploy noted\"]}\n```",
    "blockedBy": [
     1
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T11:00:00Z"
+ "lastUpdated": "2026-06-10T11:45:00Z"
 }
