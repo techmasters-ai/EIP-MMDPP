@@ -76,7 +76,7 @@
   {
    "id": 10,
    "subject": "Task 10: G2 table gate",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** is_table + unit-bearing chunks join the gate union with flag 'table' (no digit required).\n\n**Files:**\n- app/services/extraction_chunk_search.py\n- app/services/extraction_candidate_scoring.py\n- tests/unit/test_extraction_unit_gate.py\n\n**Acceptance Criteria:**\n- [ ] table+unit-no-digit gated as table\n- [ ] separate diagnostics counters\n- [ ] default-off byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_unit_gate.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_chunk_search.py\", \"app/services/extraction_candidate_scoring.py\", \"tests/unit/test_extraction_unit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_unit_gate.py -v\", \"acceptanceCriteria\": [\"table+unit-no-digit gated as table\", \"separate diagnostics counters\", \"default-off byte-identical\"]}\n```",
    "blockedBy": [
     7,
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T20:00:00Z"
+ "lastUpdated": "2026-06-10T21:00:00Z"
 }
