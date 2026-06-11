@@ -1274,7 +1274,7 @@ async def search_extraction_chunks_multi_channel_full(
     # so merge_candidates maps it to ``pass_keyword_hits`` (NOT alias_hits).
     # Empty lexical_keywords → every entry gets keyword_hits=0, byte-identical
     # to the pre-decomposition lexical payload.
-    kw_hits = keyword_hit_counts(rows, cfg.lexical_keywords)
+    kw_hits = keyword_hit_counts(rows, cfg.lexical_keywords, cfg.lexical_keyword_weights)
     for key, lh in lex_hits.items():
         lh["keyword_hits"] = kw_hits.get(key, {}).get("keyword_hits", 0)
 

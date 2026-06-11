@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from app.models.ingest import DocumentGraphExtraction
@@ -273,6 +273,31 @@ class RetrievalProfile(BaseModel):
             "keywords). Values are operator-supplied — no defaults are baked in."
         ),
     )
+    lexical_keyword_weights: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Optional per-keyword lift weights for the pass-keyword channel. "
+            "Keys are keyword strings as written in lexical_keywords (matched "
+            "after NFC+casefold normalisation at runtime). Values multiply that "
+            "keyword's presence contribution in keyword_hit_counts; an absent "
+            "key defaults to 1.0. Offline miners may ship mined lift scores "
+            "here. All values must be >= 0. Default {} (every keyword weighs "
+            "1.0 — byte-identical to the pre-weight behaviour)."
+        ),
+    )
+
+    @field_validator("lexical_keyword_weights")
+    @classmethod
+    def _no_negative_weights(cls, v: dict[str, float]) -> dict[str, float]:
+        """Reject any negative weight value (negative lift is not meaningful)."""
+        neg = [k for k, w in v.items() if w < 0]
+        if neg:
+            raise ValueError(
+                f"lexical_keyword_weights: negative values are not allowed "
+                f"(offending keys: {neg!r})"
+            )
+        return v
+
     lexical_decomposed: bool = Field(
         default=False,
         description=(

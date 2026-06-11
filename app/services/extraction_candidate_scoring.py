@@ -98,7 +98,7 @@ class MergedCandidate:
     #   entity_anchor_section— entity-name matches in chunk SECTION (= section_hits)
     # ------------------------------------------------------------------
     field_label_hits: int = 0
-    pass_keyword_hits: int = 0
+    pass_keyword_hits: float = 0.0   # float: keyword_hit_counts returns float (weighted path)
     entity_anchor_text: int = 0
     entity_anchor_section: int = 0
     # ------------------------------------------------------------------
@@ -578,7 +578,7 @@ def score_candidates(
         # the final_score when cfg.lexical_decomposed (the legacy path ignores
         # them — byte-identical scoring preserved).
         field_label_norm    = mc.field_label_hits      / max(1, max_field_label)
-        pass_keyword_norm   = mc.pass_keyword_hits      / max(1, max_pass_keyword)
+        pass_keyword_norm   = mc.pass_keyword_hits      / max(1.0, max_pass_keyword)
         anchor_text_norm    = mc.entity_anchor_text     / max(1, max_anchor_text)
         anchor_section_norm = mc.entity_anchor_section  / max(1, max_anchor_section)
 

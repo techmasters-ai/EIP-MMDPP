@@ -3287,3 +3287,110 @@ class TestTableBoostScoreNeutralDefault:
             assert with_by_key[key] == without_by_key[key], (
                 f"{key}: non-table candidate must be unaffected by table_boost"
             )
+
+
+# ===========================================================================
+# Task 13 — pass_keyword_norm with float pass_keyword_hits
+#
+# keyword_hit_counts now returns float hits (weighted or not). The
+# pass_keyword_hits field on MergedCandidate is float, and the norm
+# formula is pass_keyword_hits / max(1.0, max_pass_keyword).
+# ===========================================================================
+
+
+class TestPassKeywordNormWithFloatHits:
+    """Task 13: float pass_keyword_hits flow through score_candidates correctly."""
+
+    def test_pass_keyword_norm_fractional_hits(self):
+        """pool max 3.0, candidate 1.5 → pass_keyword_norm == 0.5."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # lexical_decomposed=True so pass_keyword_weight actually fires.
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            pass_keyword_weight=1.0,
+            rerank_weight=0.0,
+            lexical_weight=0.0,
+            pattern_weight=0.0,
+            section_weight=0.0,
+            table_boost=0.0,
+            negative_weight=0.0,
+            field_label_weight=0.0,
+            anchor_text_weight=0.0,
+            anchor_section_weight=0.0,
+        )
+
+        # Build a pool: one candidate with 3.0 hits (pool max), one with 1.5 hits.
+        cands = [
+            _make_scored_candidate(
+                "c_max",
+                reranker_score=0.5,
+                pass_keyword_hits=3.0,  # pool max
+            ),
+            _make_scored_candidate(
+                "c_half",
+                reranker_score=0.5,
+                pass_keyword_hits=1.5,  # 1.5/3.0 == 0.5
+            ),
+        ]
+        result = score_candidates(cands, cfg, return_components=True)
+        comps_by_key = {mc.candidate_key: comps for mc, _, comps in result}
+
+        assert comps_by_key["c_half"]["pass_keyword_norm"] == pytest.approx(0.5)
+        assert comps_by_key["c_max"]["pass_keyword_norm"] == pytest.approx(1.0)
+
+    def test_pass_keyword_hits_float_stored_on_merged_candidate(self):
+        """MergedCandidate.pass_keyword_hits accepts float (weighted path)."""
+        from app.services.extraction_candidate_scoring import MergedCandidate
+
+        mc = MergedCandidate(
+            candidate_key="k",
+            chunk_index=0,
+            self_ref="k",
+            chunk_text="",
+            source_refs=[],
+            token_count=0,
+            page_number=None,
+            vector_score=None,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources=set(),
+            supported_field_hints=set(),
+            field_label_hits=0,
+            pass_keyword_hits=2.5,   # float from weighted keyword_hit_counts
+            entity_anchor_text=0,
+            entity_anchor_section=0,
+        )
+        assert mc.pass_keyword_hits == pytest.approx(2.5)
+
+    def test_zero_pool_max_float_safe(self):
+        """All candidates have 0.0 keyword hits → max(1.0, 0.0) == 1.0, norm == 0.0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(
+            lexical_decomposed=True,
+            pass_keyword_weight=1.0,
+            rerank_weight=0.0,
+            lexical_weight=0.0,
+            pattern_weight=0.0,
+            section_weight=0.0,
+            table_boost=0.0,
+            negative_weight=0.0,
+            field_label_weight=0.0,
+            anchor_text_weight=0.0,
+            anchor_section_weight=0.0,
+        )
+
+        cands = [
+            _make_scored_candidate("c_zero", reranker_score=0.5, pass_keyword_hits=0),
+        ]
+        result = score_candidates(cands, cfg, return_components=True)
+        mc, score, comps = result[0]
+        assert comps["pass_keyword_norm"] == pytest.approx(0.0)
+        assert score == pytest.approx(0.0)

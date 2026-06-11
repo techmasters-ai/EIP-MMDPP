@@ -424,3 +424,62 @@ class TestManifestCarryingNewKeysLoads:
         assert rp.section_weight == pytest.approx(0.0)
         assert rp.field_label_weight == pytest.approx(0.1)
         assert rp.lexical_decomposed is True
+
+
+# ---------------------------------------------------------------------------
+# 8. Task 13 — lexical_keyword_weights field
+# ---------------------------------------------------------------------------
+
+class TestLexicalKeywordWeights:
+    """Task 13: lexical_keyword_weights field on RetrievalProfile."""
+
+    def test_default_is_empty_dict(self):
+        p = _profile()
+        assert p.lexical_keyword_weights == {}
+
+    def test_roundtrip_with_weights(self):
+        p = _profile(lexical_keyword_weights={"velocity": 2.0, "range": 1.5})
+        assert p.lexical_keyword_weights == {"velocity": 2.0, "range": 1.5}
+
+    def test_extra_forbid_still_rejects_unknown_key(self):
+        with pytest.raises(ValidationError):
+            _profile(totally_unknown=1.0)
+
+    def test_negative_weight_value_raises_validation_error(self):
+        """A negative weight value must raise ValidationError at construction."""
+        with pytest.raises(ValidationError):
+            _profile(lexical_keyword_weights={"velocity": -0.1})
+
+    def test_zero_weight_value_is_valid(self):
+        """Zero is a valid weight (suppresses the keyword)."""
+        p = _profile(lexical_keyword_weights={"velocity": 0.0})
+        assert p.lexical_keyword_weights["velocity"] == 0.0
+
+    def test_partial_weights_allowed(self):
+        """Weights dict need not cover all lexical_keywords — absent → 1.0 at runtime."""
+        p = _profile(
+            lexical_keywords=["velocity", "range", "altitude"],
+            lexical_keyword_weights={"velocity": 2.0},
+        )
+        assert p.lexical_keyword_weights == {"velocity": 2.0}
+        assert len(p.lexical_keywords) == 3
+
+    def test_large_weight_value_is_valid(self):
+        """No upper bound on weight values."""
+        p = _profile(lexical_keyword_weights={"velocity": 100.0})
+        assert p.lexical_keyword_weights["velocity"] == pytest.approx(100.0)
+
+    def test_multiple_negative_values_raises(self):
+        """Any negative value (not just one) triggers ValidationError."""
+        with pytest.raises(ValidationError):
+            _profile(lexical_keyword_weights={"a": 1.0, "b": -5.0})
+
+    def test_manifest_integration_default_empty_dict(self):
+        """Production manifests don't set lexical_keyword_weights → {} default."""
+        from app.services.ontology_bundles import load_bundle_manifest
+        m = load_bundle_manifest("air_defense_v3_baseline_subset")
+        for pass_def in m.passes:
+            rp = pass_def.retrieval
+            if rp is None:
+                continue
+            assert rp.lexical_keyword_weights == {}

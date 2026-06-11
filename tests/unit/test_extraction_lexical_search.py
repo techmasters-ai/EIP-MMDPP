@@ -777,3 +777,124 @@ class TestKeywordHitCountsBoundaryMatching:
         lex_result = lexical_hit_counts(rows, fqs)
         # 'mach' IS a substring of 'machinery' → alias_hits == 1 (unchanged)
         assert lex_result["alias-r1"]["alias_hits"] == 1  # substring semantics intact
+
+
+# ---------------------------------------------------------------------------
+# KEYWORD weights — per-keyword runtime weights (Task 13)
+#
+# keyword_hit_counts accepts an optional weights dict (keyword → float).
+# Each matched needle contributes weights.get(kw, 1.0) instead of 1.
+# Absent key → 1.0. Weights are looked up under NFC+casefold folding.
+# Return type is always float (int-valued when all weights are 1.0).
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordHitCountsWeights:
+    """Per-keyword lift weights (Task 13)."""
+
+    def test_no_weights_returns_float_equal_to_unweighted_int(self):
+        """Empty weights dict → same numeric result as no weights, but float."""
+        rows = [_row("w1", "velocity and range are both here")]
+        result = keyword_hit_counts(rows, ["velocity", "range"], weights={})
+        assert result["w1"]["keyword_hits"] == 2.0
+        # Must be float type (not int) when weights param is provided.
+        assert isinstance(result["w1"]["keyword_hits"], float)
+
+    def test_unweighted_path_returns_float(self):
+        """weights=None (default) still returns float (always-float contract)."""
+        rows = [_row("w1b", "velocity and range are both here")]
+        result = keyword_hit_counts(rows, ["velocity", "range"])
+        # 2 keywords matched → 2.0 (float, not int)
+        assert result["w1b"]["keyword_hits"] == 2.0
+        assert isinstance(result["w1b"]["keyword_hits"], float)
+
+    def test_single_weighted_keyword_applies_weight(self):
+        """{"kw_a": 2.0} → chunk matching kw_a alone contributes 2.0."""
+        rows = [_row("w2", "velocity is the only match here")]
+        result = keyword_hit_counts(
+            rows, ["velocity", "range"], weights={"velocity": 2.0}
+        )
+        # "velocity" matched (weight 2.0), "range" not in text.
+        assert result["w2"]["keyword_hits"] == pytest.approx(2.0)
+
+    def test_two_keywords_one_weighted(self):
+        """{"kw_a": 2.0} → chunk matching kw_a + kw_b → 2.0 + 1.0 = 3.0."""
+        rows = [_row("w3", "velocity and range are both present")]
+        result = keyword_hit_counts(
+            rows, ["velocity", "range"], weights={"velocity": 2.0}
+        )
+        # "velocity" 2.0 + "range" (absent from weights → 1.0) = 3.0
+        assert result["w3"]["keyword_hits"] == pytest.approx(3.0)
+
+    def test_weight_key_casefold_match(self):
+        """Weight key 'kW' is looked up after NFC+casefold → applies to needle 'kw'."""
+        rows = [_row("w4", "this mentions kw somewhere")]
+        result = keyword_hit_counts(
+            rows, ["kw"], weights={"kW": 3.5}
+        )
+        # 'kW' folds to 'kw'; needle 'kw' folds to 'kw' → weight 3.5 applies.
+        assert result["w4"]["keyword_hits"] == pytest.approx(3.5)
+
+    def test_weight_key_nfc_fold_match(self):
+        """Weight key with uppercase Cyrillic folds to same as lowercase needle."""
+        # Use a plain ASCII upper→lower fold to keep the test portable.
+        rows = [_row("w5", "range is mentioned here")]
+        result = keyword_hit_counts(
+            rows, ["range"], weights={"RANGE": 1.5}
+        )
+        # 'RANGE' casefolds to 'range'; needle also folds to 'range' → weight 1.5.
+        assert result["w5"]["keyword_hits"] == pytest.approx(1.5)
+
+    def test_zero_weight_keyword_contributes_nothing(self):
+        """Weight 0.0 suppresses that keyword's contribution entirely."""
+        rows = [_row("w6", "velocity and range appear")]
+        result = keyword_hit_counts(
+            rows, ["velocity", "range"], weights={"velocity": 0.0}
+        )
+        # "velocity" matched but weight 0.0 → 0.0; "range" (absent) → 1.0.
+        assert result["w6"]["keyword_hits"] == pytest.approx(1.0)
+
+    def test_fractional_weight(self):
+        """Fractional weight (0.5) is applied correctly."""
+        rows = [_row("w7", "velocity is present")]
+        result = keyword_hit_counts(
+            rows, ["velocity"], weights={"velocity": 0.5}
+        )
+        assert result["w7"]["keyword_hits"] == pytest.approx(0.5)
+
+    def test_all_unweighted_gives_integer_value_as_float(self):
+        """Two matches, no weights provided → 2.0 (float-valued int)."""
+        rows = [_row("w8", "velocity and range here")]
+        result = keyword_hit_counts(rows, ["velocity", "range"])
+        assert result["w8"]["keyword_hits"] == 2.0
+
+    def test_empty_weights_all_defaults_to_one(self):
+        """Empty weights dict → every keyword defaults to weight 1.0."""
+        rows = [_row("w9", "velocity and range here")]
+        result = keyword_hit_counts(rows, ["velocity", "range"], weights={})
+        assert result["w9"]["keyword_hits"] == pytest.approx(2.0)
+
+    def test_weights_not_applied_to_non_matching_keywords(self):
+        """Weights for keywords that don't match don't affect the score."""
+        rows = [_row("w10", "range only, no other keyword here")]
+        result = keyword_hit_counts(
+            rows, ["velocity", "range"], weights={"velocity": 99.0}
+        )
+        # "velocity" not in text → 0; "range" matched, not in weights → 1.0.
+        assert result["w10"]["keyword_hits"] == pytest.approx(1.0)
+
+    def test_weights_dict_folded_once_not_per_row(self):
+        """Weights are folded once per call, not per row — efficient and consistent."""
+        rows = [_row(f"w11-{i}", "velocity matters") for i in range(5)]
+        result = keyword_hit_counts(
+            rows, ["velocity"], weights={"VELOCITY": 2.5}
+        )
+        for key in result:
+            assert result[key]["keyword_hits"] == pytest.approx(2.5)
+
+    def test_weights_none_behaves_identically_to_empty_all_default(self):
+        """weights=None and weights={} produce the same float result."""
+        rows = [_row("w12", "velocity present")]
+        res_none = keyword_hit_counts(rows, ["velocity"], weights=None)
+        res_empty = keyword_hit_counts(rows, ["velocity"], weights={})
+        assert res_none["w12"]["keyword_hits"] == res_empty["w12"]["keyword_hits"]

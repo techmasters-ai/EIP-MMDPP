@@ -183,8 +183,9 @@ def lexical_hit_counts(
 def keyword_hit_counts(
     rows: list[dict],
     keywords: Sequence[str | None],
+    weights: dict[str, float] | None = None,
 ) -> dict[str, dict]:
-    """Return per-chunk per-pass KEYWORD hit counts.
+    """Return per-chunk per-pass KEYWORD hit counts (optionally weighted).
 
     Normalisation: NFC + casefold (identical to :func:`lexical_hit_counts`).
     Keying: ``vertex_id`` preferred, ``self_ref`` fallback.
@@ -209,10 +210,11 @@ def keyword_hit_counts(
 
     Counting quirks (preserved for backward-compat):
     - Binary presence per needle: each needle that matches the chunk
-      contributes 1 regardless of how many times it appears in the text.
+      contributes its weight (default 1.0) regardless of how many times it
+      appears in the text.
     - Duplicate needle entries each contribute independently: a keyword
-      listed twice in ``keywords`` will add 2 if it matches (mirrors the
-      ``lexical_hit_counts`` per-alias counting convention).
+      listed twice in ``keywords`` will add 2 × weight if it matches (mirrors
+      the ``lexical_hit_counts`` per-alias counting convention).
 
     Scope guard: the ``lexical_hit_counts`` alias channel (production
     final_score, lexical_weight 0.20) is INTENTIONALLY left on plain substring
@@ -227,14 +229,22 @@ def keyword_hit_counts(
     keywords:
         Per-pass keyword needles to match against each chunk's body text.
         Blank / ``None`` entries are skipped (they would otherwise match every
-        chunk). Empty list → every row scores ``keyword_hits == 0``.
+        chunk). Empty list → every row scores ``keyword_hits == 0.0``.
+    weights:
+        Optional per-keyword lift weights.  Keys are keyword strings (matched
+        after NFC+casefold — the same folding applied to the needle).  An
+        absent key defaults to 1.0.  ``None`` is equivalent to ``{}``
+        (every keyword weighs 1.0).  Values must be >= 0 (enforced by
+        ``RetrievalProfile.lexical_keyword_weights``).  Weights are folded
+        ONCE per call (not per row) for efficiency.
 
     Returns
     -------
     dict[str, dict]
         Keyed by candidate_key. Each value has:
-        - ``keyword_hits`` (int) — number of ``keywords`` found in the chunk's
-          body text.
+        - ``keyword_hits`` (float) — weighted sum of ``keywords`` found in the
+          chunk's body text.  Always float (int-valued when all weights are
+          1.0, e.g. 2.0 instead of 2).
 
     Pure: no DB / no network. Consumed by C4 ``merge_candidates`` via the
     ``lexical_hits`` payload (``keyword_hits`` key) → ``pass_keyword_hits``.
@@ -247,6 +257,16 @@ def keyword_hit_counts(
     #
     # Single-token needles → compiled bounded regex (cached by _compiled_keyword_re).
     # Multi-word phrases  → plain substring (original semantics, no boundary change).
+    #
+    # Fold the weights dict once per call under NFC+casefold so weight lookups
+    # use the same normalised form as the needles themselves.
+    folded_weights: dict[str, float] = (
+        {_nfc(k).casefold(): v for k, v in weights.items()}
+        if weights
+        else {}
+    )
+
+    # Build (folded_needle, compiled_pattern_or_None) pairs — pattern None for phrases.
     norm_kw_matchers: list[tuple[str, re.Pattern[str] | None]] = []
     for k in keywords:
         if not (k and k.strip()):
@@ -265,17 +285,20 @@ def keyword_hit_counts(
         key = _candidate_key(row)
         haystack = _nfc(row.get("chunk_text") or "").casefold()
 
-        keyword_hits = 0
+        keyword_hits: float = 0.0
         if haystack:
             for needle, pat in norm_kw_matchers:
+                matched = False
                 if pat is not None:
                     # Single-token: bounded regex search.
                     if pat.search(haystack):
-                        keyword_hits += 1
+                        matched = True
                 else:
                     # Multi-word phrase: plain substring.
                     if needle in haystack:
-                        keyword_hits += 1
+                        matched = True
+                if matched:
+                    keyword_hits += folded_weights.get(needle, 1.0)
 
         result[key] = {"keyword_hits": keyword_hits}
 
