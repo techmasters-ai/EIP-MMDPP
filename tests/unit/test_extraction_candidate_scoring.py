@@ -750,6 +750,9 @@ def _make_profile(**kwargs):
         lexical_weight=0.20,
         pattern_weight=0.15,
         section_weight=0.10,
+        # table_boost kept at 0.08 here (NOT the production 0.0 default) so the
+        # C5 formula tests stay self-contained; the production score-neutral
+        # contract is pinned separately in TestTableBoostScoreNeutralDefault.
         table_boost=0.08,
         negative_weight=0.20,
     )
