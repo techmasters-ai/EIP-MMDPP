@@ -82,36 +82,69 @@ def inject_pass_keywords(
     profile: "RetrievalProfile | None",
     signals: "PassRetrievalSignals",
 ) -> "RetrievalProfile":
-    """Populate ``RetrievalProfile.lexical_keywords`` from the schema-derived
-    units when (and only when) the manifest left it empty.
+    """UNION manifest ``lexical_keywords`` with schema-derived unit keywords.
 
-    The lexical-keyword router channel (``keyword_hit_counts`` →
-    ``pass_keyword_hits``) reads ``profile.lexical_keywords``, which is empty
-    everywhere because no manifest sets it — the signal is dead.  We back-fill
-    it with ``derive_pass_keywords(signals)`` (the per-field ``units`` deduped
-    against the alias vocabulary), giving the channel a generalizable,
-    instance-free needle list.
+    CHANGED (guarded-ranker spec §5.1): the previous contract ("manifest
+    non-empty list wins verbatim; derivation only fires for empty lists") meant
+    that all 9 production field-group passes — which carry curated
+    ``lexical_keywords`` blocks — NEVER received any derived unit vocabulary
+    (e.g. kW / MHz / dBW).  That permanently silenced the unit-vocabulary
+    channel for table-shaped text, whose signal lives in labels + units rather
+    than alias phrases.
 
-    Precedence:
-      * If the manifest supplied a NON-EMPTY ``lexical_keywords`` list, keep it
-        verbatim (manifest overrides the derivation).
-      * Otherwise replace the empty list with the derived units.
+    NEW CONTRACT — UNION semantics:
+      1. Manifest entries come FIRST, in original casing/order.
+      2. Schema-derived units (``derive_pass_keywords(signals)``) are appended
+         after, skipping any term that duplicates a manifest entry under NFC +
+         casefold normalisation (same dedup shape as ``derive_pass_keywords``).
+      3. ``profile=None`` → a default ``RetrievalProfile`` is constructed first.
+
+    This is final_score-NEUTRAL today:
+      * ``pass_keyword_hits`` feeds ``pass_keyword_norm`` (diagnostics-only
+        component); ``pass_keyword_weight`` defaults to 0.0 and only contributes
+        to ``final_score`` when ``lexical_decomposed=True``
+        (``app/services/extraction_candidate_scoring.py``:589).
+      * The E2 ``lexical_table`` fallback collector (``_build_lexical_table_candidates``)
+        reads ``alias_hits`` (from the ``lexical_hits`` channel, keyed by
+        ``"alias_hits"``), NOT ``keyword_hits`` — so growing ``lexical_keywords``
+        does NOT change which chunks are admitted by the E2 fallback
+        (``app/api/v1/extraction_routing.py``:209).
 
     ``RetrievalProfile`` is a pydantic ``BaseModel`` with ``extra="forbid"``;
     the declared field is updated via ``model_copy(update=...)`` (immutable
-    update).  ``profile=None`` (no retrieval block) yields a default
-    ``RetrievalProfile`` carrying only the derived keywords.
+    update).
 
     Pure: no side effects, returns a new object.
     """
-    base = profile if profile is not None else RetrievalProfile()
+    import unicodedata
 
-    # Manifest override: a non-empty list always wins.
-    if base.lexical_keywords:
+    base = profile if profile is not None else RetrievalProfile()
+    derived = derive_pass_keywords(signals)
+
+    if not derived:
+        # No derived units → manifest list unchanged (object equality preserved
+        # when derived is empty and base is already a profile object).
         return base
 
-    derived = derive_pass_keywords(signals)
-    return base.model_copy(update={"lexical_keywords": derived})
+    if not base.lexical_keywords:
+        # Empty manifest → derived only (unchanged path; avoids unnecessary copy).
+        return base.model_copy(update={"lexical_keywords": derived})
+
+    # UNION: manifest first (original casing/order), derived appended with dedup.
+    manifest_cf = {
+        unicodedata.normalize("NFC", kw).casefold()
+        for kw in base.lexical_keywords
+    }
+    appended = [
+        unit for unit in derived
+        if unicodedata.normalize("NFC", unit).casefold() not in manifest_cf
+    ]
+    if not appended:
+        # All derived units already covered by manifest — no mutation needed.
+        return base
+    return base.model_copy(
+        update={"lexical_keywords": list(base.lexical_keywords) + appended}
+    )
 
 
 def _resolve_template_class(bundle_key: str, pass_def) -> type:
@@ -388,13 +421,13 @@ async def chunk_scope(
         template_cls = _resolve_template_class(body.bundle_key, pass_def)
         signals = build_retrieval_profile(pass_def, template_cls)
         query_text = signals.entity_query  # byte-identical to build_retrieval_query output
-        # Per-pass keyword population: back-fill profile.lexical_keywords from the
-        # schema-derived units when the manifest left it empty. The keyword router
-        # channel (keyword_hit_counts -> pass_keyword_hits) is otherwise dead because
-        # no manifest sets lexical_keywords. A manifest-supplied non-empty list is
-        # kept verbatim (inject_pass_keywords enforces that precedence). This only
-        # makes the raw feature non-constant; whether it CONTRIBUTES to the score is
-        # gated later by lexical_decomposed / pass_keyword_weight (calibration).
+        # Per-pass keyword population: UNION manifest lexical_keywords with
+        # schema-derived unit vocabulary (inject_pass_keywords). Manifest entries
+        # come first; derived units appended, deduped by NFC+casefold. This
+        # ensures unit vocabulary (e.g. kW/MHz/dBW) reaches the keyword channel
+        # for table-shaped text even when a curated manifest list is present.
+        # Score-neutral today: pass_keyword_weight defaults to 0.0; contributes
+        # to final_score only when lexical_decomposed=True (calibration opt-in).
         profile = inject_pass_keywords(profile, signals)
     except Exception as exc:
         logger.warning(

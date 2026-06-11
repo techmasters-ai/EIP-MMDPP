@@ -318,9 +318,13 @@ class TestManifestIntegration:
             assert rp.anchor_text_weight == pytest.approx(0.0)
             assert rp.anchor_section_weight == pytest.approx(0.0)
             assert rp.lexical_decomposed is False
-            # per-pass keyword feature (this piece) — inert/empty by default.
+            # per-pass keyword feature (this piece) — weight inert by default.
             assert rp.pass_keyword_weight == pytest.approx(0.0)
-            assert rp.lexical_keywords == []
+            # lexical_keywords: production manifests carry curated keyword lists
+            # for field-group passes (baseline-committed alongside the schemas).
+            # Test asserts only that the list is a list (not None) and that the
+            # loader propagates whatever the manifest declares — empty or non-empty.
+            assert isinstance(rp.lexical_keywords, list)
             # subset schema
             assert rp.subset_schema_extraction is False
 

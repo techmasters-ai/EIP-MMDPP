@@ -1369,12 +1369,14 @@ class TestE3DiagnosticsPopulated:
 # ---------------------------------------------------------------------------
 
 class TestInjectPassKeywords:
-    """The chunk-scope endpoint populates RetrievalProfile.lexical_keywords from
-    the schema-derived units (via derive_pass_keywords) ONLY when the manifest
-    left it empty. A manifest-supplied non-empty list always wins (override).
+    """inject_pass_keywords UNIONS manifest lexical_keywords with schema-derived
+    unit vocabulary (guarded-ranker spec §5.1).
 
-    inject_pass_keywords encapsulates exactly that decision so it can be unit-
-    tested without spinning up the full ASGI endpoint.
+    Contract:
+      - Manifest entries come FIRST (original casing/order).
+      - Derived units appended, dedup by NFC+casefold.
+      - profile=None → default RetrievalProfile + derived.
+      - Input profile object NOT mutated (model_copy semantics).
     """
 
     @staticmethod
@@ -1417,14 +1419,53 @@ class TestInjectPassKeywords:
         # Other declared fields are preserved through the model_copy.
         assert out.min_similarity == profile.min_similarity
 
-    def test_does_not_override_manifest_supplied(self):
-        """A non-empty manifest lexical_keywords is kept verbatim (manifest wins)."""
+    def test_union_manifest_then_derived(self):
+        """Non-empty manifest + derived units → union: manifest first, derived appended."""
         from app.api.v1.extraction_routing import inject_pass_keywords
         from app.services.ontology_bundles import RetrievalProfile
 
-        profile = RetrievalProfile(lexical_keywords=["custom_keyword"])
+        # Manifest carries "TWT"; derived would yield "dBW", "dBm" (not aliases).
+        profile = RetrievalProfile(lexical_keywords=["traveling wave tube", "TWT"])
         out = inject_pass_keywords(profile, self._signals_with_units())
-        assert out.lexical_keywords == ["custom_keyword"]
+        # Manifest entries come first, in original casing/order.
+        assert out.lexical_keywords[:2] == ["traveling wave tube", "TWT"]
+        # Derived units appended after.
+        assert "dBW" in out.lexical_keywords
+        assert "dBm" in out.lexical_keywords
+
+    def test_union_dedup_casefold(self):
+        """manifest 'kw' + derived 'kW' → 'kW' NOT appended (NFC+casefold dedup)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.extraction_query_builder import (
+            FieldRetrievalQuery,
+            PassRetrievalSignals,
+        )
+        from app.services.ontology_bundles import RetrievalProfile
+
+        fq = FieldRetrievalQuery(
+            field_name="tx_power_kw",
+            query_text="",
+            aliases=(),
+            negative_terms=(),
+            evidence_patterns=(),
+            likely_sections=(),
+            units=("kW",),
+        )
+        signals = PassRetrievalSignals(
+            pass_name="p",
+            entity_doc="",
+            entity_query="",
+            field_queries=(fq,),
+            lexical_terms=(),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+        )
+        # Manifest has lowercase 'kw'; derived yields 'kW' — same under casefold.
+        profile = RetrievalProfile(lexical_keywords=["kw"])
+        out = inject_pass_keywords(profile, signals)
+        # 'kW' must NOT be appended (would be a casefold-dup).
+        assert out.lexical_keywords == ["kw"]
 
     def test_none_profile_builds_default_and_injects(self):
         """profile=None → a default RetrievalProfile is built and populated."""
@@ -1435,8 +1476,28 @@ class TestInjectPassKeywords:
         assert isinstance(out, RetrievalProfile)
         assert out.lexical_keywords == ["dBW", "dBm"]
 
-    def test_empty_derivation_leaves_empty(self):
-        """No units to mine → lexical_keywords stays empty (no spurious needles)."""
+    def test_empty_derivation_manifest_unchanged(self):
+        """Empty derived → manifest list returned unchanged (object equality OK)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.extraction_query_builder import PassRetrievalSignals
+        from app.services.ontology_bundles import RetrievalProfile
+
+        signals = PassRetrievalSignals(
+            pass_name="p",
+            entity_doc="",
+            entity_query="",
+            field_queries=(),
+            lexical_terms=(),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+        )
+        profile = RetrievalProfile(lexical_keywords=["custom_keyword"])
+        out = inject_pass_keywords(profile, signals)
+        assert out.lexical_keywords == ["custom_keyword"]
+
+    def test_empty_derivation_empty_manifest_stays_empty(self):
+        """No units to mine + empty manifest → lexical_keywords stays empty."""
         from app.api.v1.extraction_routing import inject_pass_keywords
         from app.services.extraction_query_builder import PassRetrievalSignals
         from app.services.ontology_bundles import RetrievalProfile
@@ -1453,3 +1514,14 @@ class TestInjectPassKeywords:
         )
         out = inject_pass_keywords(RetrievalProfile(), signals)
         assert out.lexical_keywords == []
+
+    def test_purity_input_not_mutated(self):
+        """Input profile object must NOT be mutated (model_copy semantics)."""
+        from app.api.v1.extraction_routing import inject_pass_keywords
+        from app.services.ontology_bundles import RetrievalProfile
+
+        profile = RetrievalProfile(lexical_keywords=["TWT"])
+        original_list = list(profile.lexical_keywords)
+        inject_pass_keywords(profile, self._signals_with_units())
+        # Original profile unchanged.
+        assert profile.lexical_keywords == original_list
