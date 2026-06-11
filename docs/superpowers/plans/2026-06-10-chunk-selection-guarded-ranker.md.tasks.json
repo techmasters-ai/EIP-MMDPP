@@ -70,7 +70,7 @@
   {
    "id": 9,
    "subject": "Task 9: Persist + wire is_table with score-neutral default",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Table identity survives merged indexing (synth-ref + raw-ref derivation), table_meta at all merge sites, table_boost 0.08->0.0.\n\n**Files:**\n- app/services/hybrid_chunking.py\n- app/services/extraction_chunk_index.py\n- app/services/extraction_chunk_search.py\n- app/api/v1/extraction_routing.py\n- app/services/ontology_bundles.py\n\n**Acceptance Criteria:**\n- [ ] derivation = source_refs \u2229 (raw #/tables/ \u222a _synth_only_table_refs values) \u2014 NOT DocItemLabel.TABLE alone\n- [ ] read_chunk_is_table default False\n- [ ] table_meta at 3 sites\n- [ ] byte-identical default via boost flip\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_extraction_chunk_search_direct.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/hybrid_chunking.py\", \"app/services/extraction_chunk_index.py\", \"app/services/extraction_chunk_search.py\", \"app/api/v1/extraction_routing.py\", \"app/services/ontology_bundles.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_extraction_chunk_search_direct.py -v\", \"acceptanceCriteria\": [\"derivation = source_refs \\u2229 (raw #/tables/ \\u222a _synth_only_table_refs values) \\u2014 NOT DocItemLabel.TABLE alone\", \"read_chunk_is_table default False\", \"table_meta at 3 sites\", \"byte-identical default via boost flip\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T18:30:00Z"
+ "lastUpdated": "2026-06-10T20:00:00Z"
 }
