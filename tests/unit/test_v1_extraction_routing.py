@@ -1720,19 +1720,11 @@ class TestScoreComponentsAllFullPool:
     """diagnostics.score_components_all covers the FULL reranked pool; the
     existing top_k score_components is unchanged."""
 
-    _DECOMPOSED_KEYS = {
-        "cosine", "rerank_norm",
-        "field_label_hits", "field_label_norm",
-        "pass_keyword_hits", "pass_keyword_norm",
-        "entity_anchor_text", "anchor_text_norm",
-        "entity_anchor_section", "anchor_section_norm",
-        "section_norm", "is_table", "pattern_norm", "negative_norm",
-        "final_score", "candidate_key",
-        # Task 6 — capture-only dense cosine features
-        "max_field_cosine", "mean_top3_field_cosine",
-        # Task 7 — G1 gate-union membership flag (capture-only, 1.0/0.0)
-        "unit_gate",
-    }
+    # Derived from the canonical tuple so this test can never go stale again
+    # (the exact ordered contract is pinned by
+    # test_component_keys_exact_ordered_tuple in test_extraction_candidate_scoring.py).
+    from app.services.extraction_candidate_scoring import COMPONENT_KEYS as _CK
+    _DECOMPOSED_KEYS = set(_CK)
 
     def _make_mc_pass_def(self):
         rp = MagicMock()

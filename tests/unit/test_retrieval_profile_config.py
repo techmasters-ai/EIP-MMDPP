@@ -320,11 +320,16 @@ class TestManifestIntegration:
             assert rp.lexical_decomposed is False
             # per-pass keyword feature (this piece) — weight inert by default.
             assert rp.pass_keyword_weight == pytest.approx(0.0)
-            # lexical_keywords: production manifests carry curated keyword lists
-            # for field-group passes (baseline-committed alongside the schemas).
-            # Test asserts only that the list is a list (not None) and that the
-            # loader propagates whatever the manifest declares — empty or non-empty.
-            assert isinstance(rp.lexical_keywords, list)
+            # lexical_keywords: production manifests carry curated keyword
+            # lists for every field-group pass (baseline-committed alongside
+            # the schemas). Pin REAL content so loader propagation is proven,
+            # not just typed: every retrieval block in these bundles declares
+            # a non-empty curated list.
+            assert rp.lexical_keywords, (
+                f"{bundle_key}/{pass_def.name}: manifest retrieval block "
+                "should carry a curated lexical_keywords list"
+            )
+            assert all(isinstance(k, str) and k for k in rp.lexical_keywords)
             # subset schema
             assert rp.subset_schema_extraction is False
 
