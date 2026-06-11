@@ -88,7 +88,13 @@ from app.services.extraction_chunk_index import (  # noqa: E402
 # no drift); nfc() is the label's normaliser. Neither module imports this one
 # (extraction_unit_gate → field_value_grounding only) — no cycle.
 from app.services.extraction_unit_gate import chunk_passes_unit_gate  # noqa: E402
-from app.services.field_value_grounding import nfc  # noqa: E402
+from app.services.field_value_grounding import has_unit_token, nfc  # noqa: E402
+# MergedCandidate + merged_candidate_from_row used by _gate_union at module level.
+# extraction_candidate_scoring does NOT import this module — no cycle.
+from app.services.extraction_candidate_scoring import (  # noqa: E402
+    MergedCandidate,
+    merged_candidate_from_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -739,8 +745,18 @@ class MultiChannelDiagnostics:
     per_field_dense_counts: dict   # {field_name: int} — per-field candidate counts (C7)
     filter_strategy: str = "multi_channel"
     # Task 7 — G1 unit gate. Defaults keep pre-Task-7 constructors working.
-    unit_gate_total: int = 0       # chunks passing the gate over ALL rows of the run
-    unit_gate_added: int = 0       # gated chunks ADDED to the pool beyond the top_n cap
+    # unit_gate_total: rows carrying flag "unit" (digit + unit token); G1-passing count.
+    # unit_gate_added: pool-EXTERNAL G1-flagged chunks admitted beyond the cap.
+    #   (In-pool G1-marked chunks are NOT counted here; only net-new additions.)
+    unit_gate_total: int = 0
+    unit_gate_added: int = 0
+    # Task 10 — G2 table gate. Symmetric semantics to the G1 fields above.
+    # table_gate_total: rows carrying flag "table" (is_table + unit token, digit-free).
+    # table_gate_added: pool-EXTERNAL G2-flagged chunks admitted beyond the cap.
+    #   A chunk qualifying for BOTH G1+G2 is counted in BOTH *_total and BOTH
+    #   *_added fields (double-count semantics; see _gate_union added_by_flag).
+    table_gate_total: int = 0
+    table_gate_added: int = 0
 
 
 @dataclass
@@ -951,6 +967,194 @@ def build_pool_from_multi_channel_state(
     # candidates). When the Task 18 cut helper lands, route both the primary
     # and fallback pools through it so cap exemption has ONE implementation.
     return merged_pool[:cap]
+
+
+# ---------------------------------------------------------------------------
+# Gate helpers — extracted pre-G2 (anchor-INDEPENDENT; not a C8 sub-step)
+# ---------------------------------------------------------------------------
+
+
+def _gate_scan(
+    rows: list[dict],
+    retrieval_signals: "PassRetrievalSignals",
+    cfg: "RetrievalProfile",
+) -> "dict[str, set[str]]":
+    """Scan all rows of the run and return a flags map.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Maps ``candidate_key`` → set of gate flag names (e.g. ``{"unit"}``,
+        ``{"table"}``, or ``{"unit", "table"}``).  Returns ``{}`` when no gate
+        is enabled or no signature is present.
+
+    Gate rules (each flag is independent; a row may earn multiple flags):
+
+    G1 — flag "unit"
+        ``cfg.unit_gate is True`` (strict, not truthiness — MagicMock-safe) AND
+        ``unit_signature`` non-empty AND chunk passes
+        ``chunk_passes_unit_gate(text_nfc, unit_signature)`` (digit + unit token).
+
+    The ``is True`` guard means MagicMock-shaped ``cfg`` objects in endpoint
+    tests can never accidentally enable the gate.  Default off
+    (``RetrievalProfile.unit_gate = False``) → returns ``{}``.
+
+    .. note::
+        G2 (table gate, flag ``"table"``) is added in Task 10 / Step 1 below.
+        The helper signature is already flag-shaped so adding G2 requires only
+        a predicate addition here — no call-site changes.
+    """
+    unit_signature = tuple(getattr(retrieval_signals, "unit_signature", ()) or ())
+    if cfg.unit_gate is not True or not unit_signature:
+        return {}
+
+    flags_by_key: dict[str, set[str]] = {}
+    for row in rows:
+        key = row.get("vertex_id") or row.get("self_ref") or ""
+        if not key:
+            continue
+        text_nfc = nfc(row.get("chunk_text") or "")
+        flags: set[str] = set()
+
+        # G1 — digit + unit token
+        if chunk_passes_unit_gate(text_nfc, unit_signature):
+            flags.add("unit")
+
+        if flags:
+            flags_by_key[key] = flags
+
+    return flags_by_key
+
+
+def _gate_union(
+    capped_pool: "list[MergedCandidate]",
+    merged_pool: "list[MergedCandidate]",
+    flags_by_key: "dict[str, set[str]]",
+    rows: list[dict],
+    row_cosines: "dict | None",
+    top_n: int,
+    table_meta: "dict | None",
+) -> "tuple[list[MergedCandidate], dict[str, int]]":
+    """Admit gate-flagged chunks into the candidate pool, cap-exempt.
+
+    Parameters
+    ----------
+    capped_pool
+        The dense-sorted pool already sliced to ``top_n`` (step 7).
+    merged_pool
+        The FULL merged pool before the cap (sorted in dense order).
+    flags_by_key
+        Output of :func:`_gate_scan`; ``{}`` → returns ``(capped_pool, {})``.
+    rows
+        Raw per-run rows (used for group (c) — pool-absent key rebuild).
+    row_cosines
+        ``vertex_id``-keyed cosine dicts from the Task 6 matmul (may be None).
+    top_n
+        The ``cfg.top_n_candidates`` value (used to slice beyond-cap members).
+    table_meta
+        Unused for group (c) row-built candidates (they are pool-absent by
+        definition), but accepted for signature symmetry with the primary
+        merge call.  Pass ``None`` when not available.
+
+    Returns
+    -------
+    tuple[list[MergedCandidate], dict[str, int]]
+        * Extended pool (capped_pool + gate_extras), same ordering contract as
+          the original step 7b: dense-capped first, then beyond-cap gated in
+          merged_pool order, then row-built gated sorted by candidate_key.
+        * ``added_by_flag`` — per-flag count of chunks ADDED to the pool
+          (i.e. NOT already in ``capped_pool``).  In-pool marking is NOT
+          counted here.  A chunk qualifying for multiple flags is counted
+          once under EACH flag (double-count semantics; documented in
+          :class:`MultiChannelDiagnostics`).
+
+    Retrieval-source names are derived from flag names inside this function
+    (``f"{flag}_gate"`` → ``"unit_gate"`` / ``"table_gate"``) so stamp sites
+    never multiply across call sites.
+
+    Dedup invariant: duplicate ``candidate_keys`` in the final pool raise
+    ``RuntimeError`` (converted from the old ``assert`` so it surfaces in
+    production logs rather than silently optimising away under -O).
+    """
+    if not flags_by_key:
+        return capped_pool, {}
+
+    gated_keys: set[str] = set(flags_by_key)
+    in_pool_keys: set[str] = {mc.candidate_key for mc in capped_pool}
+    gate_extras: list[MergedCandidate] = []
+    # Tracks how many pool-EXTERNAL candidates were added per flag.
+    added_by_flag: dict[str, int] = {}
+
+    def _stamp(mc: "MergedCandidate", flags: "set[str]") -> None:
+        for flag in flags:
+            mc.gate_flags.add(flag)
+            mc.retrieval_sources.add(f"{flag}_gate")
+
+    # (a) Gated members already INSIDE the cap: mark in place — no dup.
+    for mc in capped_pool:
+        if mc.candidate_key in flags_by_key:
+            _stamp(mc, flags_by_key[mc.candidate_key])
+            # in-pool: not counted in added_by_flag
+
+    # (b) Gated members of merged_pool BEYOND the cap: re-admit the
+    #     EXISTING objects (channel evidence — field_scores, sources,
+    #     hit counts — is preserved), in merged_pool (sorted) order.
+    merged_keys: set[str] = {mc.candidate_key for mc in merged_pool}
+    for mc in merged_pool[top_n:]:
+        if mc.candidate_key in gated_keys and mc.candidate_key not in in_pool_keys:
+            flags = flags_by_key[mc.candidate_key]
+            _stamp(mc, flags)
+            gate_extras.append(mc)
+            in_pool_keys.add(mc.candidate_key)
+            for flag in flags:
+                added_by_flag[flag] = added_by_flag.get(flag, 0) + 1
+
+    # (c) Gated keys absent from merged_pool entirely: build minimal
+    #     MergedCandidates from the raw rows via the SHARED factory
+    #     merged_candidate_from_row (also used by
+    #     _build_lexical_table_candidates in extraction_routing) so
+    #     row-built candidates carry correct content_type from the
+    #     persisted is_table column (table_meta can never reach them —
+    #     their keys are pool-absent by definition).
+    #     vector_score / cosines come from the Task 6 row_cosines (keyed
+    #     identically: vertex_id-or-self_ref); rows without embeddings
+    #     have no row_cosines entry → vector_score None, cosines 0.0.
+    missing = sorted(gated_keys - merged_keys)
+    if missing:
+        rows_by_key = {
+            (r.get("vertex_id") or r.get("self_ref") or ""): r for r in rows
+        }
+        for key in missing:
+            if key in in_pool_keys:  # dedup guard (unreachable by construction)
+                continue
+            row = rows_by_key.get(key)
+            if row is None:
+                continue
+            flags = flags_by_key[key]
+            rc = (row_cosines or {}).get(key) or {}
+            gate_extras.append(
+                merged_candidate_from_row(
+                    row,
+                    candidate_key=key,
+                    vector_score=rc.get("entity_cosine"),
+                    retrieval_sources={f"{flag}_gate" for flag in flags},
+                    gate_flags=set(flags),
+                    row_cosines=rc,
+                )
+            )
+            in_pool_keys.add(key)
+            for flag in flags:
+                added_by_flag[flag] = added_by_flag.get(flag, 0) + 1
+
+    final_pool = capped_pool + gate_extras
+    final_keys = [mc.candidate_key for mc in final_pool]
+    dupes = {k for k in final_keys if final_keys.count(k) > 1}
+    if dupes:
+        raise RuntimeError(
+            f"gate union produced duplicate candidate_keys: {sorted(dupes)}"
+        )
+
+    return final_pool, added_by_flag
 
 
 async def search_extraction_chunks_multi_channel_full(
@@ -1234,26 +1438,11 @@ async def search_extraction_chunks_multi_channel_full(
                 mc.alias_hits += anchor_hit_count
 
     # ------------------------------------------------------------------
-    # 6c. G1 unit-signature gate scan (Task 7 — guarded-ranker spec §3).
-    #     Scans ALL rows of the run (NOT just the merged pool): a chunk
-    #     containing a digit + a pass-unit-signature token is force-kept in
-    #     the candidate pool EXEMPT from the top_n_candidates cap below, so
-    #     it flows through rerank + C5 scoring and appears in the
-    #     score_components_all capture (the recall FLOOR; the value-grounding
-    #     label re-checks precision downstream).
-    #     `is True` (not truthiness) so MagicMock-shaped cfgs in endpoint
-    #     tests can never accidentally enable the gate. Default off
-    #     (RetrievalProfile.unit_gate=False) → gated_keys stays empty and the
-    #     pool below is byte-identical to the legacy path.
+    # Gate scan (anchor-INDEPENDENT — runs over ALL rows of the run, not
+    # just the merged pool).  Returns a flags_by_key map; empty when all
+    # gates are disabled (default: unit_gate=False).
     # ------------------------------------------------------------------
-    unit_signature = tuple(getattr(retrieval_signals, "unit_signature", ()) or ())
-    gated_keys: set[str] = set()
-    if getattr(cfg, "unit_gate", False) is True and unit_signature:
-        for row in rows:
-            text = nfc(row.get("chunk_text") or "")
-            if chunk_passes_unit_gate(text, unit_signature):
-                gated_keys.add(row.get("vertex_id") or row.get("self_ref") or "")
-        gated_keys.discard("")
+    flags_by_key = _gate_scan(rows, retrieval_signals, cfg)
 
     # ------------------------------------------------------------------
     # 7. Order by best dense score (vector_score desc; None last), then cap.
@@ -1264,72 +1453,19 @@ async def search_extraction_chunks_multi_channel_full(
     capped_pool = merged_pool[: cfg.top_n_candidates]
 
     # ------------------------------------------------------------------
-    # 7b. G1 gate union — gated chunks are cap-EXEMPT (Task 7).
-    #     Final pool order: dense-capped first, then beyond-cap gated members
-    #     in merged_pool order, then row-built gated members sorted by
-    #     candidate_key (determinism). The three groups are mutually exclusive
-    #     by construction; the assert below guards the invariant anyway.
+    # Gate union — cap-exempt admission (G1 + G2, Task 7 / Task 10).
+    #     Final pool order: dense-capped first, then beyond-cap gated in
+    #     merged_pool order, then row-built gated sorted by candidate_key.
     # ------------------------------------------------------------------
-    gate_extras: list[MergedCandidate] = []
-    if gated_keys:
-        in_pool_keys = {mc.candidate_key for mc in capped_pool}
-
-        # (a) Gated members already INSIDE the cap: mark in place — no dup.
-        for mc in capped_pool:
-            if mc.candidate_key in gated_keys:
-                mc.gate_flags.add("unit")
-                mc.retrieval_sources.add("unit_gate")
-
-        # (b) Gated members of merged_pool BEYOND the cap: re-admit the
-        #     EXISTING objects (channel evidence — field_scores, sources,
-        #     hit counts — is preserved), in merged_pool (sorted) order.
-        merged_keys = {mc.candidate_key for mc in merged_pool}
-        for mc in merged_pool[cfg.top_n_candidates:]:
-            if mc.candidate_key in gated_keys and mc.candidate_key not in in_pool_keys:
-                mc.gate_flags.add("unit")
-                mc.retrieval_sources.add("unit_gate")
-                gate_extras.append(mc)
-                in_pool_keys.add(mc.candidate_key)
-
-        # (c) Gated keys absent from merged_pool entirely: build minimal
-        #     MergedCandidates from the raw rows via the SHARED factory
-        #     merged_candidate_from_row (also used by
-        #     _build_lexical_table_candidates in extraction_routing) so
-        #     row-built candidates carry correct content_type from the
-        #     persisted is_table column (table_meta can never reach them —
-        #     their keys are pool-absent by definition).
-        #     vector_score / cosines come from the Task 6 row_cosines (keyed
-        #     identically: vertex_id-or-self_ref); rows without embeddings
-        #     have no row_cosines entry → vector_score None, cosines 0.0.
-        missing = sorted(gated_keys - merged_keys)
-        if missing:
-            rows_by_key = {
-                (r.get("vertex_id") or r.get("self_ref") or ""): r for r in rows
-            }
-            for key in missing:
-                if key in in_pool_keys:  # dedup guard (unreachable by construction)
-                    continue
-                row = rows_by_key.get(key)
-                if row is None:
-                    continue
-                rc = (row_cosines or {}).get(key) or {}
-                gate_extras.append(
-                    merged_candidate_from_row(
-                        row,
-                        candidate_key=key,
-                        vector_score=rc.get("entity_cosine"),
-                        retrieval_sources={"unit_gate"},
-                        gate_flags={"unit"},
-                        row_cosines=rc,
-                    )
-                )
-                in_pool_keys.add(key)
-
-        capped_pool = capped_pool + gate_extras
-        final_keys = [mc.candidate_key for mc in capped_pool]
-        assert len(set(final_keys)) == len(final_keys), (
-            "G1 gate union produced duplicate candidate_keys"
-        )
+    capped_pool, added_by_flag = _gate_union(
+        capped_pool,
+        merged_pool,
+        flags_by_key,
+        rows,
+        row_cosines,
+        cfg.top_n_candidates,
+        table_meta,
+    )
 
     diag = MultiChannelDiagnostics(
         raw_row_count=raw_row_count,
@@ -1342,8 +1478,10 @@ async def search_extraction_chunks_multi_channel_full(
             field_name: len(results)
             for field_name, results in field_dense.items()
         },
-        unit_gate_total=len(gated_keys),
-        unit_gate_added=len(gate_extras),
+        unit_gate_total=sum(1 for f in flags_by_key.values() if "unit" in f),
+        unit_gate_added=added_by_flag.get("unit", 0),
+        table_gate_total=sum(1 for f in flags_by_key.values() if "table" in f),
+        table_gate_added=added_by_flag.get("table", 0),
     )
     return capped_pool, diag, state
 

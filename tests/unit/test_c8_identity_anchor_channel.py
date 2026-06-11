@@ -424,6 +424,9 @@ class TestEndpointIdentityAnchorFires:
         profile.anchor_text_weight = 0.0
         profile.anchor_section_weight = 0.0
         profile.lexical_keywords = []
+        # Gate pin: unit_gate=False (strict is-True guard) so a MagicMock cfg
+        # can never accidentally enable G1/G2 and corrupt byte-identical tests.
+        profile.unit_gate = False
         pd.retrieval = profile
         return pd
 
@@ -691,6 +694,9 @@ class TestEndpointIdentityAnchorNoOp:
         profile.anchor_text_weight = 0.0
         profile.anchor_section_weight = 0.0
         profile.lexical_keywords = []
+        # Gate pin: unit_gate=False (strict is-True guard) so a MagicMock cfg
+        # can never accidentally enable G1/G2 and corrupt byte-identical tests.
+        profile.unit_gate = False
         pd.retrieval = profile
         return pd
 
