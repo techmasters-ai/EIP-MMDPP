@@ -43,6 +43,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
+      unit_gate: true
       # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
       # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
       # the C.9b per-element knee (0.25/300/50). Evidence:
@@ -86,6 +87,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
+      unit_gate: true
       # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
       # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
       # the C.9b per-element knee (0.25/300/60). Evidence:

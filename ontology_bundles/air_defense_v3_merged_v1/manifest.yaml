@@ -47,6 +47,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
+      unit_gate: true
       # C.10 Task 8 merged-chunk knee: uniform (min_sim=0.30, top_n=50,
       # top_k=15) across all 9 narrowed passes; achieves 100% pseudo-GT
       # coverage on both Dvina + SA-2. Evidence:
@@ -90,6 +91,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
+      unit_gate: true
       # C.10 Task 8 merged-chunk knee — same uniform config as
       # radar_power_rf. Evidence:
       # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
