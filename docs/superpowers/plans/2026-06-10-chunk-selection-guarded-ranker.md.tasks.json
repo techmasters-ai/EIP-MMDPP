@@ -122,7 +122,7 @@
   {
    "id": 16,
    "subject": "Task 16: Export/eval harness + guarded frontier + gate-coverage check",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** NEW_FEATURES plumbing (backward-compatible), eval_guarded_ranker frontier (both LODO conventions), check_gate_coverage literal acceptance.\n\n**Files:**\n- scripts/a0_captured_separation.py\n- scripts/export_bakeoff_dataset.py\n- scripts/eval_guarded_ranker.py\n- scripts/check_gate_coverage.py\n- tests/unit/test_eval_guarded_ranker.py\n\n**Acceptance Criteria:**\n- [ ] old dataset still loads (missing cols -> 0.0)\n- [ ] hand-computable fixture frontier\n- [ ] gate-coverage exit semantics\n- [ ] both LODO conventions labeled\n\n**Verify:** python3 -m pytest tests/unit/test_eval_guarded_ranker.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/a0_captured_separation.py\", \"scripts/export_bakeoff_dataset.py\", \"scripts/eval_guarded_ranker.py\", \"scripts/check_gate_coverage.py\", \"tests/unit/test_eval_guarded_ranker.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_eval_guarded_ranker.py -v\", \"acceptanceCriteria\": [\"old dataset still loads (missing cols -> 0.0)\", \"hand-computable fixture frontier\", \"gate-coverage exit semantics\", \"both LODO conventions labeled\"]}\n```",
    "blockedBy": [
     7,
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-11T01:00:00Z"
+ "lastUpdated": "2026-06-11T02:00:00Z"
 }
