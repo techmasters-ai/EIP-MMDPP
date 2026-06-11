@@ -198,7 +198,13 @@ without touching `final_score`.
    `derive_pass_keywords(signals)` units INTO the manifest list (union, not
    override-when-empty). Safe: feeds `pass_keyword_hits`, which is
    diagnostics-only today.
-2. **Header projection:** table-derived chunks carry column/row headers +
+2. **Header projection — SUPERSEDED BY EVIDENCE (user-accepted NO-GO,
+   2026-06-10):** the Task-14 diagnostic
+   (`docs/operational/table-haystack-diagnostic-2026-06.md`, commit 2920fcc)
+   showed table chunks are already lexically reachable post §5.1/§5.3 and
+   header text adds zero new needle matches on this corpus. `match_text` is
+   not built. Revisit only if a future corpus shows detached-header splits.
+   Original text follows for the record:** table-derived chunks carry column/row headers +
    caption + nearest section heading in a new nullable `match_text` property
    on `ExtractionChunk` (declared in `arcadedb_schema.py`; application-side
    accessor defaults `match_text → chunk_text` for legacy rows, the existing
