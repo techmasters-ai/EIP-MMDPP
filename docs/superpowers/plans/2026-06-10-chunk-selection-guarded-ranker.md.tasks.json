@@ -98,7 +98,7 @@
   {
    "id": 13,
    "subject": "Task 13: Per-keyword runtime weights",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** lexical_keyword_weights dict; weighted-sum counting; unweighted byte-identical.\n\n**Files:**\n- app/services/ontology_bundles.py\n- app/services/extraction_lexical_search.py\n- app/services/extraction_chunk_search.py\n\n**Acceptance Criteria:**\n- [ ] default byte-identical\n- [ ] weighted sum works\n- [ ] float-safe normalization\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_lexical_search.py tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/ontology_bundles.py\", \"app/services/extraction_lexical_search.py\", \"app/services/extraction_chunk_search.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_lexical_search.py tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"default byte-identical\", \"weighted sum works\", \"float-safe normalization\"]}\n```",
    "blockedBy": [
     12
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T22:45:00Z"
+ "lastUpdated": "2026-06-10T23:30:00Z"
 }
