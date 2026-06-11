@@ -107,7 +107,7 @@
   {
    "id": 14,
    "subject": "Task 14: Header-projection diagnostic -> conditional match_text",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Empirical go/no-go on the match_text haystack (render_graph text may already carry headers); implement only on confirmed gap; user mini-gate between.\n\n**Files:**\n- scripts/diagnose_table_haystack.py\n- docs/operational/table-haystack-diagnostic-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] diagnostic report with go/no-go\n- [ ] user mini-gate before implementation\n- [ ] GO: lineage/grounding non-consumers grep-verified; chunk_text untouched\n- [ ] NO-GO: spec \u00a75.2 superseded note\n\n**Verify:** python3 -m scripts.diagnose_table_haystack --run 1329caf5-d57b-403d-96ea-1399a7d3d67f --chunks 93,94,124\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/diagnose_table_haystack.py\", \"docs/operational/table-haystack-diagnostic-2026-06.md\"], \"verifyCommand\": \"python3 -m scripts.diagnose_table_haystack --run 1329caf5-d57b-403d-96ea-1399a7d3d67f --chunks 93,94,124\", \"acceptanceCriteria\": [\"diagnostic report with go/no-go\", \"user mini-gate before implementation\", \"GO: lineage/grounding non-consumers grep-verified; chunk_text untouched\", \"NO-GO: spec \\u00a75.2 superseded note\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T23:30:00Z"
+ "lastUpdated": "2026-06-11T00:15:00Z"
 }
