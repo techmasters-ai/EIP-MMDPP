@@ -92,7 +92,7 @@
   {
    "id": 12,
    "subject": "Task 12: Word-boundary keyword matching + mining normalization unify",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Single-token pass-keywords word-bounded in keyword_hit_counts ONLY (alias channel untouched); mining scripts NFC-unified.\n\n**Files:**\n- app/services/extraction_lexical_search.py\n- scripts/mine_pass_keywords.py\n- scripts/keyword_discrimination_check.py\n\n**Acceptance Criteria:**\n- [ ] mach !~ machinery; phrases keep substring\n- [ ] alias channel regression-tested unchanged\n- [ ] mining normalization == runtime\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_lexical_search.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_lexical_search.py\", \"scripts/mine_pass_keywords.py\", \"scripts/keyword_discrimination_check.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_lexical_search.py -v\", \"acceptanceCriteria\": [\"mach !~ machinery; phrases keep substring\", \"alias channel regression-tested unchanged\", \"mining normalization == runtime\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T22:00:00Z"
+ "lastUpdated": "2026-06-10T22:45:00Z"
 }
