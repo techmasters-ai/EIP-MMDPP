@@ -1072,6 +1072,7 @@ class TestSearchLevelAliasHitsSeparation:
         profile.top_n_candidates = top_n_candidates
         profile.field_query_top_k = 5
         profile.pattern_hit_limit = 50
+        profile.unit_gate = False  # pin: MagicMock attr must not enable the gate
         return profile
 
     def _signals(self):
