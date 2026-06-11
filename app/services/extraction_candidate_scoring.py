@@ -394,6 +394,9 @@ COMPONENT_KEYS: tuple[str, ...] = (
     # Task 7 — G1 gate-union membership (capture-only, 1.0/0.0). Appended at
     # the END so the offline calibration CSV column order stays append-only.
     "unit_gate",
+    # Task 10 — G2 table gate (capture-only, 1.0/0.0). Appended after unit_gate
+    # per append-only discipline; 1.0 iff "table" in mc.gate_flags else 0.0.
+    "table_gate",
     # Task 8 — structural text features (capture-only, diagnostics-only).
     # Computed from chunk_text at score time ONLY under return_components=True
     # (the hot selection path skips them). Appended at the END per append-only
@@ -642,6 +645,8 @@ def score_candidates(
             "mean_top3_field_cosine": mc.mean_top3_field_cosine,
             # Task 7 — G1 gate-union membership; capture-only, not a scoring term.
             "unit_gate": 1.0 if "unit" in mc.gate_flags else 0.0,
+            # Task 10 — G2 table gate membership; capture-only, not a scoring term.
+            "table_gate": 1.0 if "table" in mc.gate_flags else 0.0,
             # Task 8 — structural text features; capture-only, not scoring terms.
             # Computed only under return_components=True (see block above).
             "digit_density": _digit_density,

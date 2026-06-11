@@ -366,6 +366,95 @@ class TestCountUnitTokens:
 
 
 # ---------------------------------------------------------------------------
+# 7. _gate_scan — G2 table flag (Task 10)
+# ---------------------------------------------------------------------------
+
+class TestGateScanTableFlag:
+    """_gate_scan awards flag 'table' when is_table=True + unit token present.
+
+    Digit is NOT required for G2 — serialized table cells may carry units with
+    the digits in adjacent cells that are stored in separate rows.
+    """
+
+    def _row(self, self_ref: str, chunk_text: str, is_table: bool = False) -> dict:
+        return {
+            "vertex_id": f"run-T:{self_ref}",
+            "self_ref": self_ref,
+            "chunk_text": chunk_text,
+            "is_table": is_table,
+        }
+
+    def _signals(self, *syns: str):
+        from app.services.extraction_query_builder import PassRetrievalSignals
+        return PassRetrievalSignals(
+            pass_name="test_pass",
+            entity_doc="doc",
+            entity_query="q",
+            field_queries=(),
+            lexical_terms=(),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+            unit_signature=syns,
+        )
+
+    def _cfg(self, unit_gate: bool = True):
+        from types import SimpleNamespace
+        return SimpleNamespace(unit_gate=unit_gate)
+
+    def test_table_row_unit_no_digit_gets_table_flag_only(self):
+        """is_table=True + unit token, NO digit → flag 'table' only (not 'unit')."""
+        from app.services.extraction_chunk_search import _gate_scan
+
+        rows = [self._row("r1", "supply voltage unit is kw", is_table=True)]
+        signals = self._signals("kw")
+        result = _gate_scan(rows, signals, self._cfg())
+
+        assert "run-T:r1" in result
+        assert result["run-T:r1"] == {"table"}, result["run-T:r1"]
+
+    def test_table_row_with_digit_gets_both_flags(self):
+        """is_table=True + digit + unit → flags {'unit', 'table'}."""
+        from app.services.extraction_chunk_search import _gate_scan
+
+        rows = [self._row("r1", "peak power 200 kw rated", is_table=True)]
+        signals = self._signals("kw")
+        result = _gate_scan(rows, signals, self._cfg())
+
+        assert result["run-T:r1"] == {"unit", "table"}
+
+    def test_non_table_row_unit_no_digit_gets_no_flags(self):
+        """is_table=False + unit token, no digit → no flags (G1 needs digit)."""
+        from app.services.extraction_chunk_search import _gate_scan
+
+        rows = [self._row("r1", "supply voltage unit is kw", is_table=False)]
+        signals = self._signals("kw")
+        result = _gate_scan(rows, signals, self._cfg())
+
+        assert "run-T:r1" not in result
+
+    def test_table_row_no_unit_token_gets_no_flags(self):
+        """is_table=True but NO unit token → G2 does not fire."""
+        from app.services.extraction_chunk_search import _gate_scan
+
+        rows = [self._row("r1", "system designation SA-2 Guideline", is_table=True)]
+        signals = self._signals("kw")
+        result = _gate_scan(rows, signals, self._cfg())
+
+        assert "run-T:r1" not in result
+
+    def test_gate_off_returns_empty_regardless_of_table(self):
+        """unit_gate=False → {} even for a qualifying table row."""
+        from app.services.extraction_chunk_search import _gate_scan
+
+        rows = [self._row("r1", "supply voltage kw per unit", is_table=True)]
+        signals = self._signals("kw")
+        result = _gate_scan(rows, signals, self._cfg(unit_gate=False))
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
 # Helpers (local)
 # ---------------------------------------------------------------------------
 

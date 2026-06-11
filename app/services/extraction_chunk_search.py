@@ -999,10 +999,16 @@ def _gate_scan(
     tests can never accidentally enable the gate.  Default off
     (``RetrievalProfile.unit_gate = False``) → returns ``{}``.
 
-    .. note::
-        G2 (table gate, flag ``"table"``) is added in Task 10 / Step 1 below.
-        The helper signature is already flag-shaped so adding G2 requires only
-        a predicate addition here — no call-site changes.
+    G2 — flag "table"
+        ``cfg.unit_gate is True`` (same guard — G2 is part of the unit-gate
+        feature group) AND ``unit_signature`` non-empty AND the row's persisted
+        ``is_table`` column is True AND the chunk carries at least one unit token
+        from the signature (digit NOT required — serialized table cells may carry
+        units with the digits in adjacent cells stored in separate rows).
+
+    The ``is True`` guard means MagicMock-shaped ``cfg`` objects in endpoint
+    tests can never accidentally enable either gate.  Default off
+    (``RetrievalProfile.unit_gate = False``) → returns ``{}``.
     """
     unit_signature = tuple(getattr(retrieval_signals, "unit_signature", ()) or ())
     if cfg.unit_gate is not True or not unit_signature:
@@ -1016,9 +1022,14 @@ def _gate_scan(
         text_nfc = nfc(row.get("chunk_text") or "")
         flags: set[str] = set()
 
-        # G1 — digit + unit token
+        # G1 — digit + unit token (the recall floor for numeric fields)
         if chunk_passes_unit_gate(text_nfc, unit_signature):
             flags.add("unit")
+
+        # G2 — table row + unit token (digit not required; table cells may carry
+        #      units without co-located digits in the same cell)
+        if read_chunk_is_table(row) and has_unit_token(text_nfc, unit_signature):
+            flags.add("table")
 
         if flags:
             flags_by_key[key] = flags

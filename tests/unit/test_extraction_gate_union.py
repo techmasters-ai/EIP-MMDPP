@@ -386,7 +386,11 @@ class TestGateUnionTableContentType:
     async def test_pool_absent_gated_table_row_carries_table_content_type(self):
         """A gated TABLE row absent from the merged pool entirely (group (c),
         row-built via merged_candidate_from_row) must arrive with
-        content_type == 'table' read straight off the persisted column."""
+        content_type == 'table' read straight off the persisted column.
+
+        Post-G2: the row has is_table=True AND 'kw' in text (unit token), so
+        it fires BOTH G1 ('unit') and G2 ('table') → gate_flags == {"unit", "table"}.
+        """
         from app.services.ontology_bundles import RetrievalProfile
 
         rows = _gate_rows(n=12, gated_index=11)
@@ -402,7 +406,8 @@ class TestGateUnionTableContentType:
 
         by_key = {mc.candidate_key: mc for mc in pool}
         gated = by_key["run-G:c11"]
-        assert gated.gate_flags == {"unit"}
+        # G1 + G2 both fire (digit "180" + "kw" → G1; is_table=True + "kw" → G2).
+        assert gated.gate_flags == {"unit", "table"}
         assert gated.content_type == "table"
 
     @pytest.mark.asyncio
@@ -420,3 +425,160 @@ class TestGateUnionTableContentType:
 
         by_key = {mc.candidate_key: mc for mc in pool}
         assert by_key["run-G:c11"].content_type is None
+
+
+# ---------------------------------------------------------------------------
+# G2 table gate tests (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def _table_row(self_ref: str, embedding: list[float] | None, **extra) -> dict:
+    """Build a fake table row (is_table=True) for G2 gate tests."""
+    return _row(self_ref, embedding, is_table=True, **extra)
+
+
+class TestG2TableGate:
+    """G2 gate: table row + unit token (digit NOT required).
+
+    A row earns flag 'table' when:
+      - cfg.unit_gate is True
+      - row has is_table=True (persisted column)
+      - chunk text contains at least one unit token from the signature
+
+    Digit presence/absence is irrelevant for G2 (unlike G1).
+    """
+
+    @pytest.mark.asyncio
+    async def test_table_row_unit_token_no_digit_gated_with_table_flag(self):
+        """Table row with unit token but NO digit → flag 'table', source
+        'table_gate'; admitted cap-exempt."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # 12 rows; row 11 is a table with "kw" unit but no digit.
+        rows = []
+        for i in range(11):
+            rows.append(
+                _row(f"c{i:02d}", _vec(1.0 - i * 0.05, 0.5),
+                     chunk_text=f"filler text {i}")
+            )
+        # Table row: unit token "kw" present, no digit.
+        rows.append(
+            _table_row("c11", _vec(0.02, 0.5),
+                       chunk_text="output power units are kw per channel")
+        )
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool, diag, _state = await _run_full(rows, signals, cfg)
+
+        by_key = {mc.candidate_key: mc for mc in pool}
+        assert "run-G:c11" in by_key, "table-gated row must be admitted"
+        gated = by_key["run-G:c11"]
+        assert "table" in gated.gate_flags, f"flag 'table' missing: {gated.gate_flags}"
+        assert "unit" not in gated.gate_flags, (
+            "G1 must NOT fire — text has no digit"
+        )
+        assert "table_gate" in gated.retrieval_sources
+        assert gated.content_type == "table"
+
+        # Diagnostics: table_gate_added=1, unit_gate_added=0.
+        assert diag.table_gate_added == 1
+        assert diag.table_gate_total == 1
+        assert diag.unit_gate_added == 0
+        assert diag.unit_gate_total == 0
+
+    @pytest.mark.asyncio
+    async def test_table_row_both_flags_counted_under_both(self):
+        """Row qualifying for BOTH G1+G2 → gate_flags {'unit','table'};
+        counted once in pool, both sources stamped; added_by_flag double-counts
+        (once under 'unit', once under 'table').
+        """
+        from app.services.ontology_bundles import RetrievalProfile
+
+        # 12 rows; row 11 is a table with digit + unit (fires G1 and G2).
+        rows = []
+        for i in range(11):
+            rows.append(
+                _row(f"c{i:02d}", _vec(1.0 - i * 0.05, 0.5),
+                     chunk_text=f"filler text {i}")
+            )
+        # Table row: digit "200" + unit "kw" → G1; is_table=True + "kw" → G2.
+        rows.append(
+            _table_row("c11", _vec(0.02, 0.5),
+                       chunk_text="peak power 200 kw rated")
+        )
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool, diag, _state = await _run_full(rows, signals, cfg)
+
+        keys = [mc.candidate_key for mc in pool]
+        assert len(pool) == len(set(keys)) == 11, "admitted exactly once"
+
+        gated = pool[keys.index("run-G:c11")]
+        assert gated.gate_flags == {"unit", "table"}, gated.gate_flags
+        assert "unit_gate" in gated.retrieval_sources
+        assert "table_gate" in gated.retrieval_sources
+
+        # Double-count semantics: added under BOTH flags.
+        assert diag.unit_gate_added == 1
+        assert diag.table_gate_added == 1
+        assert diag.unit_gate_total == 1
+        assert diag.table_gate_total == 1
+
+    @pytest.mark.asyncio
+    async def test_default_off_table_gate_diagnostics_zero(self):
+        """Default unit_gate=False → table_gate_total=0, table_gate_added=0."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = []
+        for i in range(12):
+            rows.append(
+                _row(f"c{i:02d}", _vec(1.0 - i * 0.05, 0.5),
+                     chunk_text="power output 100 kw", is_table=(i == 11))
+            )
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10)  # unit_gate=False default
+
+        pool, diag, _state = await _run_full(rows, signals, cfg)
+
+        assert diag.table_gate_total == 0
+        assert diag.table_gate_added == 0
+        assert diag.unit_gate_total == 0
+        assert diag.unit_gate_added == 0
+
+
+class TestG2TableGateInPool:
+    """G2 in-pool marking: a table row inside the cap gets both flags if it
+    qualifies for G2 (without being added again to the pool)."""
+
+    @pytest.mark.asyncio
+    async def test_in_pool_table_row_gets_table_flag_not_duplicated(self):
+        """A table row inside the cap gets flag 'table' + source 'table_gate'
+        in place — pool length unchanged."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = []
+        for i in range(5):
+            # Row 2 is a table with unit token (no digit — pure G2).
+            is_tbl = (i == 2)
+            text = "voltage supply in kw per leg" if is_tbl else f"filler {i}"
+            rows.append(
+                _row(f"c{i:02d}", _vec(1.0 - i * 0.05, 0.5),
+                     chunk_text=text, is_table=is_tbl)
+            )
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool, diag, _state = await _run_full(rows, signals, cfg)
+
+        assert len(pool) == 5, "no duplication"
+        by_key = {mc.candidate_key: mc for mc in pool}
+        gated = by_key["run-G:c02"]
+        assert "table" in gated.gate_flags
+        assert "unit" not in gated.gate_flags  # no digit
+        assert "table_gate" in gated.retrieval_sources
+
+        # In-pool: marked but NOT added → table_gate_added=0.
+        assert diag.table_gate_added == 0
+        assert diag.table_gate_total == 1

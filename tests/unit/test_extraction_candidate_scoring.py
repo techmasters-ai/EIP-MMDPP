@@ -2067,6 +2067,8 @@ _EXPECTED_COMPONENT_KEYS = {
     "mean_top3_field_cosine",
     # Task 7 — G1 gate-union membership flag (capture-only, 1.0/0.0)
     "unit_gate",
+    # Task 10 — G2 table gate membership flag (capture-only, 1.0/0.0)
+    "table_gate",
     # Task 8 — structural text features (capture-only, diagnostics-only)
     "digit_density",
     "label_value_lines",
@@ -2100,6 +2102,8 @@ def test_component_keys_exact_ordered_tuple():
         "max_field_cosine",
         "mean_top3_field_cosine",
         "unit_gate",
+        # Task 10 — G2 table gate; deliberately appended here (append-only contract).
+        "table_gate",
         "digit_density",
         "label_value_lines",
         "unit_token_count",
@@ -2673,6 +2677,92 @@ class TestUnitGateComponent:
         assert [s for _, s in res_base] == [s for _, s in res_hot], (
             "final_score must be byte-identical — gate_flags is capture-only"
         )
+
+
+class TestTableGateComponent:
+    """Task 10 — G2 'table_gate' component: 1.0/0.0, capture-only."""
+
+    def test_table_gate_in_component_keys(self):
+        """COMPONENT_KEYS contains 'table_gate' after 'unit_gate'
+        (append-only contract)."""
+        from app.services.extraction_candidate_scoring import COMPONENT_KEYS
+
+        assert "table_gate" in COMPONENT_KEYS
+        ug_idx = COMPONENT_KEYS.index("unit_gate")
+        tg_idx = COMPONENT_KEYS.index("table_gate")
+        assert ug_idx < tg_idx, (
+            f"table_gate (idx {tg_idx}) must follow unit_gate (idx {ug_idx})"
+        )
+        # table_gate must precede Task 8 keys (append-only discipline).
+        for task8_key in ("digit_density", "label_value_lines", "unit_token_count"):
+            t8_idx = COMPONENT_KEYS.index(task8_key)
+            assert tg_idx < t8_idx, (
+                f"table_gate (idx {tg_idx}) must precede {task8_key} (idx {t8_idx})"
+            )
+
+    def test_table_gate_component_emitted_one_and_zero(self):
+        """'table_gate' is 1.0 for gate_flags={'table'} and 0.0 otherwise."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        table_cand = _make_scored_candidate("c_table", reranker_score=0.4)
+        table_cand["merged_candidate"].gate_flags.add("table")
+        plain = _make_scored_candidate("c_plain", reranker_score=0.8)
+
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(
+                [table_cand, plain], _make_profile(), return_components=True
+            )
+        }
+        assert comps["c_table"]["table_gate"] == 1.0
+        assert comps["c_plain"]["table_gate"] == 0.0
+
+    def test_table_gate_byte_identical_scores(self):
+        """[HARD SAFETY] gate_flags={'table'} is CAPTURE-ONLY — final_score
+        and ordering must be byte-identical to the unflagged pool."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.2)
+        specs = [
+            dict(reranker_score=0.9, alias_hits=2),
+            dict(reranker_score=0.5),
+            dict(reranker_score=0.3, alias_hits=4),
+        ]
+        baseline_pool = [
+            _make_scored_candidate(f"c{i}", **kw) for i, kw in enumerate(specs)
+        ]
+        hot_pool = [
+            _make_scored_candidate(f"c{i}", **kw) for i, kw in enumerate(specs)
+        ]
+        for d in hot_pool:
+            d["merged_candidate"].gate_flags.add("table")
+            d["merged_candidate"].retrieval_sources.add("table_gate")
+
+        res_base = score_candidates(baseline_pool, cfg)
+        res_hot = score_candidates(hot_pool, cfg)
+
+        assert [mc.candidate_key for mc, _ in res_base] == [
+            mc.candidate_key for mc, _ in res_hot
+        ], "ordering must be byte-identical — table gate_flags is capture-only"
+        assert [s for _, s in res_base] == [s for _, s in res_hot], (
+            "final_score must be byte-identical — table gate_flags is capture-only"
+        )
+
+    def test_both_unit_and_table_flags_component_values(self):
+        """Candidate with gate_flags={'unit','table'} → unit_gate=1.0, table_gate=1.0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cand = _make_scored_candidate("c_both", reranker_score=0.6)
+        cand["merged_candidate"].gate_flags.update({"unit", "table"})
+
+        comps = {
+            mc.candidate_key: c
+            for mc, _, c in score_candidates(
+                [cand], _make_profile(), return_components=True
+            )
+        }
+        assert comps["c_both"]["unit_gate"] == 1.0
+        assert comps["c_both"]["table_gate"] == 1.0
 
 
 class TestScoreComponentsPoolNoCap:
