@@ -113,7 +113,7 @@
   {
    "id": 15,
    "subject": "Task 15: Re-mine keywords against value-grounded label",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Miner positives from the relabeled CSV (--positives-csv), unit tokens minable (--allow-units); review-only output. PHASE 2 GATE after Phase-2 tasks.\n\n**Files:**\n- scripts/mine_pass_keywords.py\n\n**Acceptance Criteria:**\n- [ ] --positives-csv swaps posset source\n- [ ] --allow-units relaxes only unit tokens\n- [ ] review-only\n- [ ] DESIG guardrail intact otherwise\n\n**Verify:** python3 -m scripts.mine_pass_keywords --help\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/mine_pass_keywords.py\"], \"verifyCommand\": \"python3 -m scripts.mine_pass_keywords --help\", \"acceptanceCriteria\": [\"--positives-csv swaps posset source\", \"--allow-units relaxes only unit tokens\", \"review-only\", \"DESIG guardrail intact otherwise\"]}\n```",
    "blockedBy": [
     4
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-11T00:15:00Z"
+ "lastUpdated": "2026-06-11T01:00:00Z"
 }
