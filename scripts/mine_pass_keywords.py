@@ -10,6 +10,11 @@ to honor the no-instance-names guardrail. Output is a REVIEW list — not
 auto-committed.
 
     python3 -m scripts.mine_pass_keywords --runs <r1,r2,...>
+
+Normalisation note: text is normalised with NFC+casefold — identical to the
+runtime ``keyword_hit_counts`` function — so lift/pos-fire/neg-fire statistics
+predict runtime matching behaviour exactly.  (Prior versions used NFKD+strip-
+combining, which differs from the runtime path.)
 """
 from __future__ import annotations
 import argparse, base64, json, os, re, unicodedata, urllib.request
@@ -31,8 +36,8 @@ DESIG = re.compile(r"\d|^[a-z]{1,3}-?\d")        # digit-bearing or letter-dash-
 
 
 def _nfc(t: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", unicodedata.normalize("NFC", t).casefold())
-                   if not unicodedata.combining(c))
+    """NFC-normalise + casefold — matches runtime ``keyword_hit_counts`` exactly."""
+    return unicodedata.normalize("NFC", t).casefold()
 
 
 def _arc(sql: str):

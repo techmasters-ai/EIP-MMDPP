@@ -10,6 +10,11 @@ within-pass positives-vs-negatives. Positives come from the FIXED lineage target
 Pure text scan (NFC+casefold substring) over the curated bake-off corpus. No model.
 
     python3 -m scripts.keyword_discrimination_check --runs <r1,r2,...>
+
+Normalisation note: text and keyword needles are normalised with NFC+casefold —
+identical to the runtime ``keyword_hit_counts`` function — so pos-fire/neg-fire
+rates predict runtime matching behaviour exactly.  (Prior versions used
+NFKD+strip-combining, which differs from the runtime path.)
 """
 from __future__ import annotations
 import argparse, base64, json, os, unicodedata, urllib.request
@@ -42,8 +47,8 @@ PROPOSED: dict[str, list[str]] = {
 
 
 def _nfc(t: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", unicodedata.normalize("NFC", t).casefold())
-                   if not unicodedata.combining(c))
+    """NFC-normalise + casefold — matches runtime ``keyword_hit_counts`` exactly."""
+    return unicodedata.normalize("NFC", t).casefold()
 
 
 def _arc(sql: str):

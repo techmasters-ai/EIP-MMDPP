@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from typing import Sequence
 
 from app.services.extraction_chunk_index import (
@@ -33,6 +34,7 @@ from app.services.extraction_chunk_index import (
     read_chunk_section_path,
 )
 from app.services.extraction_query_builder import FieldRetrievalQuery
+from app.services.field_value_grounding import unit_token_regex
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +56,26 @@ def _candidate_key(row: dict) -> str:
     falls back to ``self_ref``.
     """
     return row.get("vertex_id") or row["self_ref"]
+
+
+@lru_cache(maxsize=512)
+def _compiled_keyword_re(needle_nfc: str) -> re.Pattern[str]:
+    """Return a compiled token-bounded pattern for a single-token keyword needle.
+
+    Reuses :func:`~app.services.field_value_grounding.unit_token_regex` — the
+    same Unicode-aware boundary builder used by the unit-matcher — so boundary
+    semantics are identical across the codebase.
+
+    Called only for needles that contain no whitespace after NFC+casefold
+    normalisation (i.e. single-token needles).  Hyphenated tokens such as
+    "x-band" count as single tokens: ``unit_token_regex`` applies leading and
+    trailing guards at the *outer edges* only, which is correct.
+
+    Cached via ``lru_cache`` so each distinct needle is compiled exactly once
+    per process lifetime, mirroring how ``_compiled_unit_re`` works in
+    ``extraction_unit_gate``.
+    """
+    return re.compile(unit_token_regex(needle_nfc))
 
 
 def _compile_patterns(
@@ -164,15 +186,38 @@ def keyword_hit_counts(
 ) -> dict[str, dict]:
     """Return per-chunk per-pass KEYWORD hit counts.
 
-    Mirrors :func:`lexical_hit_counts` exactly in normalisation (NFC + casefold
-    substring) and keying (``vertex_id`` preferred, ``self_ref`` fallback), but
-    the needles are the pass's configurable ``lexical_keywords`` list
-    (``RetrievalProfile.lexical_keywords``) rather than schema field aliases.
+    Normalisation: NFC + casefold (identical to :func:`lexical_hit_counts`).
+    Keying: ``vertex_id`` preferred, ``self_ref`` fallback.
 
-    This count is tracked SEPARATELY from the field-alias count so the
-    decomposed-lexical C5 term can weight per-pass keywords independently of
-    schema field labels. It enriches the otherwise-weak field-alias vocabulary
-    per pass without conflating the two signals.
+    Matching semantics (post-fix):
+    - **Single-token needles** (no whitespace after NFC+casefold) are matched
+      with Unicode-aware word boundaries via
+      :func:`~app.services.field_value_grounding.unit_token_regex`:
+      leading guard ``(?<![^\\W\\d_])`` (not preceded by a Unicode letter) and
+      trailing guard ``(?!\\w)`` (not followed by a Unicode word char).  This
+      prevents "mach" from matching inside "machinery", "fins" from matching
+      inside "muffins", etc.  Hyphenated tokens ("x-band") count as single
+      tokens; boundary guards apply at the OUTER edges only (the hyphen is
+      interior, not a word boundary).  Trailing-digit suppression: "mach" does
+      NOT match "mach2" (trailing digit is ``\\w``); "mach 2" matches because
+      the space separates "mach" from "2".
+    - **Multi-word phrases** (contain whitespace after folding) use the
+      original NFC+casefold SUBSTRING semantics — no boundary wrapping.  A
+      phrase like "pulse repetition interval" is expected to appear inside a
+      larger sentence; adding outer boundaries to phrases would silently drop
+      legitimate matches.
+
+    Counting quirks (preserved for backward-compat):
+    - Binary presence per needle: each needle that matches the chunk
+      contributes 1 regardless of how many times it appears in the text.
+    - Duplicate needle entries each contribute independently: a keyword
+      listed twice in ``keywords`` will add 2 if it matches (mirrors the
+      ``lexical_hit_counts`` per-alias counting convention).
+
+    Scope guard: the ``lexical_hit_counts`` alias channel (production
+    final_score, lexical_weight 0.20) is INTENTIONALLY left on plain substring
+    semantics.  Only THIS function (per-pass keyword channel) uses word-bounded
+    matching.
 
     Parameters
     ----------
@@ -182,10 +227,7 @@ def keyword_hit_counts(
     keywords:
         Per-pass keyword needles to match against each chunk's body text.
         Blank / ``None`` entries are skipped (they would otherwise match every
-        chunk). Each keyword that appears in the haystack contributes 1; the
-        SAME keyword listed twice contributes twice (mirrors
-        ``lexical_hit_counts`` per-alias counting). Empty list → every row
-        scores ``keyword_hits == 0``.
+        chunk). Empty list → every row scores ``keyword_hits == 0``.
 
     Returns
     -------
@@ -199,11 +241,23 @@ def keyword_hit_counts(
     """
     # Pre-normalise keywords once (NFC + casefold), dropping blanks / Nones so
     # an empty needle can't substring-match every chunk body.
-    norm_keywords = [
-        _nfc(k).casefold()
-        for k in keywords
-        if k and k.strip()
-    ]
+    #
+    # For each needle, pre-decide the matching strategy so we pay the
+    # "has whitespace?" check once per keyword rather than once per (keyword, row).
+    #
+    # Single-token needles → compiled bounded regex (cached by _compiled_keyword_re).
+    # Multi-word phrases  → plain substring (original semantics, no boundary change).
+    norm_kw_matchers: list[tuple[str, re.Pattern[str] | None]] = []
+    for k in keywords:
+        if not (k and k.strip()):
+            continue
+        needle = _nfc(k).casefold()
+        if " " in needle:
+            # Multi-word phrase: substring semantics unchanged.
+            norm_kw_matchers.append((needle, None))
+        else:
+            # Single-token: bounded match via unit_token_regex.
+            norm_kw_matchers.append((needle, _compiled_keyword_re(needle)))
 
     result: dict[str, dict] = {}
 
@@ -213,9 +267,15 @@ def keyword_hit_counts(
 
         keyword_hits = 0
         if haystack:
-            for kw in norm_keywords:
-                if kw in haystack:
-                    keyword_hits += 1
+            for needle, pat in norm_kw_matchers:
+                if pat is not None:
+                    # Single-token: bounded regex search.
+                    if pat.search(haystack):
+                        keyword_hits += 1
+                else:
+                    # Multi-word phrase: plain substring.
+                    if needle in haystack:
+                        keyword_hits += 1
 
         result[key] = {"keyword_hits": keyword_hits}
 

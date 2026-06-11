@@ -628,3 +628,152 @@ class TestKeywordHitCounts:
         # They are tracked on DIFFERENT result keys.
         assert "keyword_hits" in kw["r10"]
         assert "alias_hits" in lex["r10"]
+
+
+# ---------------------------------------------------------------------------
+# KEYWORD — word-boundary single-token matching (Task 12)
+#
+# Single-token needles (no whitespace after NFC+casefold) use Unicode-aware
+# word boundaries via unit_token_regex — the same builder the unit-matcher
+# uses. Multi-word phrases keep plain substring semantics unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordHitCountsBoundaryMatching:
+    """Word-boundary matching for single-token keywords (Task 12).
+
+    Single-token keywords must NOT fire inside a longer word; multi-word
+    phrases keep the original substring semantics.
+    """
+
+    # --- "mach" single-token cases ---
+
+    def test_mach_not_matched_in_machinery(self):
+        """Single-token 'mach' must NOT fire inside 'machinery'."""
+        rows = [_row("b1", "The machinery processes the material.")]
+        result = keyword_hit_counts(rows, ["mach"])
+        assert result["b1"]["keyword_hits"] == 0
+
+    def test_mach_not_matched_in_supermach(self):
+        """Single-token 'mach' must NOT fire inside 'supermach'."""
+        rows = [_row("b2", "Supermach performance is claimed.")]
+        result = keyword_hit_counts(rows, ["mach"])
+        assert result["b2"]["keyword_hits"] == 0
+
+    def test_mach_matched_standalone(self):
+        """Single-token 'mach' MUST match when surrounded by non-word chars."""
+        rows = [_row("b3", "Speed: mach 2")]
+        result = keyword_hit_counts(rows, ["mach"])
+        assert result["b3"]["keyword_hits"] == 1
+
+    def test_mach_matched_as_phrase_component(self):
+        """'mach 2' is a multi-word phrase; substring semantics apply — matches."""
+        rows = [_row("b4", "at mach 2 the missile is effective")]
+        result = keyword_hit_counts(rows, ["mach 2"])
+        assert result["b4"]["keyword_hits"] == 1
+
+    def test_mach_not_matched_with_trailing_digit(self):
+        """Trailing digit is \\w, so trailing guard (?!\\w) rejects 'mach' in 'mach2'.
+
+        'mach2' has no whitespace separating the digit, so it does not match
+        the single-token 'mach' needle.  Contrast with 'mach 2' which IS a
+        multi-word phrase and uses substring semantics (handled separately).
+        This mirrors unit-matcher discipline (e.g. 'km' does not match 'km/h'
+        without a whitespace separator).
+        """
+        rows = [_row("b5", "at mach2 the missile is effective")]
+        result = keyword_hit_counts(rows, ["mach"])
+        assert result["b5"]["keyword_hits"] == 0
+
+    # --- "fins" single-token cases ---
+
+    def test_fins_not_matched_in_muffins(self):
+        """Single-token 'fins' must NOT fire inside 'muffins'."""
+        rows = [_row("b6", "The muffins were popular at the event.")]
+        result = keyword_hit_counts(rows, ["fins"])
+        assert result["b6"]["keyword_hits"] == 0
+
+    def test_fins_matched_as_standalone(self):
+        """Single-token 'fins' MUST match when it is a standalone token."""
+        rows = [_row("b7", "The missile fins folded before launch.")]
+        result = keyword_hit_counts(rows, ["fins"])
+        assert result["b7"]["keyword_hits"] == 1
+
+    # --- multi-word phrase keeps substring semantics ---
+
+    def test_phrase_pulse_repetition_interval_substring(self):
+        """Multi-word phrase 'pulse repetition interval' uses substring semantics.
+
+        No boundary wrapping is applied — it should fire anywhere inside the text.
+        """
+        rows = [_row("b8", "The nominal pulse repetition interval is 3 ms.")]
+        result = keyword_hit_counts(rows, ["pulse repetition interval"])
+        assert result["b8"]["keyword_hits"] == 1
+
+    def test_phrase_substring_match_inside_larger_text(self):
+        """Multi-word phrase matches even when flanked by additional words."""
+        rows = [_row("b9", "listed: pulse repetition interval value 3 ms herein.")]
+        result = keyword_hit_counts(rows, ["pulse repetition interval"])
+        assert result["b9"]["keyword_hits"] == 1
+
+    # --- Cyrillic single-token boundary ---
+
+    def test_cyrillic_single_token_not_matched_inside_longer_word(self):
+        """Cyrillic single-token needle must not fire inside a longer Cyrillic word.
+
+        'князь' (prince) must not match inside 'великокняжеский' (grand-ducal).
+        Both the leading and trailing guards are Unicode-aware (\\w matches
+        Cyrillic letters), so the boundary is applied correctly.
+        """
+        rows = [_row("b10", "великокняжеский титул был присвоен.")]
+        result = keyword_hit_counts(rows, ["князь"])
+        assert result["b10"]["keyword_hits"] == 0
+
+    def test_cyrillic_single_token_matched_standalone(self):
+        """Cyrillic single-token needle matches when it is a standalone token."""
+        rows = [_row("b11", "Титул: князь Василий был назначен.")]
+        result = keyword_hit_counts(rows, ["князь"])
+        assert result["b11"]["keyword_hits"] == 1
+
+    # --- hyphenated single tokens ---
+
+    def test_hyphenated_single_token_matched_correctly(self):
+        """Hyphenated token 'x-band' is a single token (no whitespace).
+
+        Boundary guards apply at the outer edges (before 'x', after 'd').
+        'x-band radar' → match; 'x-band' flanked by non-word chars → match.
+        """
+        rows = [_row("b12", "operates in the x-band frequency range")]
+        result = keyword_hit_counts(rows, ["x-band"])
+        assert result["b12"]["keyword_hits"] == 1
+
+    def test_hyphenated_token_not_matched_inside_longer_word(self):
+        """Hyphenated token must not match as a leading fragment of a longer word.
+
+        'x-band' must not fire if the trailing 'd' is directly followed by
+        a letter (i.e. 'x-bander').
+        """
+        rows = [_row("b13", "the x-bander system is installed")]
+        result = keyword_hit_counts(rows, ["x-band"])
+        assert result["b13"]["keyword_hits"] == 0
+
+    # --- alias-channel regression (scope guard) ---
+
+    def test_alias_channel_still_substring_for_single_token(self):
+        """lexical_hit_counts (alias channel) is BYTE-IDENTICAL — still substring.
+
+        'mach' in haystack 'machinery' MUST still fire in lexical_hit_counts even
+        though keyword_hit_counts (this function) suppresses it.  This test pins
+        the intentional asymmetry: the production alias-channel scoring (lexical_weight
+        0.20 × alias_hits ratio) uses substring semantics and must NOT be changed.
+        """
+        rows = [_row("alias-r1", "machinery processing plant")]
+        # keyword_hit_counts: bounded — no match
+        kw_result = keyword_hit_counts(rows, ["mach"])
+        assert kw_result["alias-r1"]["keyword_hits"] == 0  # single-token boundary
+
+        # lexical_hit_counts: plain substring — still matches
+        fqs = [_fq("some_field", aliases=("mach",))]
+        lex_result = lexical_hit_counts(rows, fqs)
+        # 'mach' IS a substring of 'machinery' → alias_hits == 1 (unchanged)
+        assert lex_result["alias-r1"]["alias_hits"] == 1  # substring semantics intact
