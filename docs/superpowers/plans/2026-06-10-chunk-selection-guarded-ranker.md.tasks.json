@@ -86,7 +86,7 @@
   {
    "id": 11,
    "subject": "Task 11: Union schema-derived unit keywords into manifest lists",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** inject_pass_keywords merges derived units INTO non-empty manifest lists (was: shadowed).\n\n**Files:**\n- app/api/v1/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] union not override, NFC+casefold dedup\n- [ ] empty-manifest path unchanged\n- [ ] final_score byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_v1_extraction_routing.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/api/v1/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_v1_extraction_routing.py -v\", \"acceptanceCriteria\": [\"union not override, NFC+casefold dedup\", \"empty-manifest path unchanged\", \"final_score byte-identical\"]}\n```"
   },
   {
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-10T21:00:00Z"
+ "lastUpdated": "2026-06-10T22:00:00Z"
 }
