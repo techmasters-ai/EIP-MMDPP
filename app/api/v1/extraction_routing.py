@@ -51,6 +51,7 @@ from app.services.extraction_candidate_scoring import (
     enough_candidates,
     enough_field_coverage,
     field_coverage,
+    merged_candidate_from_row,
     score_candidates,
     score_components_for_pool,
 )
@@ -194,6 +195,13 @@ def _build_lexical_table_candidates(
     list[MergedCandidate]
         Keyword-only candidates sorted by alias_hits + pattern_hits descending.
         Empty list when no keyword-only keys exist.
+
+    Row→candidate mapping is the SHARED factory
+    ``extraction_candidate_scoring.merged_candidate_from_row`` (also used by
+    the G1 gate-union group-(c) builder in ``extraction_chunk_search``) so
+    row-built candidates carry correct ``content_type`` from the persisted
+    ``is_table`` column — ``table_meta`` can never reach them because their
+    keys are pool-absent by definition.
     """
     # Collect all candidate_keys from lexical/pattern hits
     kw_keys: set[str] = set()
@@ -227,22 +235,15 @@ def _build_lexical_table_candidates(
             retrieval_sources.add("pattern")
 
         result.append(
-            MergedCandidate(
+            merged_candidate_from_row(
+                row,
                 candidate_key=key,
-                chunk_index=read_chunk_index(row),
-                self_ref=row.get("self_ref", ""),
-                chunk_text=row.get("chunk_text", ""),
-                source_refs=read_chunk_source_refs(row),
-                token_count=read_chunk_token_count(row),
-                page_number=row.get("page_number"),
                 vector_score=None,
-                field_scores={},
+                retrieval_sources=retrieval_sources,
+                gate_flags=set(),
                 alias_hits=alias_hits,
                 pattern_hits=pattern_hit_count,
                 negative_hits=negative_hits,
-                section_hits=0,
-                content_type=None,
-                retrieval_sources=retrieval_sources,
                 supported_field_hints=supported_fields,
             )
         )

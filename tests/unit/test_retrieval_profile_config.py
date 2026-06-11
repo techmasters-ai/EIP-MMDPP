@@ -98,7 +98,12 @@ class TestNewFieldDefaults:
         assert _profile().section_weight == pytest.approx(0.0)
 
     def test_table_boost_default(self):
-        assert _profile().table_boost == pytest.approx(0.08)
+        # TABLE signal (is_table wiring): default flipped 0.08 -> 0.0 — the
+        # section_weight precedent. is_table becomes non-zero once table_meta /
+        # merged_candidate_from_row wire the persisted is_table column; keeping
+        # the term inert (byte-identical final_score) REQUIRES the default be
+        # 0.0 until calibration sets it.
+        assert _profile().table_boost == pytest.approx(0.0)
 
     def test_negative_weight_default(self):
         assert _profile().negative_weight == pytest.approx(0.20)
@@ -304,7 +309,9 @@ class TestManifestIntegration:
             assert rp.pattern_weight == pytest.approx(0.15)
             # section_weight default flipped 0.10 -> 0.0 (inert-by-default).
             assert rp.section_weight == pytest.approx(0.0)
-            assert rp.table_boost == pytest.approx(0.08)
+            # table_boost default flipped 0.08 -> 0.0 (is_table wiring,
+            # inert-by-default — section_weight precedent).
+            assert rp.table_boost == pytest.approx(0.0)
             assert rp.negative_weight == pytest.approx(0.20)
             # decomposed-lexical weights + flag (declared, inert by default).
             assert rp.field_label_weight == pytest.approx(0.0)

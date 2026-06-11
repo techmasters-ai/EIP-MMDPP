@@ -73,14 +73,14 @@ from app.services.embedding import embed_texts  # noqa: E402
 # section_path / headings columns projected onto candidate rows below. Imported
 # at module scope (extraction_chunk_index does NOT import this module, so no
 # cycle); keeps the property-dict construction free of inline imports.
-# Task 7 (G1 gate union): read_chunk_index / read_chunk_source_refs /
-# read_chunk_token_count back the row-built gated MergedCandidates.
+# TABLE signal (is_table wiring): read_chunk_is_table backs the per-call
+# table_meta built in _table_meta_from_rows. The Task 7 row-built gated
+# candidates now go through extraction_candidate_scoring.merged_candidate_from_row
+# (which owns the read_chunk_index/source_refs/token_count reads).
 from app.services.extraction_chunk_index import (  # noqa: E402
     read_chunk_headings,
-    read_chunk_index,
+    read_chunk_is_table,
     read_chunk_section_path,
-    read_chunk_source_refs,
-    read_chunk_token_count,
 )
 
 # Task 7 — G1 unit-signature recall gate (guarded-ranker spec §3). The gate
@@ -349,6 +349,8 @@ async def search_extraction_chunks_direct(
     # are projected so candidates carry the section title (read via
     # ``read_chunk_section_path`` / ``read_chunk_headings``). Legacy rows lack
     # the columns; the accessors None/[]-coalesce.
+    # TABLE signal: ``is_table`` projected (read via ``read_chunk_is_table``;
+    # legacy rows False-coalesce).
     rows = await store._client.query(
         store._database,
         "sql",
@@ -356,7 +358,7 @@ async def search_extraction_chunks_direct(
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "
             "chunk_index, source_refs, token_count, "
-            "section_path, headings "
+            "section_path, headings, is_table "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -659,7 +661,8 @@ async def fetch_extraction_chunks_for_run(
       @rid AS node_id, vertex_id, self_ref, chunk_text, embedding,
       page_number, modality, pipeline_run_id,
       chunk_index, source_refs, token_count,
-      section_path, headings   (router-scoring Part 1 — SECTION signal)
+      section_path, headings,  (router-scoring Part 1 — SECTION signal)
+      is_table                 (TABLE signal — read via read_chunk_is_table)
 
     Returns
     -------
@@ -676,7 +679,7 @@ async def fetch_extraction_chunks_for_run(
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "
             "chunk_index, source_refs, token_count, "
-            "section_path, headings "
+            "section_path, headings, is_table "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -684,6 +687,28 @@ async def fetch_extraction_chunks_for_run(
         {"run_id": pipeline_run_id},
     )
     return rows or []
+
+
+def _table_meta_from_rows(rows: list[dict]) -> dict[str, str]:
+    """Build the C4 ``table_meta`` dict from per-run ExtractionChunk rows.
+
+    TABLE signal (is_table wiring): ``{candidate_key: "table"}`` for every row
+    whose persisted ``is_table`` column is true (``read_chunk_is_table``;
+    legacy rows False-coalesce → absent → content_type stays None).
+
+    Key convention MUST match ``_candidate_key`` in
+    ``extraction_candidate_scoring`` (vertex_id preferred; self_ref fallback)
+    or the merge lookup silently misses. Built ONCE per retrieval call and
+    passed at ALL merge sites (primary, C8 re-merge, state-rebuild) so the
+    pool's content_type is consistent across the fallback ladder.
+    """
+    out: dict[str, str] = {}
+    for r in rows:
+        if read_chunk_is_table(r):
+            key = r.get("vertex_id") or r.get("self_ref") or ""
+            if key:
+                out[key] = "table"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +832,11 @@ def build_pool_from_multi_channel_state(
         likely_sections=getattr(state, "likely_sections", ()) or (),
     )
 
+    # TABLE signal (is_table wiring): rebuild table_meta from the pre-fetched
+    # rows ONCE so the fallback-rebuilt pool carries the same content_type as
+    # the primary pool. Legacy rows / norm-off runs → {} (content_type=None).
+    table_meta = _table_meta_from_rows(state.rows)
+
     # If no identity anchors, re-run merge as-is (same dense inputs, same lex/pat).
     # This is useful for relaxed_dense (larger cap) without C8.
     field_dense_to_use = state.field_dense
@@ -891,7 +921,7 @@ def build_pool_from_multi_channel_state(
         lexical_hits=state.lex_hits,
         pattern_hits=state.pat_hits,
         section_meta=sec_hits,
-        table_meta={},
+        table_meta=table_meta,
         # row_cosines=None: state reuse path does not re-run the dense scorer,
         # so row_cosines are not available here.  Task 7 (gate-union) will wire
         # them via the saved state; for now max/mean_top3 default to 0.0.
@@ -950,6 +980,7 @@ async def search_extraction_chunks_multi_channel_full(
     from app.services.extraction_candidate_scoring import (
         MergedCandidate,
         merge_candidates,
+        merged_candidate_from_row,
     )
     from app.services.extraction_lexical_search import (
         keyword_hit_counts,
@@ -1075,15 +1106,18 @@ async def search_extraction_chunks_multi_channel_full(
 
     # ------------------------------------------------------------------
     # 5. C4 — merge all channels into a unified MergedCandidate pool.
-    #    section_meta=sec_hits (real data); table_meta={} — Phase D deferred.
+    #    section_meta=sec_hits (real data); table_meta from the persisted
+    #    is_table column (TABLE signal — built ONCE, reused at the C8
+    #    re-merge below). Legacy rows / norm-off runs → {} (None).
     # ------------------------------------------------------------------
+    table_meta = _table_meta_from_rows(rows)
     merged_pool: list[MergedCandidate] = merge_candidates(
         entity_dense=entity_dense,
         field_dense=field_dense,
         lexical_hits=lex_hits,
         pattern_hits=pat_hits,
         section_meta=sec_hits,
-        table_meta={},
+        table_meta=table_meta,
         row_cosines=row_cosines,
     )
 
@@ -1171,7 +1205,9 @@ async def search_extraction_chunks_multi_channel_full(
                         lexical_hits=lex_hits,
                         pattern_hits=pat_hits,
                         section_meta=sec_hits,
-                        table_meta={},
+                        # TABLE signal: same table_meta as the primary merge
+                        # (step 5) — the C8 re-merge must not lose content_type.
+                        table_meta=table_meta,
                         row_cosines=row_cosines,
                     )
         except Exception as exc:
@@ -1256,8 +1292,12 @@ async def search_extraction_chunks_multi_channel_full(
                 in_pool_keys.add(mc.candidate_key)
 
         # (c) Gated keys absent from merged_pool entirely: build minimal
-        #     MergedCandidates from the raw rows (same field-by-field pattern
-        #     as _build_lexical_table_candidates in extraction_routing).
+        #     MergedCandidates from the raw rows via the SHARED factory
+        #     merged_candidate_from_row (also used by
+        #     _build_lexical_table_candidates in extraction_routing) so
+        #     row-built candidates carry correct content_type from the
+        #     persisted is_table column (table_meta can never reach them —
+        #     their keys are pool-absent by definition).
         #     vector_score / cosines come from the Task 6 row_cosines (keyed
         #     identically: vertex_id-or-self_ref); rows without embeddings
         #     have no row_cosines entry → vector_score None, cosines 0.0.
@@ -1274,26 +1314,13 @@ async def search_extraction_chunks_multi_channel_full(
                     continue
                 rc = (row_cosines or {}).get(key) or {}
                 gate_extras.append(
-                    MergedCandidate(
+                    merged_candidate_from_row(
+                        row,
                         candidate_key=key,
-                        chunk_index=read_chunk_index(row),
-                        self_ref=row.get("self_ref", ""),
-                        chunk_text=row.get("chunk_text", ""),
-                        source_refs=read_chunk_source_refs(row),
-                        token_count=read_chunk_token_count(row),
-                        page_number=row.get("page_number"),
                         vector_score=rc.get("entity_cosine"),
-                        field_scores={},
-                        alias_hits=0,
-                        pattern_hits=0,
-                        negative_hits=0,
-                        section_hits=0,
-                        content_type=None,
                         retrieval_sources={"unit_gate"},
-                        supported_field_hints=set(),
-                        max_field_cosine=float(rc.get("max_field_cosine", 0.0)),
-                        mean_top3_field_cosine=float(rc.get("mean_top3_field_cosine", 0.0)),
                         gate_flags={"unit"},
+                        row_cosines=rc,
                     )
                 )
                 in_pool_keys.add(key)

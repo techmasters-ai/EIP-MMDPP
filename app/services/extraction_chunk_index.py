@@ -321,6 +321,36 @@ def read_chunk_index(row: dict | Any) -> int:
         return -1
 
 
+def read_chunk_is_table(row: dict | Any) -> bool:
+    """Return ``is_table`` as ``bool``. Legacy / missing / ``None`` → ``False``.
+
+    TABLE signal (is_table wiring). The column is written by
+    ``_insert_merged_chunk_row`` as a native BOOLEAN; legacy rows (indexed
+    before the wiring) lack it entirely and historical captured runs MUST
+    keep reading as ``False`` (is_table component stays 0.0 — no migration).
+
+    Coalescing rules (NEVER raises, mirrors the other accessors):
+
+    * missing / ``None`` → ``False``
+    * native ``bool`` → as-is
+    * string → ``True`` only for ``"true"/"1"/"yes"`` (case-insensitive;
+      ArcadeDB HTTP serialisation occasionally stringifies scalar columns)
+    * numeric → ``int(raw) != 0``
+    * anything else → ``False``
+    """
+    raw = _row_get(row, "is_table", None)
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes")
+    try:
+        return int(raw) != 0
+    except (TypeError, ValueError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Private rendering helpers
 # ---------------------------------------------------------------------------
@@ -1064,6 +1094,12 @@ _INSERT_MERGED_SQL = (
     # simply lack both columns — the read accessors None/[]-coalesce.
     "section_path = :section_path, "
     "headings = :headings, "
+    # TABLE signal (is_table wiring). Same schemaless-SET pattern as
+    # section_path/headings: SET materializes the BOOLEAN column; no
+    # CREATE PROPERTY / schema migration. Legacy rows (indexed before this
+    # change) simply lack the column — ``read_chunk_is_table`` False-coalesces,
+    # so historical runs stay is_table=0.0 in scoring (no migration).
+    "is_table = :is_table, "
     "created_at = sysdate()"
 )
 
@@ -1082,6 +1118,7 @@ def _insert_merged_chunk_row(
     token_count: int,
     section_path: str | None = None,
     headings: list[str] | None = None,
+    is_table: bool = False,
 ) -> None:
     """Insert one merged-mode ``ExtractionChunk`` vertex.
 
@@ -1121,6 +1158,11 @@ def _insert_merged_chunk_row(
             # LIST (mirrors ``source_refs``); ``section_path`` as a string.
             "section_path": section_path,
             "headings": list(headings) if headings else [],
+            # TABLE signal (is_table wiring). Caller passes the OR of the
+            # MergedChunk's raw-ref flag and synth-ref membership (see
+            # build_extraction_index_hybrid step 4). bool() guards against
+            # truthy non-bool leakage into the BOOLEAN column.
+            "is_table": bool(is_table),
         },
     )
 
@@ -1217,6 +1259,15 @@ def build_extraction_index_hybrid(
         )
 
     _norm_synth_count = 0
+    # TABLE signal (is_table wiring): table_ref → synth text refs registered
+    # by the normalization loop below. Hoisted OUT of the fail-open try so
+    # (a) it is always defined for the insert loop's synth-ref union, and
+    # (b) a mid-loop normalization failure still flags whatever synth
+    # TextItems were appended to doc_json before the exception (those texts
+    # ARE chunked — they are table-derived and must be marked as such).
+    # Stays {} when normalization is off → union is empty → raw-ref
+    # detection (MergedChunk.is_table) is the only table signal.
+    _synth_only_table_refs: dict[str, list[str]] = {}
     # Worker-only gate (independent of docling-graph's per-pass
     # DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED). Lets us A/B the
     # upstream pass-agnostic normalization without disturbing the
@@ -1276,7 +1327,7 @@ def build_extraction_index_hybrid(
             _body = doc_json.setdefault("body", {})
             _body_children = _body.setdefault("children", [])
             _next_text_idx = len(_texts_list)
-            _synth_only_table_refs: dict[str, list[str]] = {}
+            # _synth_only_table_refs initialized BEFORE this try (see above).
 
             for _nt in _normalized:
                 _table_ref = f"#/tables/{_nt.table_index}"
@@ -1381,6 +1432,15 @@ def build_extraction_index_hybrid(
     # legacy INSERT path stays untouched.
     # ------------------------------------------------------------------
     insert_t0 = time.monotonic()
+    # TABLE signal (is_table wiring): correct table identity at index time is
+    # {raw "#/tables/" refs} ∪ {synthetic text refs registered in
+    # _synth_only_table_refs}. With upstream norm + suppress_raw (production
+    # path) the raw table refs are REPLACED by synth text refs in
+    # body.children, so DocItemLabel.TABLE / raw-ref detection alone misses
+    # every normalized table chunk. Union computed once; empty when norm off.
+    synth_ref_union: set[str] = {
+        r for refs in _synth_only_table_refs.values() for r in refs
+    }
     for c, embedding in zip(chunks, embeddings):
         vertex_id = f"{pipeline_run_id}:chunk_{c.chunk_index}"
         page_no_int: int | None = None
@@ -1389,6 +1449,7 @@ def build_extraction_index_hybrid(
                 page_no_int = int(c.page_no)
             except (TypeError, ValueError):
                 page_no_int = None
+        is_table = c.is_table or bool(set(c.source_refs) & synth_ref_union)
         _insert_merged_chunk_row(
             store,
             vertex_id=vertex_id,
@@ -1402,6 +1463,7 @@ def build_extraction_index_hybrid(
             token_count=c.token_count,
             section_path=c.section_path,
             headings=c.headings,
+            is_table=is_table,
         )
     insert_ms = int((time.monotonic() - insert_t0) * 1000)
 

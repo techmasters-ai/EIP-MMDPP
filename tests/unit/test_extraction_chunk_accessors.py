@@ -430,3 +430,76 @@ def test_read_chunk_source_refs_filters_nones_from_string_json_in_source_refs():
 
     row = {"source_refs": '[null, "#/texts/37", null, "#/texts/38"]'}
     assert read_chunk_source_refs(row) == ["#/texts/37", "#/texts/38"]
+
+
+# ---------------------------------------------------------------------------
+# read_chunk_is_table — TABLE signal (is_table wiring)
+# ---------------------------------------------------------------------------
+
+
+def test_read_chunk_is_table_returns_false_for_legacy_row():
+    """Legacy rows (indexed before the is_table wiring) lack the column
+    entirely — the accessor must False-coalesce so historical runs keep
+    scoring is_table=0.0 (no migration)."""
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    row = {"chunk_index": 3, "chunk_text": "legacy"}
+    assert read_chunk_is_table(row) is False
+
+
+def test_read_chunk_is_table_returns_false_when_none():
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    row = {"is_table": None}
+    assert read_chunk_is_table(row) is False
+
+
+def test_read_chunk_is_table_returns_native_bool():
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    assert read_chunk_is_table({"is_table": True}) is True
+    assert read_chunk_is_table({"is_table": False}) is False
+
+
+def test_read_chunk_is_table_coerces_stringified_bool():
+    """ArcadeDB HTTP serialisation occasionally stringifies scalar columns —
+    only 'true'/'1'/'yes' (case-insensitive) read as True."""
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    assert read_chunk_is_table({"is_table": "true"}) is True
+    assert read_chunk_is_table({"is_table": "TRUE"}) is True
+    assert read_chunk_is_table({"is_table": "1"}) is True
+    assert read_chunk_is_table({"is_table": "yes"}) is True
+    assert read_chunk_is_table({"is_table": "false"}) is False
+    assert read_chunk_is_table({"is_table": "0"}) is False
+    assert read_chunk_is_table({"is_table": ""}) is False
+    assert read_chunk_is_table({"is_table": "garbage"}) is False
+
+
+def test_read_chunk_is_table_coerces_numeric():
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    assert read_chunk_is_table({"is_table": 1}) is True
+    assert read_chunk_is_table({"is_table": 0}) is False
+
+
+def test_read_chunk_is_table_handles_garbage_as_false():
+    """Non-coercible types must NEVER raise — False is the safe default."""
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    assert read_chunk_is_table({"is_table": ["unexpected"]}) is False
+    assert read_chunk_is_table({"is_table": {"nested": True}}) is False
+
+
+def test_read_chunk_is_table_accepts_object_like_rows():
+    """Mirrors test_accessors_accept_object_like_rows for the new accessor."""
+    from app.services.extraction_chunk_index import read_chunk_is_table
+
+    class _Row:
+        is_table = True
+
+    class _LegacyRow:
+        chunk_index = 7
+
+    assert read_chunk_is_table(_Row()) is True
+    assert read_chunk_is_table(_LegacyRow()) is False

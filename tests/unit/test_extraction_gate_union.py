@@ -371,3 +371,52 @@ class TestMultiChannelDiagnosticsDefaults:
         )
         assert diag.unit_gate_total == 0
         assert diag.unit_gate_added == 0
+
+
+# ---------------------------------------------------------------------------
+# TABLE signal (is_table wiring) — row-built gated candidates carry
+# content_type from the persisted is_table column (table_meta can never reach
+# them: their keys are pool-absent by definition).
+# ---------------------------------------------------------------------------
+
+
+class TestGateUnionTableContentType:
+
+    @pytest.mark.asyncio
+    async def test_pool_absent_gated_table_row_carries_table_content_type(self):
+        """A gated TABLE row absent from the merged pool entirely (group (c),
+        row-built via merged_candidate_from_row) must arrive with
+        content_type == 'table' read straight off the persisted column."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=12, gated_index=11)
+        rows[11]["is_table"] = True
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool, _diag, state = await _run_full(rows, signals, cfg)
+
+        # Sanity: the gated key is pool-absent from every channel (group (c)).
+        dense_keys = {r.properties.get("vertex_id") for r in state.entity_dense}
+        assert "run-G:c11" not in dense_keys
+
+        by_key = {mc.candidate_key: mc for mc in pool}
+        gated = by_key["run-G:c11"]
+        assert gated.gate_flags == {"unit"}
+        assert gated.content_type == "table"
+
+    @pytest.mark.asyncio
+    async def test_pool_absent_gated_non_table_row_stays_none(self):
+        """Control: the same row-built path without the is_table column
+        (legacy row) keeps content_type None."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=12, gated_index=11)
+        assert "is_table" not in rows[11]
+        signals = _make_signals(unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool, _diag, _state = await _run_full(rows, signals, cfg)
+
+        by_key = {mc.candidate_key: mc for mc in pool}
+        assert by_key["run-G:c11"].content_type is None

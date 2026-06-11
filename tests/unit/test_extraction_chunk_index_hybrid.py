@@ -618,3 +618,244 @@ def test_insert_merged_round_trips_through_read_accessors() -> None:
         src = by_index[row["chunk_index"]]
         assert read_chunk_section_path(row) == src.section_path
         assert read_chunk_headings(row) == src.headings
+
+
+# ---------------------------------------------------------------------------
+# TABLE signal (is_table wiring) — raw-ref detection, synth-ref OR-in,
+# insert threading.
+#
+# Table identity at index time = {raw "#/tables/" refs in MergedChunk.source_refs}
+# ∪ {synthetic text refs registered in _synth_only_table_refs by the upstream
+# normalization loop}. In merged mode with upstream table-norm + suppress_raw
+# (the production path) normalized tables are SYNTHETIC TextItems — raw-ref
+# detection alone misses every normalized table chunk, hence the OR-in.
+# ---------------------------------------------------------------------------
+
+
+def _build_doc_with_spec_table() -> dict:
+    """Dvina-like prose doc + one COLUMN_MAJOR spec table under its own heading.
+
+    The table is 4x4 with row_header=True col-0 labels drawn from
+    ``SPEC_ROW_KEYWORDS`` ("max range" / "max altitude" / ...) so
+    ``detect_shape`` classifies it COLUMN_MAJOR (not OTHER) and
+    ``render_for_graph`` emits at least one synthetic chunk when the
+    upstream normalization gate is on.
+    """
+    from docling_core.types.doc.document import (
+        DoclingDocument,
+        TableCell,
+        TableData,
+    )
+
+    doc = DoclingDocument(name="dvina_like_with_table")
+    doc.add_title("S-75 Dvina System Manual")
+    doc.add_heading("Chapter 1: Overview", level=1)
+    doc.add_text(
+        label="text",
+        text=(
+            "The S-75 Dvina is a Soviet-era surface-to-air missile system. "
+            "It entered service with the Soviet armed forces in 1957 and "
+            "remained the backbone of the Soviet Air Defence Forces."
+        ),
+    )
+    doc.add_heading("Chapter 2: Specifications", level=1)
+
+    labels = ["Max range", "Max altitude", "Max speed", "Weight"]
+    values = [
+        ["30 km", "34 km", "43 km"],
+        ["25 km", "27 km", "30 km"],
+        ["Mach 3", "Mach 3.5", "Mach 3.5"],
+        ["2163 kg", "2287 kg", "2300 kg"],
+    ]
+    cells = []
+    for r, label in enumerate(labels):
+        cells.append(
+            TableCell(
+                row_span=1, col_span=1,
+                start_row_offset_idx=r, end_row_offset_idx=r + 1,
+                start_col_offset_idx=0, end_col_offset_idx=1,
+                text=label, row_header=True,
+            )
+        )
+        for c, val in enumerate(values[r], start=1):
+            cells.append(
+                TableCell(
+                    row_span=1, col_span=1,
+                    start_row_offset_idx=r, end_row_offset_idx=r + 1,
+                    start_col_offset_idx=c, end_col_offset_idx=c + 1,
+                    text=val,
+                )
+            )
+    doc.add_table(data=TableData(num_rows=4, num_cols=4, table_cells=cells))
+
+    doc.add_heading("Chapter 3: Components", level=1)
+    doc.add_text(
+        label="text",
+        text=(
+            "The system comprises the Fan Song radar, the SM-90 launcher, "
+            "and the PR-11 transporter/transloader. Each launcher carries "
+            "one V-750 missile."
+        ),
+    )
+    return doc.export_to_dict()
+
+
+def _embed_like_real(texts, query=False):  # noqa: ANN001, ARG001
+    """side_effect embed mock sized to whatever the chunker actually emits."""
+    return [[0.1] * 1024] * len(texts)
+
+
+def test_merged_chunk_is_table_defaults_false() -> None:
+    """``MergedChunk.is_table`` defaults False — existing positional
+    construction (pre-wiring callers) is unaffected."""
+    from app.services.hybrid_chunking import MergedChunk
+
+    mc = MergedChunk(
+        chunk_index=0,
+        text="prose",
+        source_refs=["#/texts/0"],
+        page_no=None,
+        token_count=3,
+    )
+    assert mc.is_table is False
+
+
+def test_merged_chunk_is_table_raw_ref_detection(monkeypatch) -> None:
+    """With normalization OFF, the build loop marks exactly the chunks whose
+    ``source_refs`` carry a raw ``#/tables/`` ref."""
+    from app.services.hybrid_chunking import build_hybrid_chunks_for_extraction
+
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED", "false")
+    doc_json = _build_doc_with_spec_table()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "fixture must produce >=1 chunk"
+
+    table_chunks = [
+        c for c in chunks
+        if any(r.startswith("#/tables/") for r in c.source_refs)
+    ]
+    prose_chunks = [
+        c for c in chunks
+        if not any(r.startswith("#/tables/") for r in c.source_refs)
+    ]
+    assert table_chunks, "fixture table must survive chunking"
+    assert prose_chunks, "fixture prose must survive chunking"
+    for c in table_chunks:
+        assert c.is_table is True, (
+            f"chunk {c.chunk_index} carries {c.source_refs} but is_table is False"
+        )
+    for c in prose_chunks:
+        assert c.is_table is False, (
+            f"prose chunk {c.chunk_index} ({c.source_refs}) wrongly flagged"
+        )
+
+
+def test_insert_merged_sql_binds_is_table(monkeypatch) -> None:
+    """Insert threading: the merged INSERT SQL declares ``is_table`` (same
+    schemaless-SET pattern as section_path/headings) and every row binds a
+    bool that round-trips through ``read_chunk_is_table``. With norm OFF the
+    raw-ref chunk is the only flagged row."""
+    from app.services.extraction_chunk_index import (
+        _INSERT_MERGED_SQL,
+        build_extraction_index_hybrid,
+        read_chunk_is_table,
+        read_chunk_source_refs,
+    )
+
+    assert "is_table = :is_table" in _INSERT_MERGED_SQL
+
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED", "false")
+    doc_json = _build_doc_with_spec_table()
+    store = _make_mock_store()
+
+    with patch(
+        "app.services.extraction_chunk_index.embed_texts",
+        side_effect=_embed_like_real,
+    ):
+        build_extraction_index_hybrid(
+            doc_json,
+            pipeline_run_id="run-is-table",
+            document_id="doc-is-table",
+            store=store,
+        )
+
+    rows = _captured_insert_params(store)
+    assert rows, "expected >=1 INSERT row captured"
+
+    flagged = []
+    for row in rows:
+        assert "is_table" in row, "every INSERT must bind the is_table param"
+        assert isinstance(row["is_table"], bool)
+        refs = read_chunk_source_refs(row)
+        has_raw_table_ref = any(r.startswith("#/tables/") for r in refs)
+        assert read_chunk_is_table(row) is has_raw_table_ref, (
+            f"row {row.get('vertex_id')!r} refs={refs} "
+            f"is_table={row['is_table']} mismatch"
+        )
+        if row["is_table"]:
+            flagged.append(row)
+    assert flagged, "the raw table chunk must be flagged is_table=True"
+
+
+def test_synth_ref_or_in_flags_normalized_table_chunks(monkeypatch) -> None:
+    """With upstream norm + suppress_raw ON (production path), the raw table
+    ref is REPLACED by synthetic ``#/texts/N`` refs in body.children — raw-ref
+    detection sees nothing, and ONLY the synth-ref OR-in
+    (``_synth_only_table_refs`` union) can flag the normalized table chunks."""
+    from app.services.extraction_chunk_index import (
+        build_extraction_index_hybrid,
+        read_chunk_is_table,
+        read_chunk_source_refs,
+    )
+
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN", "true")
+    monkeypatch.setenv("EXTRACTION_INDEX_UPSTREAM_TABLE_NORM", "true")
+
+    doc_json = _build_doc_with_spec_table()
+    n_texts_before = len(doc_json.get("texts", []))
+    store = _make_mock_store()
+
+    with patch(
+        "app.services.extraction_chunk_index.embed_texts",
+        side_effect=_embed_like_real,
+    ):
+        build_extraction_index_hybrid(
+            doc_json,
+            pipeline_run_id="run-synth-table",
+            document_id="doc-synth-table",
+            store=store,
+        )
+
+    # Normalization must have appended >=1 synthetic TextItem (otherwise this
+    # test exercises nothing).
+    n_texts_after = len(doc_json.get("texts", []))
+    assert n_texts_after > n_texts_before, (
+        "upstream normalization produced no synthetic TextItems — "
+        "fixture table was not normalized (shape OTHER?)"
+    )
+    synth_refs = {f"#/texts/{i}" for i in range(n_texts_before, n_texts_after)}
+
+    rows = _captured_insert_params(store)
+    assert rows, "expected >=1 INSERT row captured"
+
+    flagged_rows = []
+    for row in rows:
+        refs = read_chunk_source_refs(row)
+        # suppress_raw replaced raw table refs in body.children — no merged
+        # chunk may carry one (the CRITICAL domain fact: DocItemLabel.TABLE /
+        # raw-ref detection alone misses every normalized table chunk).
+        assert not any(r.startswith("#/tables/") for r in refs), (
+            f"raw table ref leaked into merged chunk: {refs}"
+        )
+        has_synth_ref = bool(set(refs) & synth_refs)
+        assert read_chunk_is_table(row) is has_synth_ref, (
+            f"row {row.get('vertex_id')!r} refs={refs} "
+            f"is_table={row.get('is_table')} but synth membership={has_synth_ref}"
+        )
+        if has_synth_ref:
+            flagged_rows.append(row)
+    assert flagged_rows, (
+        "no inserted row carries a synthetic table ref — the OR-in path "
+        "was not exercised"
+    )

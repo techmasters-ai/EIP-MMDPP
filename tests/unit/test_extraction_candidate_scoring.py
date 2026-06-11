@@ -2946,3 +2946,251 @@ class TestTask8HotFeaturesEqualityNoImpactOnScore:
         assert scores_sig == scores_nosig, (
             "final_score must be byte-identical — unit_signature is capture-only"
         )
+
+
+# ===========================================================================
+# TABLE signal (is_table wiring) — merged_candidate_from_row factory,
+# is_table component, and the score-neutral table_boost=0.0 default.
+# ===========================================================================
+
+
+def _table_row(
+    *,
+    vertex_id: str = "run1:chunk_9",
+    self_ref: str = "chunk_9",
+    is_table: bool | None = True,
+) -> dict:
+    """Raw ExtractionChunk row dict as the per-run SELECT projects it."""
+    row = {
+        "vertex_id": vertex_id,
+        "self_ref": self_ref,
+        "chunk_index": 9,
+        "chunk_text": "Max range: 43 km",
+        "source_refs": ["#/texts/41"],
+        "token_count": 12,
+        "page_number": 4,
+    }
+    if is_table is not None:
+        row["is_table"] = is_table
+    return row
+
+
+class TestMergedCandidateFromRow:
+    """SHARED row→candidate factory used by the two row-built sites that
+    bypass merge_candidates (gate-union group (c) + lexical_table fallback)."""
+
+    def test_is_table_row_yields_table_content_type(self):
+        from app.services.extraction_candidate_scoring import (
+            merged_candidate_from_row,
+        )
+
+        mc = merged_candidate_from_row(
+            _table_row(is_table=True),
+            candidate_key="run1:chunk_9",
+            vector_score=None,
+            retrieval_sources={"lexical"},
+            gate_flags=set(),
+        )
+        assert mc.content_type == "table"
+
+    def test_non_table_row_yields_none_content_type(self):
+        from app.services.extraction_candidate_scoring import (
+            merged_candidate_from_row,
+        )
+
+        mc = merged_candidate_from_row(
+            _table_row(is_table=False),
+            candidate_key="run1:chunk_9",
+            vector_score=None,
+            retrieval_sources=set(),
+            gate_flags=set(),
+        )
+        assert mc.content_type is None
+
+    def test_legacy_row_without_column_yields_none_content_type(self):
+        """Legacy rows (indexed before the wiring) lack the column entirely —
+        read_chunk_is_table False-coalesces → content_type None."""
+        from app.services.extraction_candidate_scoring import (
+            merged_candidate_from_row,
+        )
+
+        mc = merged_candidate_from_row(
+            _table_row(is_table=None),
+            candidate_key="run1:chunk_9",
+            vector_score=None,
+            retrieval_sources=set(),
+            gate_flags=set(),
+        )
+        assert mc.content_type is None
+
+    def test_row_fields_and_kwargs_thread_through(self):
+        """The factory must reproduce both prior construction sites
+        field-for-field: row-derived fields via the read accessors, per-site
+        differences via kwargs, decomposed counts at their 0 defaults."""
+        from app.services.extraction_candidate_scoring import (
+            merged_candidate_from_row,
+        )
+
+        rc = {
+            "entity_cosine": 0.71,
+            "max_field_cosine": 0.63,
+            "mean_top3_field_cosine": 0.55,
+        }
+        mc = merged_candidate_from_row(
+            _table_row(is_table=True),
+            candidate_key="run1:chunk_9",
+            vector_score=rc["entity_cosine"],
+            retrieval_sources={"unit_gate"},
+            gate_flags={"unit"},
+            row_cosines=rc,
+            alias_hits=3,
+            pattern_hits=2,
+            negative_hits=1,
+            supported_field_hints={"max_range_km"},
+        )
+        assert mc.candidate_key == "run1:chunk_9"
+        assert mc.chunk_index == 9
+        assert mc.self_ref == "chunk_9"
+        assert mc.chunk_text == "Max range: 43 km"
+        assert mc.source_refs == ["#/texts/41"]
+        assert mc.token_count == 12
+        assert mc.page_number == 4
+        assert mc.vector_score == pytest.approx(0.71)
+        assert mc.field_scores == {}
+        assert mc.alias_hits == 3
+        assert mc.pattern_hits == 2
+        assert mc.negative_hits == 1
+        assert mc.section_hits == 0
+        assert mc.retrieval_sources == {"unit_gate"}
+        assert mc.gate_flags == {"unit"}
+        assert mc.supported_field_hints == {"max_range_km"}
+        assert mc.max_field_cosine == pytest.approx(0.63)
+        assert mc.mean_top3_field_cosine == pytest.approx(0.55)
+        # Decomposed-lexical: alias_hits stamps the LEGACY field only —
+        # row-built candidates never carried decomposed counts.
+        assert mc.field_label_hits == 0
+        assert mc.pass_keyword_hits == 0
+        assert mc.entity_anchor_text == 0
+        assert mc.entity_anchor_section == 0
+
+    def test_no_row_cosines_defaults_zero(self):
+        from app.services.extraction_candidate_scoring import (
+            merged_candidate_from_row,
+        )
+
+        mc = merged_candidate_from_row(
+            _table_row(),
+            candidate_key="run1:chunk_9",
+            vector_score=None,
+            retrieval_sources=set(),
+            gate_flags=set(),
+        )
+        assert mc.vector_score is None
+        assert mc.max_field_cosine == 0.0
+        assert mc.mean_top3_field_cosine == 0.0
+
+
+class TestIsTableComponentLive:
+    """table_meta → content_type → is_table component."""
+
+    def test_table_meta_flows_to_is_table_component(self):
+        """merge_candidates(table_meta={key:'table'}) → score components carry
+        is_table 1.0 for that candidate, 0.0 for the rest."""
+        from app.services.extraction_candidate_scoring import (
+            merge_candidates,
+            score_candidates,
+        )
+
+        table_ger = _make_ger(vertex_id="run1:chunk_t", self_ref="#t", score=0.9)
+        prose_ger = _make_ger(vertex_id="run1:chunk_p", self_ref="#p", score=0.8)
+        mcs = merge_candidates(
+            entity_dense=[table_ger, prose_ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={},
+            section_meta={},
+            table_meta={"run1:chunk_t": "table"},
+        )
+        by_key = {mc.candidate_key: mc for mc in mcs}
+        assert by_key["run1:chunk_t"].content_type == "table"
+        assert by_key["run1:chunk_p"].content_type is None
+
+        cands = [
+            {"merged_candidate": mc, "content_text": mc.chunk_text,
+             "reranker_score": 0.5}
+            for mc in mcs
+        ]
+        cfg = _make_profile()
+        result = score_candidates(cands, cfg, return_components=True)
+        comp_by_key = {mc.candidate_key: comp for mc, _s, comp in result}
+        assert comp_by_key["run1:chunk_t"]["is_table"] == 1.0
+        assert comp_by_key["run1:chunk_p"]["is_table"] == 0.0
+
+
+class TestTableBoostScoreNeutralDefault:
+    """Production final_score must be byte-identical under the DEFAULT config
+    (table_boost default 0.08 → 0.0) now that is_table carries real data."""
+
+    @staticmethod
+    def _pool(with_content_type: bool) -> list[dict]:
+        ct = "table" if with_content_type else None
+        return [
+            _make_scored_candidate("c_table", reranker_score=0.9, content_type=ct),
+            _make_scored_candidate("c_mid", reranker_score=0.5, alias_hits=2),
+            _make_scored_candidate(
+                "c_table2", reranker_score=0.3, pattern_hits=1, content_type=ct,
+            ),
+            _make_scored_candidate("c_floor", reranker_score=0.0),
+        ]
+
+    def test_default_config_scores_byte_identical_with_vs_without_content_type(self):
+        """DEFAULT RetrievalProfile (no overrides): a pool containing table
+        candidates scores EXACTLY equal with content_type present vs stripped,
+        because the default table_boost is now 0.0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile()
+        assert cfg.table_boost == 0.0, (
+            "default table_boost must be 0.0 (score-neutral wiring)"
+        )
+
+        res_with = score_candidates(self._pool(with_content_type=True), cfg)
+        res_without = score_candidates(self._pool(with_content_type=False), cfg)
+
+        keys_with = [mc.candidate_key for mc, _ in res_with]
+        keys_without = [mc.candidate_key for mc, _ in res_without]
+        scores_with = [s for _, s in res_with]
+        scores_without = [s for _, s in res_without]
+
+        assert keys_with == keys_without, (
+            "ordering must be byte-identical at the default config"
+        )
+        assert scores_with == scores_without, (
+            "final_score must be EXACTLY equal (== not approx) at the default "
+            "config — the live is_table component must stay inert"
+        )
+
+    def test_explicit_table_boost_restores_old_delta(self):
+        """RetrievalProfile(table_boost=0.08) produces the old boost delta:
+        every table candidate gains exactly 0.08; non-table unchanged."""
+        from app.services.extraction_candidate_scoring import score_candidates
+        from app.services.ontology_bundles import RetrievalProfile
+
+        cfg = RetrievalProfile(table_boost=0.08)
+
+        res_with = score_candidates(self._pool(with_content_type=True), cfg)
+        res_without = score_candidates(self._pool(with_content_type=False), cfg)
+
+        with_by_key = {mc.candidate_key: s for mc, s in res_with}
+        without_by_key = {mc.candidate_key: s for mc, s in res_without}
+
+        for key in ("c_table", "c_table2"):
+            assert with_by_key[key] - without_by_key[key] == pytest.approx(0.08), (
+                f"{key}: expected the old +0.08 table boost; got "
+                f"{with_by_key[key]} vs {without_by_key[key]}"
+            )
+        for key in ("c_mid", "c_floor"):
+            assert with_by_key[key] == without_by_key[key], (
+                f"{key}: non-table candidate must be unaffected by table_boost"
+            )

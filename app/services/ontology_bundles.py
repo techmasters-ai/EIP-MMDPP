@@ -192,9 +192,19 @@ class RetrievalProfile(BaseModel):
         ),
     )
     table_boost: float = Field(
-        default=0.08,
+        default=0.0,
         ge=0.0,
-        description="Additive boost for table chunks (numeric evidence density).",
+        description=(
+            "Additive boost for table chunks (numeric evidence density). "
+            "TABLE signal (is_table wiring): default flipped 0.08 -> 0.0 — the "
+            "section_weight precedent. Before the persisted ``is_table`` column "
+            "wired real data, ``content_type`` was always None, so "
+            "``table_boost * is_table`` (0.08 * 0) contributed nothing. Now "
+            "that ``table_meta`` / ``merged_candidate_from_row`` make "
+            "``is_table`` non-zero for table chunks, keeping the term INERT "
+            "(byte-identical final_score) REQUIRES the default be 0.0. "
+            "Calibration raises it once shadow data justifies the table boost."
+        ),
     )
     negative_weight: float = Field(
         default=0.20,

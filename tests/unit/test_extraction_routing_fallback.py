@@ -475,6 +475,45 @@ class TestLexicalTableAdmitsKeywordOnly:
                 f"pattern retrieval_sources; got {mc.retrieval_sources!r}"
             )
 
+    def test_lexical_table_candidate_carries_is_table_content_type(self):
+        """TABLE signal (is_table wiring): the lexical_table row-built site
+        goes through merged_candidate_from_row — a keyword-only row whose
+        persisted ``is_table`` column is true arrives with
+        content_type == 'table'; a legacy row (no column) stays None.
+        table_meta can never reach these candidates (pool-absent keys)."""
+        from app.api.v1.extraction_routing import _build_lexical_table_candidates
+
+        pool_keys: set = set()
+        lex_hits = {
+            "run1:chunk_t": {"alias_hits": 2, "negative_hits": 0,
+                             "supported_fields": {"max_range_km"}},
+            "run1:chunk_legacy": {"alias_hits": 1, "negative_hits": 0,
+                                  "supported_fields": {"frequency"}},
+        }
+        table_row = _row("chunk_t", None, vertex_id="run1:chunk_t",
+                         chunk_index=3, source_refs=["#/texts/3"],
+                         chunk_text="Max range: 43 km")
+        table_row["is_table"] = True  # the persisted column, as the SELECT projects it
+        rows_by_key = {
+            "run1:chunk_t": table_row,
+            "run1:chunk_legacy": _row("chunk_legacy", None,
+                                      vertex_id="run1:chunk_legacy",
+                                      chunk_index=4, source_refs=["#/texts/4"],
+                                      chunk_text="radar frequency MHz band"),
+        }
+        assert "is_table" not in rows_by_key["run1:chunk_legacy"]
+
+        keyword_only = _build_lexical_table_candidates(
+            pool_keys=pool_keys,
+            lexical_hits=lex_hits,
+            pattern_hits={},
+            rows_by_key=rows_by_key,
+        )
+
+        by_key = {mc.candidate_key: mc for mc in keyword_only}
+        assert by_key["run1:chunk_t"].content_type == "table"
+        assert by_key["run1:chunk_legacy"].content_type is None
+
 
 # ---------------------------------------------------------------------------
 # 4. All cheaper levels empty + fallback_to_full → full / would_skip

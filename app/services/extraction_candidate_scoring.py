@@ -5,7 +5,8 @@ C4: Aggregates results from all upstream retrieval sources (entity dense,
 per-field dense, lexical, pattern, section meta, table meta) by
 stable candidate_key and produces a unified MergedCandidate per chunk.
 C4 ONLY MERGES — no scoring (C5), no reranking, no endpoint wiring (C6).
-content_type stays None (Phase D deferred — no table metadata column yet).
+content_type is "table" for chunks whose persisted ``is_table`` column is true
+(threaded via table_meta from the per-run rows); None otherwise.
 
 C5: Runs AFTER cross-encoder rerank(). Combines normalized reranker score
 (semantic precision) with C2–C4 keyword/pattern/section/negative/table
@@ -33,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.services.extraction_chunk_index import (
     read_chunk_index,
+    read_chunk_is_table,
     read_chunk_source_refs,
     read_chunk_token_count,
 )
@@ -78,7 +80,7 @@ class MergedCandidate:
     pattern_hits: int
     negative_hits: int
     section_hits: int
-    content_type: str | None         # "table" when Phase D metadata exists (None for now)
+    content_type: str | None         # "table" when the chunk's persisted is_table column is true
     retrieval_sources: set[str]      # {"dense", "field:<field_name>", "lexical", "pattern"}
     supported_field_hints: set[str]  # field_names that contributed signal
     # ------------------------------------------------------------------
@@ -140,7 +142,7 @@ def merge_candidates(
     lexical_hits: dict[str, dict],   # from C2: {candidate_key: {alias_hits, negative_hits, supported_fields}}
     pattern_hits: dict[str, dict],   # from C3: {candidate_key: {pattern_hits, supported_fields}}
     section_meta: dict[str, dict],   # may be empty {} for now
-    table_meta: dict[str, str],      # content_type keyed by candidate_key; may be {} (Phase D deferred)
+    table_meta: dict[str, str],      # content_type keyed by candidate_key; {key: "table"} from is_table rows
     row_cosines: dict | None = None, # {candidate_key: {entity_cosine, max_field_cosine, mean_top3_field_cosine}}
                                      # from search_extraction_chunks_dense_multi_query (Task 6).
                                      # None → both cosine fields default to 0.0 (backward-compat).
@@ -279,6 +281,80 @@ def merge_candidates(
         )
 
     return out
+
+
+def merged_candidate_from_row(
+    row: dict[str, Any],
+    *,
+    candidate_key: str,
+    vector_score: float | None,
+    retrieval_sources: set[str],
+    gate_flags: set[str],
+    row_cosines: dict[str, float] | None = None,
+    alias_hits: int = 0,
+    pattern_hits: int = 0,
+    negative_hits: int = 0,
+    supported_field_hints: set[str] | None = None,
+) -> MergedCandidate:
+    """Build a MergedCandidate directly from a raw ExtractionChunk row dict.
+
+    SHARED factory for the two row-built construction sites that bypass
+    ``merge_candidates`` (and therefore can never receive ``table_meta`` —
+    their keys are pool-absent by definition):
+
+      1. the G1 gate-union group-(c) builder in
+         ``extraction_chunk_search.search_extraction_chunks_multi_channel_full``
+         (gated keys absent from the merged pool entirely), and
+      2. ``extraction_routing._build_lexical_table_candidates`` (the E2
+         ``lexical_table`` fallback's keyword-only recall net).
+
+    Centralising the row→candidate mapping here guarantees both sites carry
+    the SAME table identity: ``content_type`` is derived from the persisted
+    ``is_table`` column via ``read_chunk_is_table`` (legacy rows → ``False``
+    → ``None``), exactly mirroring what ``table_meta`` stamps on pool-built
+    candidates in ``merge_candidates``.
+
+    Parameters mirror the per-site differences:
+
+    * ``vector_score`` — gate group-(c) passes ``row_cosines["entity_cosine"]``;
+      lexical_table passes ``None`` (keyword-only candidates have no dense
+      score by construction).
+    * ``row_cosines`` — the Task 6 per-key cosine dict
+      (``{entity_cosine, max_field_cosine, mean_top3_field_cosine}``); the
+      max/mean_top3 fields are read from it (0.0 when absent/None).
+    * ``alias_hits``/``pattern_hits``/``negative_hits``/``supported_field_hints``
+      — lexical_table's keyword evidence; gate group-(c) leaves them at 0/empty.
+
+    NOTE (decomposed-lexical): ``alias_hits`` is stamped on the LEGACY field
+    only; the decomposed ``field_label_hits`` stays at its 0 default — this
+    preserves both sites' pre-factory behaviour byte-for-byte (row-built
+    candidates never carried decomposed counts).
+    """
+    rc = row_cosines or {}
+    return MergedCandidate(
+        candidate_key=candidate_key,
+        chunk_index=read_chunk_index(row),
+        self_ref=row.get("self_ref", ""),
+        chunk_text=row.get("chunk_text", ""),
+        source_refs=read_chunk_source_refs(row),
+        token_count=read_chunk_token_count(row),
+        page_number=row.get("page_number"),
+        vector_score=vector_score,
+        field_scores={},
+        alias_hits=alias_hits,
+        pattern_hits=pattern_hits,
+        negative_hits=negative_hits,
+        section_hits=0,
+        # TABLE signal (is_table wiring): row-built candidates read table
+        # identity straight off the persisted column — the table_meta dict
+        # cannot reach them (their keys are pool-absent by definition).
+        content_type=("table" if read_chunk_is_table(row) else None),
+        retrieval_sources=set(retrieval_sources),
+        supported_field_hints=set(supported_field_hints or set()),
+        max_field_cosine=float(rc.get("max_field_cosine", 0.0)),
+        mean_top3_field_cosine=float(rc.get("mean_top3_field_cosine", 0.0)),
+        gate_flags=set(gate_flags),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -950,3 +950,145 @@ async def test_row_cosines_empty_rows_returns_empty_dict():
         )
 
     assert row_cosines == {}, f"Empty rows must yield empty row_cosines; got {row_cosines}"
+
+
+# ---------------------------------------------------------------------------
+# TABLE signal (is_table wiring) — is_table projection + table_meta at the
+# primary merge and the state-rebuild merge.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_sql_projects_is_table():
+    """The per-run SELECT must project ``is_table`` so _table_meta_from_rows
+    (and merged_candidate_from_row) can read the persisted column."""
+    from app.services.extraction_chunk_search import (
+        fetch_extraction_chunks_for_run,
+    )
+
+    store = _fake_store([])
+    await fetch_extraction_chunks_for_run(store=store, pipeline_run_id="run-A")
+
+    sql = store._client.query.call_args.args[2]
+    assert "is_table" in sql, f"SQL must project is_table; got: {sql!r}"
+
+
+def test_table_meta_from_rows_builds_key_to_table_dict():
+    """{candidate_key: 'table'} for is_table rows only; vertex_id preferred,
+    self_ref fallback; legacy rows (no column) absent."""
+    from app.services.extraction_chunk_search import _table_meta_from_rows
+
+    rows = [
+        _row("#/texts/t", _vec(1.0), vertex_id="run-A:chunk_0", is_table=True),
+        _row("#/texts/p", _vec(1.0), vertex_id="run-A:chunk_1", is_table=False),
+        _row("#/texts/legacy", _vec(1.0), vertex_id="run-A:chunk_2"),
+    ]
+    # self_ref fallback: no vertex_id on this row.
+    no_vid = _row("#/texts/fallback", _vec(1.0), is_table=True)
+    no_vid.pop("vertex_id")
+    rows.append(no_vid)
+
+    meta = _table_meta_from_rows(rows)
+    assert meta == {
+        "run-A:chunk_0": "table",
+        "#/texts/fallback": "table",
+    }
+
+
+@pytest.mark.asyncio
+async def test_multi_channel_full_wires_is_table_into_content_type():
+    """Primary merge site: a pooled chunk whose persisted ``is_table`` column
+    is true arrives with content_type == 'table'; non-table chunks stay None."""
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_multi_channel_full,
+    )
+    from app.services.ontology_bundles import RetrievalProfile
+
+    match_vec = _norm(_vec(1.0, 0.0))
+    near_vec = _norm(_vec(0.9, 0.1))
+    rows = [
+        _row(
+            "#/texts/table",
+            match_vec,
+            vertex_id="run-A:chunk_table",
+            chunk_text="Max range: 43 km",
+            is_table=True,
+        ),
+        _row(
+            "#/texts/prose",
+            near_vec,
+            vertex_id="run-A:chunk_prose",
+            chunk_text="prose description",
+            is_table=False,
+        ),
+    ]
+    store = _fake_store(rows)
+    signals = _make_retrieval_signals(entity_query="radar fire control")
+    cfg = RetrievalProfile(top_n_candidates=10)
+
+    with patch(
+        "app.services.extraction_chunk_search.embed_texts",
+        MagicMock(side_effect=lambda texts, query=False: [match_vec for _ in texts]),
+    ):
+        pool, _diag, _state = await search_extraction_chunks_multi_channel_full(
+            signals, "run-A", cfg, store=store,
+        )
+
+    by_key = {mc.candidate_key: mc for mc in pool}
+    assert "run-A:chunk_table" in by_key
+    assert "run-A:chunk_prose" in by_key
+    assert by_key["run-A:chunk_table"].content_type == "table"
+    assert by_key["run-A:chunk_prose"].content_type is None
+
+
+@pytest.mark.asyncio
+async def test_build_pool_from_state_wires_table_meta():
+    """State-rebuild merge site (E2 fallback ladder): table_meta is rebuilt
+    from state.rows so the fallback pool carries the same content_type as the
+    primary pool."""
+    from app.services.extraction_chunk_search import (
+        MultiChannelState,
+        build_pool_from_multi_channel_state,
+    )
+    from app.services.graph_store import GraphEntityResult
+    from app.services.ontology_bundles import RetrievalProfile
+
+    match_vec = _norm(_vec(1.0, 0.0))
+    row = _row(
+        "#/texts/table",
+        match_vec,
+        vertex_id="run-A:chunk_table",
+        chunk_text="Max range: 43 km",
+        is_table=True,
+    )
+    entity_dense = [
+        GraphEntityResult(
+            node_id="run-A:chunk_table",
+            name="#/texts/table",
+            entity_type="ExtractionChunk",
+            extraction_confidence=0.9,
+            score=0.9,
+            score_type="vector",
+            properties={
+                "vertex_id": "run-A:chunk_table",
+                "self_ref": "#/texts/table",
+                "chunk_text": "Max range: 43 km",
+            },
+        )
+    ]
+    state = MultiChannelState(
+        rows=[row],
+        entity_dense=entity_dense,
+        field_dense={},
+        lex_hits={},
+        pat_hits={},
+        raw_row_count=1,
+    )
+    cfg = RetrievalProfile(top_n_candidates=10)
+
+    # No identity anchors → pure re-merge path (no embed call).
+    pool = build_pool_from_multi_channel_state(state, cfg)
+
+    by_key = {mc.candidate_key: mc for mc in pool}
+    assert "run-A:chunk_table" in by_key
+    assert by_key["run-A:chunk_table"].content_type == "table"

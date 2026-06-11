@@ -158,6 +158,16 @@ class MergedChunk:
             when the chunk descends from no heading.  Stored alongside
             ``section_path`` so callers can match against individual heading
             levels without re-splitting the joined string.
+        is_table: True when any ``source_refs`` entry is a raw ``#/tables/``
+            ref — i.e. the chunk carries table content directly from the
+            docling document.  NOTE: this is only HALF the table identity.
+            In merged-mode indexing with upstream table normalization +
+            suppress_raw (the production path), normalized tables are
+            re-injected as SYNTHETIC TextItems whose ``#/texts/N`` refs
+            REPLACE the raw table refs in body.children — those chunks are
+            NOT flagged here.  ``build_extraction_index_hybrid`` OR-s in
+            synth-ref membership (``_synth_only_table_refs``) at insert
+            time, so the persisted ``is_table`` column covers both paths.
     """
 
     chunk_index: int
@@ -170,6 +180,9 @@ class MergedChunk:
     # fields keep working; the chunker populates them from chunk.meta.headings.
     section_path: str | None = None
     headings: list[str] = field(default_factory=list)
+    # TABLE signal (is_table wiring) — raw-ref half only; see docstring.
+    # Default False keeps existing positional construction unaffected.
+    is_table: bool = False
 
 
 def build_hybrid_chunks_for_extraction(
@@ -237,6 +250,11 @@ def build_hybrid_chunks_for_extraction(
             if isinstance(h, str) and h.strip():
                 headings.append(h.strip())
         section_path = _build_section_path_string(tuple(headings))
+        # TABLE signal (is_table wiring): raw-ref detection only. When
+        # upstream table-norm + suppress_raw replaced raw table refs with
+        # synthetic text refs, this stays False here — the indexer OR-s in
+        # synth-ref membership at insert time (see MergedChunk docstring).
+        is_table = any(ref.startswith("#/tables/") for ref in source_refs)
         out.append(
             MergedChunk(
                 chunk_index=idx,
@@ -246,6 +264,7 @@ def build_hybrid_chunks_for_extraction(
                 token_count=token_count,
                 section_path=section_path,
                 headings=headings,
+                is_table=is_table,
             )
         )
     return out
