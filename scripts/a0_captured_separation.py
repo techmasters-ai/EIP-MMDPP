@@ -89,6 +89,20 @@ FEATURES: tuple[str, ...] = (
     "pattern_norm",
     "negative_norm",
 )
+# Capture-only features added by Tasks 6/7/8/10 (COMPONENT_KEYS append-only
+# discipline). Kept SEPARATE from FEATURES so old reports stay byte-reproducible;
+# pass features=ALL_FEATURES explicitly to analyze the full new set. OLD
+# captures simply lack these keys — the component reader fills 0.0.
+NEW_FEATURES: tuple[str, ...] = (
+    "max_field_cosine",
+    "mean_top3_field_cosine",
+    "unit_gate",
+    "table_gate",
+    "digit_density",
+    "label_value_lines",
+    "unit_token_count",
+)
+ALL_FEATURES: tuple[str, ...] = FEATURES + NEW_FEATURES
 AUROC_FLOOR = 0.75  # a separator must clear this to count as "signal exists"
 
 
@@ -140,6 +154,14 @@ class Row:
     is_table: float = 0.0
     pattern_norm: float = 0.0
     negative_norm: float = 0.0
+    # NEW_FEATURES (capture-only; 0.0 on OLD captures that predate them)
+    max_field_cosine: float = 0.0
+    mean_top3_field_cosine: float = 0.0
+    unit_gate: float = 0.0
+    table_gate: float = 0.0
+    digit_density: float = 0.0
+    label_value_lines: float = 0.0
+    unit_token_count: float = 0.0
 
 
 def _fnum(d: Mapping[str, Any], k: str) -> float:
@@ -468,6 +490,15 @@ def build_run_table(run_id: str, target_mode: str = "used") -> tuple[list[Row], 
                 is_table=_fnum(cd, "is_table"),
                 pattern_norm=_fnum(cd, "pattern_norm"),
                 negative_norm=_fnum(cd, "negative_norm"),
+                # NEW_FEATURES — _fnum fills 0.0 when the key is absent, so
+                # OLD captures (pre-Task-6/7/8/10) load cleanly.
+                max_field_cosine=_fnum(cd, "max_field_cosine"),
+                mean_top3_field_cosine=_fnum(cd, "mean_top3_field_cosine"),
+                unit_gate=_fnum(cd, "unit_gate"),
+                table_gate=_fnum(cd, "table_gate"),
+                digit_density=_fnum(cd, "digit_density"),
+                label_value_lines=_fnum(cd, "label_value_lines"),
+                unit_token_count=_fnum(cd, "unit_token_count"),
             ))
     return rows, stats
 

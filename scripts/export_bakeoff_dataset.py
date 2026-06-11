@@ -20,14 +20,16 @@ import json
 import os
 
 import scripts.a0_captured_separation as a0
-from scripts.a0_captured_separation import build_run_table, _labeled, FEATURES
+from scripts.a0_captured_separation import build_run_table, _labeled, FEATURES, NEW_FEATURES
 
 ID_COLS = ["run_id", "document_id", "doc_filename", "pass_name", "chunk_index",
            "candidate_key", "self_ref", "page_number", "token_count"]
 LABEL_COLS = ["used"]
 PROD_COLS = ["final_score"]
 TEXT_COLS = ["chunk_text"]
-COLUMNS = ID_COLS + LABEL_COLS + PROD_COLS + list(FEATURES) + TEXT_COLS
+# NEW_FEATURES appended after FEATURES, before chunk_text. Re-exports of OLD
+# runs (capture predates Tasks 6/7/8/10) carry zeros for them — expected.
+COLUMNS = ID_COLS + LABEL_COLS + PROD_COLS + list(FEATURES) + list(NEW_FEATURES) + TEXT_COLS
 
 
 def _run_doc_map(runs):
@@ -75,8 +77,8 @@ def main(argv=None) -> int:
                 "used": 1 if r.used else 0, "final_score": r.final_score,
                 "chunk_text": (ct.get(r.chunk_index, "") or "").replace("\n", " ").strip(),
             }
-            for f in FEATURES:
-                rec[f] = getattr(r, f)
+            for f in list(FEATURES) + list(NEW_FEATURES):
+                rec[f] = getattr(r, f, 0.0)
             records.append(rec)
             n_pos += int(bool(r.used))
         per_doc[run] = {"document_id": doc_id, "doc_filename": fname,
@@ -107,6 +109,7 @@ def main(argv=None) -> int:
         "n_positives": total_pos,
         "n_docs": len(runs),
         "features": list(FEATURES),
+        "new_features": list(NEW_FEATURES),
         "label_column": "used",
         "production_score_column": "final_score",
         "group_column_for_LODO": "run_id (one per document)",
@@ -133,11 +136,14 @@ extraction pass on one document.
   ground-truth for "did this chunk need to be sent to the LLM for this pass".
 - {total_pos} positives / {total} candidates ({100*total_pos/max(total,1):.1f}%) — heavily imbalanced.
 
-## Features (model inputs) — 10 columns
+## Features (model inputs) — {len(FEATURES)} legacy + {len(NEW_FEATURES)} new columns
 {", ".join(FEATURES)}
 - `cosine` is the only metric that generalizes across document shapes
   (see memory: keyword features were SA-2-overfit). `is_table` is currently a
   dead stub (always 0 — Phase D / table_meta not yet wired).
+
+New (capture-only) features — zeros on runs captured before Tasks 6/7/8/10:
+{", ".join(NEW_FEATURES)}
 
 ## Other columns
 - `final_score`: the current hand-weighted production score this calibration aims
