@@ -68,27 +68,40 @@ timeout, which works). Deploy = edit `.env` + `docker compose -p eip-mmdpp up -d
 the retry driver around it. Expected effect: retry completes in ~4–5 h instead
 of ~7.5 h, with no mislabeled-hung cancellations.
 
-## Production-impact classification (added 2026-06-13, branch-vs-main audit)
+## Production-impact classification (CORRECTED 2026-06-13)
 
-Which of these defects exist in PRODUCTION (main) vs are confined to this
-experimental branch (walltime/c0-telemetry) + its `.env`:
+**Correction:** an earlier version of this table compared against `main` +
+`.env.example` and concluded the timeout ladder / fail-fast behavior protected
+production. That was WRONG. Per the operator: **production IS this deployment** —
+the live, running eip-mmdpp stack, whose containers bind-mount the worktree
+(compose working_dir = walltime/c0-telemetry) and read the live `.env`. Verified
+against the RUNNING containers (`docker exec printenv`), not just files.
 
-| Defect | In main/prod? | Notes |
+So "production config" = the live `.env`, confirmed in-container:
+VECTOR_ROUTER_MODE=shadow, WORKER_FORWARD_SELECTED_CHUNKS=false,
+PASS_SOFT_TIME_LIMIT=288000 (80h), DOCLING_GRAPH_TIMEOUT=720000 (200h),
+DOCLING_GRAPH_LLM_TIMEOUT=720000 (200h), docling-graph
+BATCH_HARD_TIMEOUT=28800 (8h, post the 2026-06-12 mitigation),
+PARALLEL_WORKERS=2, CELERY_VISIBILITY=360000.
+
+| Defect | In production (this deployment)? | Notes |
 |---|---|---|
-| BATCH_HARD_TIMEOUT mis-scope (`as_completed(total)` ceiling) | **YES (code)** | patch commit f960dda is on main. main `.env.example`: ceiling 10800 (3h), PARALLEL_WORKERS=4 (vs this branch's 2). Production hits it only on larger docs (2× batch concurrency) AND its 1h pass soft limit often kills a slow pass first. Real bug; needs the per-batch-watchdog fix. |
-| 80–200h timeout ladder (the silent-7.5h-hang enabler) | **NO (branch config)** | main `.env.example`: DOCLING_GRAPH_TIMEOUT/LLM_TIMEOUT=72000 (20h), PASS_SOFT_TIME_LIMIT=3600 (1h), CELERY_VISIBILITY=36000. This branch's `.env.example` bumped them 10× (720000/288000/360000). Production would fail a stuck pass at ~1h (fail-fast), not hang 7.5h. |
-| Terminal cleanup deletes ExtractionChunk on failure | **NO (branch only)** | `pipeline.py:1726` exists only on walltime/c0-telemetry (VR work); absent on main. |
-| Guarded-ranker fallback gate gap / row_cosines=None / is_table-in-scoring | **NO (branch only, shadow)** | entire feature absent on main; runs in shadow mode even here (diagnostics-only). |
-| Truncation pathology (num_predict / `format` no-op on /v1) | **YES (config/model)** | applies wherever gemma4-on-/v1 with these settings is used; see project_format_param_noop_on_v1. |
-| Dispatch-race warning + reconciler timestamp-only liveness | **YES (code, mostly benign)** | on main; with main's 1h soft limit the reconciler's 2×soft=2h stale threshold is responsive (vs 160h here). |
+| BATCH_HARD_TIMEOUT mis-scope (`as_completed(total)` ceiling) | **YES — live** | deployed code (also on main, commit f960dda). Ceiling raised 3h→8h on 2026-06-12 (helps, doesn't fix: still a total-elapsed ceiling; a doc needing >8h aggregate batch time still mis-degrades to the sequential tail). Per-batch-watchdog fix still required. |
+| 80–200h timeout ladder (silent-long-run enabler) | **YES — live** | confirmed in-container: 80h pass soft limit, 200h worker→DG HTTP, 200h per-LLM-call. NO effective watchdog: a stuck pass can sit ~days; the reconciler's 2×soft = 160h stale threshold won't reclaim it. The Engagement 7.5h "hang" is REPRESENTATIVE production behavior on a large doc, not an experimental artifact. |
+| Terminal cleanup deletes ExtractionChunk on failure | **YES — live** | `pipeline.py:1726` is deployed (branch code is what runs). A failed run deletes its chunk index → data loss on failure. |
+| Guarded-ranker: gates / row_cosines / is_table-scoring / fallback gap | **Deployed but INERT** | VECTOR_ROUTER_MODE=shadow + WORKER_FORWARD_SELECTED_CHUNKS=false + selection_mode default topk → diagnostics-only; does NOT change extraction outputs or selection. The capture gaps affect only our collected diagnostics, NOT production extraction. Not a functional production risk. |
+| Truncation pathology (num_predict / `format` no-op on /v1) | **YES — live** | same gemma4-on-/v1 config; see project_format_param_noop_on_v1. Burns ~45min/event on large docs. |
+| Dispatch-race warning + reconciler timestamp-only liveness | **YES — live, mostly benign** | warning is noise; reconciler has no liveness/progress check and a 160h stale threshold, so it cannot rescue a stuck pass in any useful window. |
 
-**CAVEAT:** "production config" above is inferred from main's committed
-`.env.example`. The live `.env` of any real production host is gitignored and
-not visible from here. NOTE this deployment's containers bind-mount the worktree
-(compose working_dir = walltime/c0-telemetry) — i.e. the running eip-mmdpp stack
-IS this branch + experimental `.env`. If a separate production host exists, its
-actual `.env` values must be checked there. The one production-CODE bug worth a
-ticket independent of config: the BATCH_HARD_TIMEOUT per-batch-watchdog fix.
+**Net:** the guarded-ranker work I built is correctly inert in production (no
+extraction risk). But the pre-existing extraction-infra bugs ARE live in
+production: no effective timeout/watchdog ladder, a mis-scoped batch ceiling, a
+failure path that deletes chunks, and the truncation pathology. These are
+production reliability issues, not just pre-narrow_only cleanup. Priority order
+for production fixes: (1) sane timeout ladder + reconciler liveness/progress
+check (a stuck pass currently hangs ~days); (2) per-batch BATCH_HARD_TIMEOUT
+watchdog; (3) failure cleanup must not delete the run's chunk index; (4)
+truncation/`format` json_schema migration.
 
 ## Follow-up fixes (file with the walltime follow-ups; NOT mid-collection work)
 
