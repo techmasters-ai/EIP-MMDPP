@@ -784,6 +784,17 @@ class MultiChannelState:
     # without access to the PassRetrievalSignals. Empty list when the pass has
     # no likely_sections → byte-identical to the anchor-only behaviour.
     likely_sections: "list[str]" = field(default_factory=list)
+    # Task 18 — per-row dense cosines from the primary pass's matmul (Task 6),
+    # threaded so the E2 fallback rebuild (build_pool_from_multi_channel_state)
+    # can stamp max/mean_top3 field cosines AND feed the gate union the same
+    # row_cosines the primary path used. None on the _empty_state / pre-Task-18
+    # constructors → merge defaults max/mean_top3 to 0.0 (back-compat).
+    row_cosines: "dict | None" = None
+    # Task 18 — the pass's unit signature (schema-derived suffix tokens; the
+    # SAME tuple ``_gate_scan`` reads off PassRetrievalSignals). Threaded so the
+    # fallback rebuild can run the G1/G2 gate union WITHOUT the signals object.
+    # Empty tuple (default) → gate cannot fire → byte-identical fallback pool.
+    unit_signature: "tuple[str, ...]" = field(default_factory=tuple)
 
 
 def build_pool_from_multi_channel_state(
@@ -938,10 +949,11 @@ def build_pool_from_multi_channel_state(
         pattern_hits=state.pat_hits,
         section_meta=sec_hits,
         table_meta=table_meta,
-        # row_cosines=None: state reuse path does not re-run the dense scorer,
-        # so row_cosines are not available here.  Task 7 (gate-union) will wire
-        # them via the saved state; for now max/mean_top3 default to 0.0.
-        row_cosines=None,
+        # Task 18 — reuse the primary pass's row_cosines carried on the state
+        # (Task 6 matmul output) so max/mean_top3 field cosines are populated on
+        # fallback-rebuilt candidates, matching the primary path. None on
+        # pre-Task-18 / empty states → merge defaults the cosines to 0.0.
+        row_cosines=state.row_cosines,
     )
 
     # C8 lexical sub-channel on merged pool (if anchors present).
@@ -960,13 +972,43 @@ def build_pool_from_multi_channel_state(
     merged_pool.sort(
         key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
     )
-    # TODO(Task 18): the G1 gate union (cap-exempt gated chunks; see step 7b in
-    # search_extraction_chunks_multi_channel_full) is intentionally NOT applied
-    # on this fallback-rebuild path — the E2 ladder already relaxes recall
-    # upward (relaxed_dense raises the cap; lexical_table/identity_anchor add
-    # candidates). When the Task 18 cut helper lands, route both the primary
-    # and fallback pools through it so cap exemption has ONE implementation.
-    return merged_pool[:cap]
+    capped_pool = merged_pool[:cap]
+
+    # ------------------------------------------------------------------
+    # Task 18 — G1/G2 gate union on the fallback-rebuilt pool, mirroring the
+    # primary path (search_extraction_chunks_multi_channel_full step 7b). The
+    # gate scan runs over ALL rows of the run (state.rows), not just the pool,
+    # and re-admits gate-flagged chunks cap-exempt so the recall floor is
+    # RECORDED on fallback-path passes (small docs that trip the E2 ladder).
+    #
+    # GUARD: only fires when cfg.unit_gate is True (strict, MagicMock-safe — the
+    # same guard _gate_scan enforces) AND the pass carries a non-empty unit
+    # signature. Off / empty → _gate_scan returns {} → _gate_union returns the
+    # capped_pool unchanged → byte-identical to the pre-Task-18 fallback pool.
+    #
+    # _gate_scan reads ONLY ``.unit_signature`` off its retrieval_signals arg;
+    # the fallback path has no PassRetrievalSignals object, so feed a thin shim
+    # carrying the signature threaded onto the state (same tuple the primary
+    # path used). row_cosines / table_meta are the same ones used for the merge
+    # above, so group-(c) row-built gated candidates carry correct cosines +
+    # content_type — identical to the primary _gate_union call.
+    from types import SimpleNamespace
+
+    flags_by_key = _gate_scan(
+        state.rows,
+        SimpleNamespace(unit_signature=getattr(state, "unit_signature", ()) or ()),
+        cfg,
+    )
+    capped_pool, _added_by_flag = _gate_union(
+        capped_pool,
+        merged_pool,
+        flags_by_key,
+        state.rows,
+        state.row_cosines,
+        cap,
+        table_meta,
+    )
+    return capped_pool
 
 
 # ---------------------------------------------------------------------------
@@ -1235,6 +1277,12 @@ async def search_extraction_chunks_multi_channel_full(
         pat_hits={},
         raw_row_count=raw_row_count,
         likely_sections=normalised_likely_sections,
+        # No dense pass ran (no rows) → no row_cosines. unit_signature still
+        # threaded so a fallback rebuild on the empty state is consistent.
+        row_cosines=None,
+        unit_signature=tuple(
+            getattr(retrieval_signals, "unit_signature", ()) or ()
+        ),
     )
 
     if not rows:
@@ -1309,6 +1357,9 @@ async def search_extraction_chunks_multi_channel_full(
 
     # Capture state for E2 fallback ladder BEFORE any mutation (C8 may mutate
     # merged_pool but the underlying entity_dense / field_dense are not mutated).
+    # row_cosines (Task 6 matmul output) + unit_signature are threaded so the
+    # fallback rebuild (build_pool_from_multi_channel_state) can populate the
+    # field cosines AND run the same G1/G2 gate union the primary path runs.
     state = MultiChannelState(
         rows=rows,
         entity_dense=entity_dense,
@@ -1317,6 +1368,10 @@ async def search_extraction_chunks_multi_channel_full(
         pat_hits=pat_hits,
         raw_row_count=raw_row_count,
         likely_sections=normalised_likely_sections,
+        row_cosines=row_cosines,
+        unit_signature=tuple(
+            getattr(retrieval_signals, "unit_signature", ()) or ()
+        ),
     )
 
     # ------------------------------------------------------------------

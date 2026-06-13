@@ -548,6 +548,154 @@ class TestG2TableGate:
         assert diag.unit_gate_added == 0
 
 
+# ---------------------------------------------------------------------------
+# Task 18 — fallback-rebuild path (build_pool_from_multi_channel_state) runs
+# the SAME G1/G2 gate union + carries row_cosines.  The E2 ladder rebuilds the
+# pool here for small docs (≤ field_query_top_k chunks); before Task 18 it
+# skipped the gate union and passed row_cosines=None, so fallback-path passes
+# captured unit_gate=0 / max_field_cosine=0 even when content warranted them.
+# ---------------------------------------------------------------------------
+
+
+def _graph_result(row: dict, score: float):
+    """A GraphEntityResult for the dense channel, keyed by vertex_id."""
+    from app.services.graph_store import GraphEntityResult
+
+    return GraphEntityResult(
+        node_id=row["vertex_id"],
+        name=row["self_ref"],
+        entity_type="ExtractionChunk",
+        extraction_confidence=score,
+        score=score,
+        score_type="vector",
+        properties={
+            "vertex_id": row["vertex_id"],
+            "self_ref": row["self_ref"],
+            "chunk_text": row.get("chunk_text", ""),
+        },
+    )
+
+
+def _fallback_state(rows: list[dict], *, dense_n: int, unit_signature: tuple[str, ...]):
+    """A MultiChannelState mirroring a primary pass: the first ``dense_n`` rows
+    are in the entity-dense channel, every row has a row_cosines entry, and the
+    pass unit_signature is threaded (as search_extraction_chunks_multi_channel_full
+    now stamps it)."""
+    from app.services.extraction_chunk_search import MultiChannelState
+
+    entity_dense = [
+        _graph_result(rows[i], _entity_cosine(i)) for i in range(dense_n)
+    ]
+    row_cosines = {
+        r["vertex_id"]: {
+            "entity_cosine": _entity_cosine(i),
+            "max_field_cosine": 0.42,
+            "mean_top3_field_cosine": 0.21,
+        }
+        for i, r in enumerate(rows)
+    }
+    return MultiChannelState(
+        rows=rows,
+        entity_dense=entity_dense,
+        field_dense={},
+        lex_hits={},
+        pat_hits={},
+        raw_row_count=len(rows),
+        row_cosines=row_cosines,
+        unit_signature=unit_signature,
+    )
+
+
+class TestFallbackPoolGateUnion:
+    """The E2 fallback rebuild stamps gate_flags + cosines just like primary."""
+
+    def test_fallback_pool_admits_gated_row_cap_exempt(self):
+        """A gated row beyond the dense cap joins the fallback-rebuilt pool
+        cap-exempt with gate_flags={'unit'} + 'unit_gate' source, and carries
+        max_field_cosine from state.row_cosines (was 0.0 pre-Task-18)."""
+        from app.services.extraction_chunk_search import (
+            build_pool_from_multi_channel_state,
+        )
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=12, gated_index=11)
+        state = _fallback_state(rows, dense_n=10, unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        # No identity anchors → pure re-merge path (no embed call needed).
+        pool = build_pool_from_multi_channel_state(state, cfg)
+
+        keys = [mc.candidate_key for mc in pool]
+        assert "run-G:c11" in keys, f"gated beyond-cap row must be admitted; {keys}"
+        by_key = {mc.candidate_key: mc for mc in pool}
+        gated = by_key["run-G:c11"]
+        assert gated.gate_flags == {"unit"}
+        assert "unit_gate" in gated.retrieval_sources
+        # row_cosines flowed into the rebuilt pool (primary parity).
+        assert gated.max_field_cosine == pytest.approx(0.42)
+        # In-cap dense members also carry their cosines from state.row_cosines.
+        assert by_key["run-G:c00"].max_field_cosine == pytest.approx(0.42)
+
+    def test_fallback_pool_row_cosines_on_in_pool_members(self):
+        """Even with the gate OFF, row_cosines on the state populate the
+        rebuilt pool's max/mean_top3 field cosines (the row_cosines=None
+        regression is fixed independently of the gate)."""
+        from app.services.extraction_chunk_search import (
+            build_pool_from_multi_channel_state,
+        )
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=5, gated_index=2)
+        state = _fallback_state(rows, dense_n=5, unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10)  # gate OFF
+
+        pool = build_pool_from_multi_channel_state(state, cfg)
+
+        by_key = {mc.candidate_key: mc for mc in pool}
+        assert by_key["run-G:c00"].max_field_cosine == pytest.approx(0.42)
+        assert by_key["run-G:c00"].mean_top3_field_cosine == pytest.approx(0.21)
+
+    def test_fallback_pool_byte_identical_when_gate_off(self):
+        """unit_gate=False (default) → the fallback pool carries NO gate_flags
+        and is NOT extended with cap-exempt gated rows: byte-identical to the
+        pre-Task-18 rebuild (same candidate set + order, gate union no-op)."""
+        from app.services.extraction_chunk_search import (
+            build_pool_from_multi_channel_state,
+        )
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=12, gated_index=11)
+        state = _fallback_state(rows, dense_n=10, unit_signature=("kw",))
+        cfg = RetrievalProfile(top_n_candidates=10)  # gate OFF
+
+        pool = build_pool_from_multi_channel_state(state, cfg)
+
+        keys = [mc.candidate_key for mc in pool]
+        # Only the 10 dense-capped members; the gated beyond-cap row stays out.
+        assert keys == [f"run-G:c{i:02d}" for i in range(10)]
+        for mc in pool:
+            assert mc.gate_flags == set()
+            assert "unit_gate" not in mc.retrieval_sources
+
+    def test_fallback_pool_byte_identical_when_signature_empty(self):
+        """unit_gate=True but unit_signature=() → gate cannot fire → the gate
+        union is a no-op → same pool as the gate-off path."""
+        from app.services.extraction_chunk_search import (
+            build_pool_from_multi_channel_state,
+        )
+        from app.services.ontology_bundles import RetrievalProfile
+
+        rows = _gate_rows(n=12, gated_index=11)
+        state = _fallback_state(rows, dense_n=10, unit_signature=())
+        cfg = RetrievalProfile(top_n_candidates=10, unit_gate=True)
+
+        pool = build_pool_from_multi_channel_state(state, cfg)
+
+        keys = [mc.candidate_key for mc in pool]
+        assert keys == [f"run-G:c{i:02d}" for i in range(10)]
+        assert all(mc.gate_flags == set() for mc in pool)
+
+
 class TestG2TableGateInPool:
     """G2 in-pool marking: a table row inside the cap gets both flags if it
     qualifies for G2 (without being added again to the pool)."""

@@ -206,6 +206,72 @@ class TestCheckGateCoverage:
         with pytest.raises(GateColumnsMissing):
             check_gate_coverage(df)
 
+    # --- Task 18 — offline gate recompute (construction-faithful) ----------
+    def _df_text(self, *, unit_gate, table_gate, chunk_text, used=(1, 1, 0),
+                 pass_name=("p1", "p2", "p1"), is_table=None):
+        cols = {
+            "doc_filename": ["a.pdf", "a.pdf", "b.pdf"],
+            "pass_name": list(pass_name),
+            "chunk_index": [0, 1, 2],
+            "used": list(used),
+            "unit_gate": list(unit_gate),
+            "table_gate": list(table_gate),
+            "chunk_text": list(chunk_text),
+        }
+        if is_table is not None:
+            cols["is_table"] = list(is_table)
+        return pd.DataFrame(cols)
+
+    def test_offline_recompute_rescues_fallback_path_positive(self):
+        """A used==1 row whose captured unit_gate=0 (fallback-path doc) but whose
+        chunk_text contains '50 km' for a km-signature pass PASSES coverage via
+        the offline G1 recompute — no false-fail on the fallback gap."""
+        df = self._df_text(
+            unit_gate=[0.0, 1.0, 0.0],
+            table_gate=[0.0, 0.0, 0.0],
+            chunk_text=["max range 50 km", "irrelevant", "n/a"],
+        )
+        # p1 carries a km signature; recompute fires on row 0's "50 km".
+        signatures = {"p1": ("km",), "p2": ("kw",)}
+        assert check_gate_coverage(df, signatures=signatures) == []
+
+    def test_offline_recompute_still_fails_when_predicate_does_not_fire(self):
+        """If neither captured flag NOR the recomputed predicate fires, the
+        positive is still reported as an uncovered miss (no silent pass)."""
+        df = self._df_text(
+            unit_gate=[0.0, 1.0, 0.0],
+            table_gate=[0.0, 0.0, 0.0],
+            chunk_text=["no numbers no units here", "irrelevant", "n/a"],
+        )
+        signatures = {"p1": ("km",), "p2": ("kw",)}
+        misses = check_gate_coverage(df, signatures=signatures)
+        assert len(misses) == 1
+        assert (misses[0][0], misses[0][1], misses[0][2]) == ("a.pdf", "p1", 0)
+
+    def test_offline_recompute_g2_table_path(self):
+        """G2 recompute: a table row (is_table=1) with a unit token but NO digit
+        passes via the offline table-gate predicate."""
+        df = self._df_text(
+            unit_gate=[0.0, 1.0, 0.0],
+            table_gate=[0.0, 0.0, 0.0],
+            chunk_text=["power rating in kw", "irrelevant", "n/a"],
+            is_table=[1, 0, 0],
+        )
+        signatures = {"p1": ("kw",), "p2": ("kw",)}
+        assert check_gate_coverage(df, signatures=signatures) == []
+
+    def test_offline_recompute_none_signatures_is_captured_only(self):
+        """signatures=None (default) → behaves exactly like the captured-flag
+        check (back-compat): the same uncovered positive is reported."""
+        df = self._df_text(
+            unit_gate=[0.0, 1.0, 0.0],
+            table_gate=[0.0, 0.0, 0.0],
+            chunk_text=["max range 50 km", "irrelevant", "n/a"],
+        )
+        misses = check_gate_coverage(df)  # no signatures → no recompute
+        assert len(misses) == 1
+        assert (misses[0][0], misses[0][1], misses[0][2]) == ("a.pdf", "p1", 0)
+
 
 # ===========================================================================
 # quantile-grid parser
