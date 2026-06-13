@@ -68,6 +68,28 @@ timeout, which works). Deploy = edit `.env` + `docker compose -p eip-mmdpp up -d
 the retry driver around it. Expected effect: retry completes in ~4–5 h instead
 of ~7.5 h, with no mislabeled-hung cancellations.
 
+## Production-impact classification (added 2026-06-13, branch-vs-main audit)
+
+Which of these defects exist in PRODUCTION (main) vs are confined to this
+experimental branch (walltime/c0-telemetry) + its `.env`:
+
+| Defect | In main/prod? | Notes |
+|---|---|---|
+| BATCH_HARD_TIMEOUT mis-scope (`as_completed(total)` ceiling) | **YES (code)** | patch commit f960dda is on main. main `.env.example`: ceiling 10800 (3h), PARALLEL_WORKERS=4 (vs this branch's 2). Production hits it only on larger docs (2× batch concurrency) AND its 1h pass soft limit often kills a slow pass first. Real bug; needs the per-batch-watchdog fix. |
+| 80–200h timeout ladder (the silent-7.5h-hang enabler) | **NO (branch config)** | main `.env.example`: DOCLING_GRAPH_TIMEOUT/LLM_TIMEOUT=72000 (20h), PASS_SOFT_TIME_LIMIT=3600 (1h), CELERY_VISIBILITY=36000. This branch's `.env.example` bumped them 10× (720000/288000/360000). Production would fail a stuck pass at ~1h (fail-fast), not hang 7.5h. |
+| Terminal cleanup deletes ExtractionChunk on failure | **NO (branch only)** | `pipeline.py:1726` exists only on walltime/c0-telemetry (VR work); absent on main. |
+| Guarded-ranker fallback gate gap / row_cosines=None / is_table-in-scoring | **NO (branch only, shadow)** | entire feature absent on main; runs in shadow mode even here (diagnostics-only). |
+| Truncation pathology (num_predict / `format` no-op on /v1) | **YES (config/model)** | applies wherever gemma4-on-/v1 with these settings is used; see project_format_param_noop_on_v1. |
+| Dispatch-race warning + reconciler timestamp-only liveness | **YES (code, mostly benign)** | on main; with main's 1h soft limit the reconciler's 2×soft=2h stale threshold is responsive (vs 160h here). |
+
+**CAVEAT:** "production config" above is inferred from main's committed
+`.env.example`. The live `.env` of any real production host is gitignored and
+not visible from here. NOTE this deployment's containers bind-mount the worktree
+(compose working_dir = walltime/c0-telemetry) — i.e. the running eip-mmdpp stack
+IS this branch + experimental `.env`. If a separate production host exists, its
+actual `.env` values must be checked there. The one production-CODE bug worth a
+ticket independent of config: the BATCH_HARD_TIMEOUT per-batch-watchdog fix.
+
 ## Follow-up fixes (file with the walltime follow-ups; NOT mid-collection work)
 
 1. **Per-batch watchdog semantics** in the DG fork's orchestrator: replace the
