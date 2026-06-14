@@ -111,6 +111,35 @@ lower the timeout ladder until the heartbeat exists.
 
 ---
 
+## R6 — Chunk-scope (router) capture times out under large-doc load → partial diagnostics  [S2, config]
+
+**Root cause (verified).** The worker calls the shadow-mode chunk-scope (router)
+endpoint with `VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S=60.0` (live, confirmed
+in-container). That endpoint embeds the per-pass queries and dense-scores all
+the run's chunks. On the largest doc (Engagement, 175 chunks = 3× the next
+largest) under its OWN self-induced load (its batch LLM/embed calls saturate the
+pool), the chunk-scope call exceeded 60 s for 4 of 9 field-group passes →
+`ReadTimeout` → the pass proceeds `RUN_FULL` (extraction is CORRECT, full-doc)
+but `score_components_all` is NOT captured for that pass.
+
+**Effect.** Engagement run `66a2afef` lost capture on `radar_antenna`,
+`radar_timing`, `missile_speed_timing`, `missile_propulsion`. Those 4 passes hold
+**11 of Engagement's 23 positives** (radar_antenna 5 + missile_speed_timing 4 +
+radar_timing 2) → ~half the positive-rich doc's positives are absent from
+dataset_v2. The other 7 docs are fully captured (verified: SA2_RU 60ch 9/9,
+SA2_SR71 42ch 9/9, smaller docs 9/9) — this is unique to the 175-chunk doc.
+NOTE: this is a DIAGNOSTICS-CAPTURE failure, not an extraction failure — every
+pass COMPLETED with good entity yields; only the guarded-ranker telemetry is
+missing.
+
+**Fix.** Raise `VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S` 60 → 600 (.env + .env.example)
+so the shadow capture survives a large doc under self-load. (Same timeout-too-
+short-for-large-docs family as R1/R2.) Then re-run Engagement and verify 9/9
+field-group passes get `score_components_all`.
+
+**Status:** config fix prepared this turn; deploy + Engagement re-run in the
+post-Engagement window.
+
 ## R3 — Truncation pathology: unconstrained decoding on the `/v1` endpoint  [S2, config/model]
 
 **Root cause.** gemma4:31b on the OpenAI-compat `/v1` endpoint ignores the
