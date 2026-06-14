@@ -1421,6 +1421,25 @@ async def health(request: Request):
     )
 
 
+def _progress_payload(pipeline_run_id: str | None = None) -> dict:
+    """R2: pure helper — returns the /progress response dict.
+
+    Factored out so tests can import and exercise the filter logic without
+    needing the full FastAPI app or any extraction-library deps.
+    """
+    from app import _progress_registry as _pr  # noqa: PLC0415 — local import avoids import-order issues
+    passes = _pr.snapshot()
+    if pipeline_run_id is not None:
+        passes = [p for p in passes if p["run_id"] == pipeline_run_id]
+    return {"passes": passes}
+
+
+@app.get("/progress", tags=["diagnostics"])
+def progress(pipeline_run_id: str | None = None):
+    """R2: read-only snapshot of in-flight per-pass batch progress."""
+    return _progress_payload(pipeline_run_id=pipeline_run_id)
+
+
 @app.post("/extract-pass", response_model=ExtractPassResponse)
 async def extract_pass(request: Request, body: ExtractPassRequest):
     """Fixed-template extraction for ONE pass from a bundle. Spec §5.9."""
