@@ -44,7 +44,7 @@
   {
    "id": 6,
    "subject": "R2-T6: Progress-aware reconciler (flag default-off) + decouple stale_dispatched",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Flag-on: progressing pass not reclaimed regardless of age; off: byte-identical. Decouple absolute threshold to a setting.\n\n**Files:**\n- app/config.py\n- .env + .env.example\n- app/workers/pipeline.py:9441 + :9602-9633 + summary key + helper\n- tests/unit/test_reconcile_ontology_graph_runs.py\n\n**Acceptance Criteria:**\n- [ ] :9441 uses settings.reconciler_stale_dispatched_s\n- [ ] helper is_dispatched_phase_progressing correct\n- [ ] gate after age+pending before reclaim\n- [ ] flag-off byte-identical (existing tests pass)\n- [ ] summary key mirrored 3 places\n\n**Verify:** DATABASE_URL_SYNC=postgresql+psycopg2://eip_test:eip_test_secret@localhost:5438/eip_test python3 -m pytest tests/unit/test_reconcile_ontology_graph_runs.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"app/config.py\", \"app/workers/pipeline.py\", \".env.example\", \"tests/unit/test_reconcile_ontology_graph_runs.py\"], \"verifyCommand\": \"DATABASE_URL_SYNC=postgresql+psycopg2://eip_test:eip_test_secret@localhost:5438/eip_test python3 -m pytest tests/unit/test_reconcile_ontology_graph_runs.py -v\", \"acceptanceCriteria\": [\"decouple stale_dispatched\", \"progress helper\", \"gate placement\", \"flag-off byte-identical\", \"summary key mirrored\"], \"modelTier\": \"standard\"}\n```",
    "blockedBy": [
     5
@@ -74,5 +74,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-14T14:55:00Z"
+ "lastUpdated": "2026-06-14T15:40:00Z"
 }
