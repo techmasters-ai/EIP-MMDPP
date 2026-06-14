@@ -1,5 +1,5 @@
---- a/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:09:55.970817886 -0500
-+++ b/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:10:17.414767637 -0500
+--- a/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-06-14 08:43:07.604783788 -0500
++++ b/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-06-14 08:43:07.609783787 -0500
 @@ -45,6 +45,55 @@
      return int(val)
  
@@ -56,7 +56,7 @@
  @dataclass
  class DeltaOrchestratorConfig:
      """Config for delta extraction orchestration."""
-@@ -516,6 +565,21 @@
+@@ -516,6 +565,48 @@
          split_failures = 0
  
          if self._config.parallel_workers > 1 and len(batch_plan) > 1:
@@ -75,36 +75,81 @@
 +            # DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS (meaning is now the
 +            # no-progress window, not a per-batch / total ceiling).
 +            _no_progress_seconds = float(os.environ.get("DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS", "2400"))
++            # PATCH 2026-06-14 (R2): feed the passive per-pass progress registry
++            # from the drain loop so GET /progress can report batch-level
++            # liveness. Import is guarded: the registry + thread-local live in
++            # app.* (copied to /app/app and importable at runtime via the
++            # editable install), but standalone library unit tests can't import
++            # app -> fall back to no-op stubs so the drain never depends on it.
++            # All registry calls go through _pr_safe (best-effort, swallows any
++            # exception) so a registry fault can never break extraction.
++            try:
++                from app._progress_registry import (
++                    start as _pr_start, advance as _pr_advance,
++                    touch as _pr_touch, clear as _pr_clear,
++                )
++                from app.main import _pass_progress_overrides as _pr_ovr
++                _pr_run = getattr(_pr_ovr, "run_id", None)
++                _pr_pass = getattr(_pr_ovr, "pass_name", None)
++            except Exception:  # standalone lib test / app not importable
++                _pr_start = _pr_advance = _pr_touch = _pr_clear = None
++                _pr_run = _pr_pass = None
++
++            def _pr_safe(_fn, *_a):
++                if _fn is not None and _pr_run and _pr_pass:
++                    try:
++                        _fn(_pr_run, _pr_pass, *_a)
++                    except Exception:
++                        pass
++
              with ThreadPoolExecutor(max_workers=self._config.parallel_workers) as pool:
                  futures = {
                      pool.submit(
-@@ -529,15 +593,55 @@
+@@ -529,15 +620,67 @@
                      ): i
                      for i, batch in enumerate(batch_plan)
                  }
 -                for future in as_completed(futures):
 -                    original_batch_idx = futures[future]
 -                    batch_idx, graph_dict, errors, elapsed = future.result()
+-                    batch_timings.append({"batch_index": batch_idx, "elapsed_seconds": elapsed})
+-                    if graph_dict is not None:
+-                        successful_results.append(graph_dict)
+-                        effective_batch_plan.append(batch_plan[original_batch_idx])
+-                    elif errors:
+-                        failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
++                _pr_safe(_pr_start, len(futures))
 +                _drainer = _drain_futures_with_progress_watchdog(
 +                    futures, _no_progress_seconds
 +                )
 +                _hung_futures: set = set()
-+                while True:
-+                    try:
-+                        future, original_batch_idx, result = next(_drainer)
-+                    except StopIteration as _stop:
-+                        # Generator return value = set of still-pending futures
-+                        # that were hung when a no-progress stall tripped (empty
-+                        # if every future drained successfully).
-+                        _hung_futures = _stop.value or set()
-+                        break
-+                    batch_idx, graph_dict, errors, elapsed = result
-                     batch_timings.append({"batch_index": batch_idx, "elapsed_seconds": elapsed})
-                     if graph_dict is not None:
-                         successful_results.append(graph_dict)
-                         effective_batch_plan.append(batch_plan[original_batch_idx])
-                     elif errors:
-                         failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
++                try:
++                    while True:
++                        try:
++                            future, original_batch_idx, result = next(_drainer)
++                        except StopIteration as _stop:
++                            # Generator return value = set of still-pending
++                            # futures that were hung when a no-progress stall
++                            # tripped (empty if every future drained).
++                            _hung_futures = _stop.value or set()
++                            break
++                        # One batch completed -> advance the registry counter.
++                        _pr_safe(_pr_advance)
++                        batch_idx, graph_dict, errors, elapsed = result
++                        batch_timings.append({"batch_index": batch_idx, "elapsed_seconds": elapsed})
++                        if graph_dict is not None:
++                            successful_results.append(graph_dict)
++                            effective_batch_plan.append(batch_plan[original_batch_idx])
++                        elif errors:
++                            failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
++                finally:
++                    # Record the phase transition (batches -> merging) for
++                    # very-large-doc robustness, then clear. clear() ALWAYS
++                    # runs (normal drain, stall, or a drain exception) so a pass
++                    # never leaves a stale registry entry; touch+clear here
++                    # means the next pass's start() also overwrites the key.
++                    _pr_safe(_pr_touch, "merging")
++                    _pr_safe(_pr_clear)
 +                if _hung_futures:
 +                    # No batch completed within the no-progress window: surface
 +                    # the stall loudly, cancel the hung futures (so
