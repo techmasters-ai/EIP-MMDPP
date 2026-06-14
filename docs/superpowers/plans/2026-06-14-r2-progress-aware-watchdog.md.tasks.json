@@ -35,7 +35,7 @@
   {
    "id": 5,
    "subject": "R2-T5: Progress poller beat task (flag-gated) + config/env",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Flag-gated poller writes DG /progress into stage_runs.metrics->'progress'.\n\n**Files:**\n- app/config.py\n- app/workers/pipeline.py\n- app/workers/celery_app.py:82-126\n- .env + .env.example\n- tests/unit/test_poll_extraction_progress.py\n\n**Acceptance Criteria:**\n- [ ] flag-off no-op (no http/db)\n- [ ] flag-on merges metrics.progress via copy-mutate-reassign\n- [ ] beat entry registered\n- [ ] env parity both vars\n\n**Verify:** python3 -m pytest tests/unit/test_poll_extraction_progress.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"app/config.py\", \"app/workers/pipeline.py\", \"app/workers/celery_app.py\", \".env.example\", \"tests/unit/test_poll_extraction_progress.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_poll_extraction_progress.py -v\", \"acceptanceCriteria\": [\"flag-off no-op\", \"flag-on writes metrics.progress\", \"beat entry\", \"env parity\"], \"modelTier\": \"standard\"}\n```",
    "blockedBy": [
     4
@@ -74,5 +74,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-14T14:25:00Z"
+ "lastUpdated": "2026-06-14T14:55:00Z"
 }
