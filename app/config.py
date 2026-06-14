@@ -323,6 +323,11 @@ class Settings(BaseSettings):
     # Reconciler beat period in seconds. The Task-9 celery beat schedules the
     # reconciler to run at this interval.
     reconciler_period_seconds: int = 60
+    # R2: enable the progress poller beat task (GET docling-graph /progress ->
+    # stage_runs.metrics['progress']). Default off (passive heartbeat plumbing).
+    dg_progress_poller_enabled: bool = False
+    # R2: progress poller beat interval (seconds).
+    extraction_progress_poll_seconds: int = 30
     # Quality-gate floor shared with the docling-graph service. Mirrors
     # DoclingGraphSettings.docling_graph_quality_min_instances so compose
     # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var

@@ -99,6 +99,11 @@ celery_app.conf.update(
             "schedule": settings.reconciler_period_seconds,
             "options": {"queue": "graph"},
         },
+        "poll-extraction-progress": {
+            "task": "app.workers.pipeline.poll_extraction_progress",
+            "schedule": settings.extraction_progress_poll_seconds,
+            "options": {"queue": "graph"},
+        },
         "dispatch-pending-pipeline-stages": {
             "task": "app.workers.dispatcher.dispatch_pending_pipeline_stages",
             "schedule": 5.0,

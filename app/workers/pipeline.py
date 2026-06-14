@@ -9736,6 +9736,41 @@ def reconcile_ontology_graph_runs(self) -> dict:
         db.close()
 
 
+@celery_app.task(bind=True, queue="graph", soft_time_limit=60,
+                 name="app.workers.pipeline.poll_extraction_progress")
+def poll_extraction_progress(self) -> dict:
+    """R2: bridge docling-graph /progress -> stage_runs.metrics['progress'].
+    Flag-gated (default off) + fail-open. Read-only on DG; merges only the
+    'progress' sub-key into the latest StageRun.metrics for each (run, pass)."""
+    if not settings.dg_progress_poller_enabled:
+        return {"status": "disabled"}
+    from app.models.ingest import StageRun
+    url = f"{settings.docling_graph_base_url}/progress"
+    try:
+        with httpx.Client(timeout=settings.vector_router_chunk_scope_timeout_s) as c:
+            passes = (c.get(url).json() or {}).get("passes", [])
+    except Exception:
+        logger.warning("poll_extraction_progress: GET %s failed", url, exc_info=True)
+        return {"status": "poll_failed"}
+    written = 0
+    with get_sync_session() as session:
+        for p in passes:
+            row = (session.query(StageRun)
+                   .filter(StageRun.pipeline_run_id == p["run_id"],
+                           StageRun.stage_name == "derive_ontology_graph",
+                           StageRun.pass_name == p["pass_name"])
+                   .order_by(StageRun.attempt.desc()).first())
+            if row is None:
+                continue
+            m = dict(row.metrics or {})
+            m["progress"] = {"done": p.get("done"), "total": p.get("total"),
+                             "phase": p.get("phase"), "updated_at": p.get("updated_at")}
+            row.metrics = m
+            written += 1
+        session.commit()
+    return {"status": "ok", "written": written}
+
+
 # CHANGED 2026-05-06 (Task 8): replaced monolithic ~225-line helper
 # (_derive_ontology_graph_bundle_passes) with a thin ~50-line dispatcher.
 # soft_time_limit dropped from 8 h (settings.graph_soft_time_limit) to 10 min
