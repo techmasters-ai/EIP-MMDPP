@@ -4,7 +4,7 @@
   {
    "id": 1,
    "subject": "R2-T1: DG progress registry module",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Pure process-global progress registry (dict+lock) the batch loop updates and /progress reads; host-testable, no docling_graph deps.\n\n**Files:**\n- Create docker/docling-graph/app/_progress_registry.py\n- Test docker/docling-graph/tests/test_progress_registry.py\n\n**Acceptance Criteria:**\n- [ ] start/advance/touch/clear/snapshot lock-guarded\n- [ ] advance/touch/clear semantics\n- [ ] snapshot shape with age_s\n- [ ] two-thread isolation; stdlib-only import\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_progress_registry.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/_progress_registry.py\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_progress_registry.py -v\", \"acceptanceCriteria\": [\"lock-guarded api\", \"advance/touch/clear semantics\", \"snapshot shape\", \"thread isolation + stdlib-only\"], \"modelTier\": \"standard\"}\n```"
   },
   {
@@ -74,5 +74,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-14T13:20:00Z"
+ "lastUpdated": "2026-06-14T13:35:00Z"
 }
