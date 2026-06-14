@@ -9418,6 +9418,19 @@ def _has_pending_retry_for_pass(
     return row.finished_at > cutoff
 
 
+def is_dispatched_phase_progressing(metrics: dict | None, now_ts: float, no_progress_s: float) -> bool:
+    """R2: True iff stage_runs.metrics['progress'].updated_at exists AND advanced
+    within no_progress_s of now_ts (i.e. the pass is still making progress).
+    False when there is no progress data (caller falls back to absolute age)."""
+    prog = (metrics or {}).get("progress") if isinstance(metrics, dict) else None
+    if not isinstance(prog, dict):
+        return False
+    updated_at = prog.get("updated_at")
+    if not isinstance(updated_at, (int, float)):
+        return False
+    return (now_ts - float(updated_at)) < no_progress_s
+
+
 @celery_app.task(
     bind=True, queue="graph",
     soft_time_limit=120,
@@ -9439,6 +9452,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
         "promoted_to_terminal": [...],
         "stuck_advances": [...],
         "skipped_pending_retry": [...],
+        "skipped_making_progress": [...],
     }
     """
     from datetime import datetime, timezone, timedelta  # local; matches file's style
@@ -9446,7 +9460,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
     from app.services.run_phase_dispatch import reclaim_stale_phase
 
     stale_claimed_threshold_s = settings.phase_claim_stale_seconds
-    stale_dispatched_threshold_s = 2 * settings.pass_soft_time_limit
+    stale_dispatched_threshold_s = settings.reconciler_stale_dispatched_s
 
     summary: dict = {
         "scanned_runs": 0,
@@ -9455,6 +9469,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
         "promoted_to_terminal": [],
         "stuck_advances": [],
         "skipped_pending_retry": [],
+        "skipped_making_progress": [],
     }
 
     db = _get_db()
@@ -9633,6 +9648,36 @@ def reconcile_ontology_graph_runs(self) -> dict:
                         summary["skipped_pending_retry"].append(phase_key)
                         continue
 
+                    if settings.reconciler_progress_aware:
+                        try:
+                            from sqlalchemy import select as _select
+                            from app.models.ingest import StageRun as _SR
+                            _sr = db.execute(
+                                _select(_SR).where(
+                                    _SR.pipeline_run_id == uuid.UUID(str(run_id)),
+                                    _SR.stage_name == "derive_ontology_graph",
+                                    _SR.pass_name == pass_name,
+                                ).order_by(_SR.attempt.desc()).limit(1)
+                            ).scalars().first()
+                            _metrics = _sr.metrics if _sr is not None else None
+                        except Exception:
+                            logger.warning(
+                                "reconcile_ontology_graph_runs: progress-metrics read "
+                                "failed for run_id=%s pass=%s; falling back to absolute age",
+                                run_id, pass_name, exc_info=True,
+                            )
+                            _metrics = None
+                        if is_dispatched_phase_progressing(
+                            _metrics, time.time(), settings.reconciler_no_progress_threshold_s
+                        ):
+                            logger.info(
+                                "reconcile_ontology_graph_runs: dispatched phase "
+                                "run_id=%s phase=%s age=%.0fs still making progress "
+                                "— skipping reclaim", run_id, phase_key, age_s,
+                            )
+                            summary["skipped_making_progress"].append(phase_key)
+                            continue
+
                     logger.info(
                         "reconcile_ontology_graph_runs: stale dispatched phase "
                         "run_id=%s phase=%s age=%.0fs — revoking + reclaiming",
@@ -9713,19 +9758,21 @@ def reconcile_ontology_graph_runs(self) -> dict:
                 summary["promoted_to_terminal"],
                 summary["stuck_advances"],
                 summary["skipped_pending_retry"],
+                summary["skipped_making_progress"],
             ])
         )
         log_method = logger.debug if no_actions else logger.info
         log_method(
             "reconcile_ontology_graph_runs: scan complete — "
             "scanned=%d stale_claimed=%d stale_dispatched=%d promoted=%d "
-            "stuck=%d skipped=%d",
+            "stuck=%d skipped=%d skipped_progressing=%d",
             summary["scanned_runs"],
             len(summary["stale_claimed_reclaimed"]),
             len(summary["stale_dispatched_reclaimed"]),
             len(summary["promoted_to_terminal"]),
             len(summary["stuck_advances"]),
             len(summary["skipped_pending_retry"]),
+            len(summary["skipped_making_progress"]),
         )
         return summary
     except Exception:

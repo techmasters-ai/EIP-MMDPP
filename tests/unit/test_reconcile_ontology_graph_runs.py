@@ -38,7 +38,11 @@ from app.services.pass_outputs_store import (
     save_pass_output,
 )
 from app.services.run_phase_dispatch import read_phase_state
-from app.workers.pipeline import reconcile_ontology_graph_runs
+from app.workers.pipeline import (
+    is_dispatched_phase_progressing,
+    reconcile_ontology_graph_runs,
+    settings,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -131,18 +135,24 @@ def _seed_stage_run(
     execution_status: str = "FAILED",
     attempt: int = 1,
     finished_at: datetime | None = None,
+    metrics: dict | None = None,
 ) -> None:
-    """Insert a StageRun row for the given pass."""
+    """Insert a StageRun row for the given pass.
+
+    ``metrics`` (R2) is written into the JSONB ``metrics`` column — used by the
+    progress-aware reconciler tests to seed ``metrics['progress'].updated_at``.
+    """
     stage_run_id = uuid.uuid4()
     db.execute(
         text(
             """
             INSERT INTO ingest.stage_runs
                 (id, pipeline_run_id, stage_name, pass_name, attempt, status,
-                 execution_status, finished_at, started_at)
+                 execution_status, finished_at, started_at, metrics)
             VALUES
                 (:id, :run_id, 'derive_ontology_graph', :pass_name, :attempt,
-                 'FAILED', :execution_status, :finished_at, NOW())
+                 'FAILED', :execution_status, :finished_at, NOW(),
+                 CAST(:metrics AS jsonb))
             """
         ),
         {
@@ -152,6 +162,7 @@ def _seed_stage_run(
             "attempt": attempt,
             "execution_status": execution_status,
             "finished_at": finished_at.isoformat() if finished_at else None,
+            "metrics": json.dumps(metrics) if metrics is not None else None,
         },
     )
     db.flush()
@@ -246,7 +257,14 @@ def _build_dispatched_entry(
 
 
 @contextmanager
-def _patched_reconciler(db_session: Session, *, manifest=None):
+def _patched_reconciler(
+    db_session: Session,
+    *,
+    manifest=None,
+    stale_dispatched_s: int = 7200,
+    progress_aware: bool = False,
+    no_progress_threshold_s: int = 7200,
+):
     """Patch the reconciler's external dependencies and yield a dict of mocks.
 
     Patches:
@@ -254,7 +272,19 @@ def _patched_reconciler(db_session: Session, *, manifest=None):
     - ``load_bundle_manifest`` → fake manifest with two entity passes
     - ``derive_ontology_graph_pass.delay`` → MagicMock (entity pass dispatch)
     - ``celery_app.send_task`` → MagicMock (merge dispatch via send_task)
-    - ``app.services.run_phase_dispatch.celery_app`` → captures revoke calls
+    - ``app.workers.celery_app.celery_app`` → captures revoke calls.
+      ``reclaim_stale_phase`` does ``from app.workers.celery_app import
+      celery_app`` lazily (circular-dep guard) and calls
+      ``celery_app.control.revoke``, so the patch must target the source
+      module attribute, not ``run_phase_dispatch`` (which never binds it at
+      module scope).
+
+    R2: ``settings.reconciler_stale_dispatched_s`` is pinned to 7200 (2h) by
+    default so the historical "threshold 2h" semantics that the pre-R2 tests
+    were written against are preserved byte-for-byte (the production default is
+    now 86400s).  The progress-aware flag + no-progress threshold are patched
+    too so the new tests can exercise them deterministically; both default to
+    the OFF / today's-behavior values.
     """
     proxy = _NoCloseProxy(db_session)
     if manifest is None:
@@ -270,7 +300,14 @@ def _patched_reconciler(db_session: Session, *, manifest=None):
         patch("app.workers.pipeline.derive_ontology_graph_pass.delay", mock_delay),
         # _try_advance_phase dispatches merge via celery_app.send_task, not .delay()
         patch("app.workers.pipeline.celery_app.send_task", mock_send_task),
-        patch("app.services.run_phase_dispatch.celery_app") as mock_celery,
+        patch.object(
+            settings, "reconciler_stale_dispatched_s", stale_dispatched_s
+        ),
+        patch.object(settings, "reconciler_progress_aware", progress_aware),
+        patch.object(
+            settings, "reconciler_no_progress_threshold_s", no_progress_threshold_s
+        ),
+        patch("app.workers.celery_app.celery_app") as mock_celery,
     ):
         mock_celery.control.revoke = mock_revoke
         yield {
@@ -758,3 +795,194 @@ class TestBeatScheduleRegistered:
         entry = celery_app.conf.beat_schedule["reconcile-ontology-graph-runs"]
         assert entry["task"] == "app.workers.pipeline.reconcile_ontology_graph_runs"
         assert entry["options"]["queue"] == "graph"
+
+
+# ---------------------------------------------------------------------------
+# R2: pure-helper unit tests — no DB.  ``now_ts`` is a param so these are
+# fully deterministic.
+# ---------------------------------------------------------------------------
+
+
+class TestIsDispatchedPhaseProgressing:
+    """Pure predicate: True iff metrics['progress'].updated_at advanced within
+    no_progress_s of now_ts."""
+
+    def test_progressing_recent_update_true(self):
+        metrics = {"progress": {"updated_at": 1000.0, "done": 5, "total": 10}}
+        # now=1060, updated 60s ago, threshold 7200 → progressing
+        assert is_dispatched_phase_progressing(metrics, 1060.0, 7200.0) is True
+
+    def test_stale_update_false(self):
+        metrics = {"progress": {"updated_at": 1000.0, "done": 5, "total": 10}}
+        # now=1000+10800, updated 10800s (3h) ago, threshold 7200 → NOT progressing
+        assert is_dispatched_phase_progressing(metrics, 1000.0 + 10800, 7200.0) is False
+
+    def test_no_progress_key_false(self):
+        assert is_dispatched_phase_progressing({"other": 1}, 1000.0, 7200.0) is False
+
+    def test_non_dict_metrics_false(self):
+        assert is_dispatched_phase_progressing(None, 1000.0, 7200.0) is False
+        assert is_dispatched_phase_progressing("not-a-dict", 1000.0, 7200.0) is False  # type: ignore[arg-type]
+        assert is_dispatched_phase_progressing(["list"], 1000.0, 7200.0) is False  # type: ignore[arg-type]
+
+    def test_missing_updated_at_false(self):
+        metrics = {"progress": {"done": 5, "total": 10}}
+        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
+
+    def test_non_numeric_updated_at_false(self):
+        metrics = {"progress": {"updated_at": "not-a-number"}}
+        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
+
+    def test_progress_not_dict_false(self):
+        # progress present but not a dict → False (defensive)
+        metrics = {"progress": "in-progress"}
+        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
+
+
+# ---------------------------------------------------------------------------
+# R2: progress-aware reconciler — DB-backed.  The reconciler calls _t.time()
+# internally, so seed updated_at relative to real time.time() (fresh = now-60,
+# stale = now-10800).  All entries are dispatched 3h ago (age >= 7200 stale
+# threshold) so the absolute age gate is satisfied — the progress check is what
+# decides reclaim-vs-skip.
+# ---------------------------------------------------------------------------
+
+
+class TestProgressAwareReconciler:
+    """Branch 2 + R2 progress gate (flag-gated, default OFF)."""
+
+    def test_progress_aware_skips_when_progressing(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Flag ON; dispatched 3h ago (age >= stale threshold) BUT latest
+        StageRun has fresh progress (updated_at = now-60). The pass is still
+        making progress → skipped, NOT reclaimed, NO revoke."""
+        import time
+
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        stale_at = _now_minus_iso(10800)  # 3 hours ago — past the absolute gate
+        _seed_phase(
+            db_session, run_id, _PHASE_A,
+            _build_dispatched_entry(stale_at, task_id="progressing-task"),
+        )
+        _seed_stage_run(
+            db_session, run_id, _PASS_A,
+            execution_status="FAILED",
+            attempt=1,
+            finished_at=None,
+            metrics={"progress": {"updated_at": time.time() - 60, "done": 5, "total": 10}},
+        )
+
+        with _patched_reconciler(
+            db_session, progress_aware=True, no_progress_threshold_s=7200
+        ) as mocks:
+            result = _run_reconciler()
+
+        assert _PHASE_A in result["skipped_making_progress"], (
+            f"Expected {_PHASE_A} in skipped_making_progress; got {result}"
+        )
+        assert _PHASE_A not in result["stale_dispatched_reclaimed"], (
+            f"Should NOT reclaim a progressing pass; got {result['stale_dispatched_reclaimed']}"
+        )
+        mocks["revoke"].assert_not_called()
+
+    def test_progress_aware_reclaims_when_no_progress(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Flag ON; dispatched 3h ago AND latest StageRun progress is stale
+        (updated_at = now-10800). No progress advance within the window →
+        reclaimed (absolute backstop), revoke issued."""
+        import time
+
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        stale_at = _now_minus_iso(10800)
+        _seed_phase(
+            db_session, run_id, _PHASE_A,
+            _build_dispatched_entry(stale_at, task_id="stalled-task"),
+        )
+        _seed_stage_run(
+            db_session, run_id, _PASS_A,
+            execution_status="FAILED",
+            attempt=1,
+            finished_at=None,
+            metrics={"progress": {"updated_at": time.time() - 10800, "done": 5, "total": 10}},
+        )
+
+        with _patched_reconciler(
+            db_session, progress_aware=True, no_progress_threshold_s=7200
+        ) as mocks:
+            result = _run_reconciler()
+
+        assert _PHASE_A in result["stale_dispatched_reclaimed"], (
+            f"Expected {_PHASE_A} in stale_dispatched_reclaimed; got {result}"
+        )
+        assert _PHASE_A not in result["skipped_making_progress"], (
+            f"Stalled pass must NOT be skipped; got {result['skipped_making_progress']}"
+        )
+        mocks["revoke"].assert_called()
+
+    def test_progress_aware_no_metrics_falls_back_to_absolute(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Flag ON but NO StageRun metrics → no progress data → fall back to
+        the absolute age path → reclaimed, revoke issued."""
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        stale_at = _now_minus_iso(10800)
+        _seed_phase(
+            db_session, run_id, _PHASE_A,
+            _build_dispatched_entry(stale_at, task_id="no-metrics-task"),
+        )
+        # No StageRun seeded at all → metrics absent.
+
+        with _patched_reconciler(
+            db_session, progress_aware=True, no_progress_threshold_s=7200
+        ) as mocks:
+            result = _run_reconciler()
+
+        assert _PHASE_A in result["stale_dispatched_reclaimed"], (
+            f"No-progress-data must reclaim via absolute path; got {result}"
+        )
+        assert _PHASE_A not in result["skipped_making_progress"]
+        mocks["revoke"].assert_called()
+
+    def test_flag_off_byte_identical(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Flag OFF (default) + FRESH progress metrics (updated_at = now). The
+        metrics must be IGNORED (no read, today's behavior): the pass is
+        reclaimed on absolute age alone, revoke issued."""
+        import time
+
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        stale_at = _now_minus_iso(10800)
+        _seed_phase(
+            db_session, run_id, _PHASE_A,
+            _build_dispatched_entry(stale_at, task_id="flag-off-task"),
+        )
+        _seed_stage_run(
+            db_session, run_id, _PASS_A,
+            execution_status="FAILED",
+            attempt=1,
+            finished_at=None,
+            metrics={"progress": {"updated_at": time.time(), "done": 9, "total": 10}},
+        )
+
+        # progress_aware defaults to False in the helper → byte-identical path.
+        with _patched_reconciler(db_session) as mocks:
+            result = _run_reconciler()
+
+        assert _PHASE_A in result["stale_dispatched_reclaimed"], (
+            f"Flag OFF must reclaim regardless of fresh progress; got {result}"
+        )
+        assert result["skipped_making_progress"] == [], (
+            f"Flag OFF must never populate skipped_making_progress; got {result}"
+        )
+        mocks["revoke"].assert_called()

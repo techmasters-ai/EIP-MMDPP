@@ -328,6 +328,17 @@ class Settings(BaseSettings):
     dg_progress_poller_enabled: bool = False
     # R2: progress poller beat interval (seconds).
     extraction_progress_poll_seconds: int = 30
+    # R2: progress-aware reconciler — when True, a dispatched pass whose
+    # progress (stage_runs.metrics['progress'].updated_at) advanced within
+    # reconciler_no_progress_threshold_s is NOT reclaimed regardless of age.
+    # Default False = today's absolute-threshold-only behavior (byte-identical).
+    reconciler_progress_aware: bool = False
+    # R2: a dispatched pass with no progress advance within this many seconds
+    # is eligible for reclaim (when reconciler_progress_aware=True).
+    reconciler_no_progress_threshold_s: int = 7200
+    # R2: absolute stale-dispatched threshold (seconds), decoupled from
+    # 2*pass_soft_time_limit. The catch-all backstop even when progress-aware off.
+    reconciler_stale_dispatched_s: int = 86400
     # Quality-gate floor shared with the docling-graph service. Mirrors
     # DoclingGraphSettings.docling_graph_quality_min_instances so compose
     # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var
