@@ -808,6 +808,7 @@ def _execute_pass_attempt(
         document_id=document_id,
         selected_chunks=forwarded_selected_chunks,
         field_subset=forwarded_field_subset,
+        pipeline_run_id=pipeline_run_id,
     )
     # C0 telemetry: measure request size + HTTP wall + pass wall. perf_counter
     # is the wall-clock workhorse (monotonic, ns resolution); negligible cost
@@ -4344,6 +4345,7 @@ def _build_extract_pass_request(
     upstream_refs: dict | None, document_id: str,
     selected_chunks: list[dict] | None = None,
     field_subset: list[str] | None = None,
+    pipeline_run_id: str | None = None,
 ) -> dict:
     """Assemble the POST body for /extract-pass.
 
@@ -4370,6 +4372,12 @@ def _build_extract_pass_request(
         "document_id": document_id,
         "docling_document_json": doc_json,
     }
+
+    # R2: thread the pipeline run UUID so docling-graph can key a progress
+    # registry by (run_id, pass_name). Omit when None so the body is
+    # byte-identical to today when the feature is off (default).
+    if pipeline_run_id:
+        body["pipeline_run_id"] = pipeline_run_id
 
     if selected_chunks:
         body["selected_chunks"] = selected_chunks

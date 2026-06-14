@@ -142,6 +142,14 @@ import docling_graph.core.extractors.contracts.delta.orchestrator as _dg_delta_o
 
 _pass_orchestrator_overrides = _threading_for_dg_orch_patch.local()
 
+# R2: thread-local bridge between the /extract-pass handler and the
+# (separately-patched) batch loop, so a progress registry can key by
+# (run_id, pass_name).  Set before run_pipeline() and reset in the finally so
+# it never leaks across passes on the same worker thread.  Readers use a
+# default-safe getattr, e.g.:
+#   run_id = getattr(_pass_progress_overrides, "run_id", None)
+_pass_progress_overrides = _threading_for_dg_orch_patch.local()
+
 # Task F3 (§9 subset-schema extraction): thread-local bridge between the
 # /extract-pass handler and LlmBackend.extract_from_markdown.  Set before
 # run_pipeline() and reset in the finally block so it never leaks across passes
@@ -600,6 +608,7 @@ def run_extraction_pass(
     max_tokens: int | None = None,
     pre_built_chunks: list[dict[str, Any]] | None = None,
     field_subset: list[str] | None = None,
+    pipeline_run_id: str | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -1034,6 +1043,11 @@ def run_extraction_pass(
                     len(field_subset),
                     field_subset[:10],  # log first 10 to keep lines short
                 )
+            # R2: publish (run_id, pass_name) on the thread-local so the
+            # (separately-patched) batch loop can correlate progress events.
+            # Reset in the finally below so it never leaks across passes.
+            _pass_progress_overrides.run_id = pipeline_run_id
+            _pass_progress_overrides.pass_name = pass_name
             context = run_pipeline(config)
         except Exception as exc:
             # Library raised PipelineError (or anything else). Build a stub
@@ -1079,6 +1093,9 @@ def run_extraction_pass(
             # Task F3: reset field_subset thread-local to prevent cross-pass
             # leakage on the same worker thread.
             _pass_llm_schema_overrides.field_subset = None
+            # R2: reset progress thread-local to prevent cross-pass leakage.
+            _pass_progress_overrides.run_id = None
+            _pass_progress_overrides.pass_name = None
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
@@ -1658,6 +1675,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.max_tokens,
                     _selected_chunks_payload,
                     body.field_subset,
+                    pipeline_run_id=body.pipeline_run_id,
                 )
             except Exception as exc:
                 logger.exception(

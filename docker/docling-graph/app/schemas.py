@@ -161,6 +161,10 @@ class ExtractPassRequest(BaseModel):
         default=None,
         description="UUID of the document being processed (for logging correlation)",
     )
+    pipeline_run_id: Optional[str] = Field(
+        default=None,
+        description="Pipeline run UUID for progress-registry correlation (R2).",
+    )
     temperature: Optional[float] = Field(
         default=None,
         ge=0.0,
