@@ -1,0 +1,78 @@
+{
+ "planPath": "docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md",
+ "tasks": [
+  {
+   "id": 1,
+   "subject": "R2-T1: DG progress registry module",
+   "status": "pending",
+   "description": "**Goal:** Pure process-global progress registry (dict+lock) the batch loop updates and /progress reads; host-testable, no docling_graph deps.\n\n**Files:**\n- Create docker/docling-graph/app/_progress_registry.py\n- Test docker/docling-graph/tests/test_progress_registry.py\n\n**Acceptance Criteria:**\n- [ ] start/advance/touch/clear/snapshot lock-guarded\n- [ ] advance/touch/clear semantics\n- [ ] snapshot shape with age_s\n- [ ] two-thread isolation; stdlib-only import\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_progress_registry.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/_progress_registry.py\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_progress_registry.py -v\", \"acceptanceCriteria\": [\"lock-guarded api\", \"advance/touch/clear semantics\", \"snapshot shape\", \"thread isolation + stdlib-only\"], \"modelTier\": \"standard\"}\n```"
+  },
+  {
+   "id": 2,
+   "subject": "R2-T2: Thread pipeline_run_id + thread-local bridge",
+   "status": "pending",
+   "description": "**Goal:** pipeline_run_id flows worker->extract-pass->run_extraction_pass->thread-local for the registry key.\n\n**Files:**\n- docker/docling-graph/app/schemas.py:134\n- docker/docling-graph/app/main.py\n- app/workers/pipeline.py:4342-4418 + call site\n- tests/unit/test_extract_pass_request_body.py\n\n**Acceptance Criteria:**\n- [ ] ExtractPassRequest.pipeline_run_id added\n- [ ] worker body includes/omits correctly\n- [ ] run_extraction_pass sets/resets thread-local\n- [ ] endpoint passes run_id\n\n**Verify:** python3 -m pytest tests/unit/test_extract_pass_request_body.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/schemas.py\", \"docker/docling-graph/app/main.py\", \"app/workers/pipeline.py\", \"tests/unit/test_extract_pass_request_body.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extract_pass_request_body.py -v\", \"acceptanceCriteria\": [\"schema field\", \"worker body include/omit\", \"thread-local set/reset\", \"endpoint passes run_id\"], \"modelTier\": \"standard\"}\n```"
+  },
+  {
+   "id": 3,
+   "subject": "R2-T3: Hook registry into R1 batch-drain loop (patch)",
+   "status": "pending",
+   "description": "**Goal:** Patched batch loop calls registry start/advance/touch/clear keyed by thread-local; import-guarded.\n\n**Files:**\n- docker/docling-graph/patches/0001-orchestrator-batch-hard-timeout.patch\n- extend docker/docling-graph/tests/test_orchestrator_progress_watchdog.py\n\n**Acceptance Criteria:**\n- [ ] patch applies clean (dry-run --fuzz=0 exit 0)\n- [ ] start/advance/touch/clear wired\n- [ ] import-guarded thread-local read\n- [ ] registry failures never break extraction\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_orchestrator_progress_watchdog.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/patches/0001-orchestrator-batch-hard-timeout.patch\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_orchestrator_progress_watchdog.py -v\", \"acceptanceCriteria\": [\"patch applies clean\", \"start/advance/touch/clear\", \"import-guarded\", \"best-effort\"], \"modelTier\": \"standard\"}\n```",
+   "blockedBy": [
+    1,
+    2
+   ]
+  },
+  {
+   "id": 4,
+   "subject": "R2-T4: GET /progress endpoint",
+   "status": "pending",
+   "description": "**Goal:** docling-graph serves registry snapshot for the poller.\n\n**Files:**\n- docker/docling-graph/app/main.py\n- docker/docling-graph/tests/test_progress_endpoint.py\n\n**Acceptance Criteria:**\n- [ ] GET /progress 200 {passes:[...]}\n- [ ] ?pipeline_run_id= filter\n- [ ] empty when idle; read-only\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_progress_endpoint.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/main.py\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_progress_endpoint.py -v\", \"acceptanceCriteria\": [\"200 passes\", \"run_id filter\", \"empty idle\", \"read-only\"], \"modelTier\": \"standard\"}\n```",
+   "blockedBy": [
+    1
+   ]
+  },
+  {
+   "id": 5,
+   "subject": "R2-T5: Progress poller beat task (flag-gated) + config/env",
+   "status": "pending",
+   "description": "**Goal:** Flag-gated poller writes DG /progress into stage_runs.metrics->'progress'.\n\n**Files:**\n- app/config.py\n- app/workers/pipeline.py\n- app/workers/celery_app.py:82-126\n- .env + .env.example\n- tests/unit/test_poll_extraction_progress.py\n\n**Acceptance Criteria:**\n- [ ] flag-off no-op (no http/db)\n- [ ] flag-on merges metrics.progress via copy-mutate-reassign\n- [ ] beat entry registered\n- [ ] env parity both vars\n\n**Verify:** python3 -m pytest tests/unit/test_poll_extraction_progress.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"app/config.py\", \"app/workers/pipeline.py\", \"app/workers/celery_app.py\", \".env.example\", \"tests/unit/test_poll_extraction_progress.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_poll_extraction_progress.py -v\", \"acceptanceCriteria\": [\"flag-off no-op\", \"flag-on writes metrics.progress\", \"beat entry\", \"env parity\"], \"modelTier\": \"standard\"}\n```",
+   "blockedBy": [
+    4
+   ]
+  },
+  {
+   "id": 6,
+   "subject": "R2-T6: Progress-aware reconciler (flag default-off) + decouple stale_dispatched",
+   "status": "pending",
+   "description": "**Goal:** Flag-on: progressing pass not reclaimed regardless of age; off: byte-identical. Decouple absolute threshold to a setting.\n\n**Files:**\n- app/config.py\n- .env + .env.example\n- app/workers/pipeline.py:9441 + :9602-9633 + summary key + helper\n- tests/unit/test_reconcile_ontology_graph_runs.py\n\n**Acceptance Criteria:**\n- [ ] :9441 uses settings.reconciler_stale_dispatched_s\n- [ ] helper is_dispatched_phase_progressing correct\n- [ ] gate after age+pending before reclaim\n- [ ] flag-off byte-identical (existing tests pass)\n- [ ] summary key mirrored 3 places\n\n**Verify:** DATABASE_URL_SYNC=postgresql+psycopg2://eip_test:eip_test_secret@localhost:5438/eip_test python3 -m pytest tests/unit/test_reconcile_ontology_graph_runs.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"app/config.py\", \"app/workers/pipeline.py\", \".env.example\", \"tests/unit/test_reconcile_ontology_graph_runs.py\"], \"verifyCommand\": \"DATABASE_URL_SYNC=postgresql+psycopg2://eip_test:eip_test_secret@localhost:5438/eip_test python3 -m pytest tests/unit/test_reconcile_ontology_graph_runs.py -v\", \"acceptanceCriteria\": [\"decouple stale_dispatched\", \"progress helper\", \"gate placement\", \"flag-off byte-identical\", \"summary key mirrored\"], \"modelTier\": \"standard\"}\n```",
+   "blockedBy": [
+    5
+   ]
+  },
+  {
+   "id": 7,
+   "subject": "R2-T7: Deploy heartbeat code, flags OFF, current timeouts (USER GATE)",
+   "status": "pending",
+   "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** When dataset lands, deploy R2 code flags-OFF + current timeouts; verify /progress + poller write metrics.progress on a real run; reconciler/extraction unchanged.\n\n**Files:**\n- operational: rebuild docling-graph + recreate worker/api + verify\n\n**Acceptance Criteria:**\n- [ ] dataset landed, nothing PROCESSING\n- [ ] docling-graph rebuilt, /progress 200\n- [ ] worker+api recreated, flags off in-container\n- [ ] poller-on shows advancing metrics.progress; reconciler unchanged\n- [ ] progress-aware stays false\n\n**Verify:** curl -s localhost:8002/progress\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"userGate\": true, \"tags\": [\"user-gate\"], \"files\": [], \"verifyCommand\": \"curl -s localhost:8002/progress\", \"acceptanceCriteria\": [\"dataset landed nothing processing\", \"docling-graph rebuilt /progress 200\", \"flags off in-container\", \"poller-on metrics.progress advances\", \"progress-aware stays false\"], \"requireEvidenceTokens\": [[\"poller-off\", \"before\"], [\"poller-on\", \"metrics.progress\"]]}\n```",
+   "blockedBy": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ]
+  },
+  {
+   "id": 8,
+   "subject": "R2-T8: Flip progress-aware on, then reduce backstop timeouts (USER GATE)",
+   "status": "pending",
+   "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** After heartbeat verified, enable progress-aware reconciler THEN reduce absolute backstops, in that order.\n\n**Files:**\n- .env + .env.example (timeout reductions LAST)\n- docling-graph compose/config_builder for DOCLING_GRAPH_LLM_TIMEOUT\n- docs/operational/production-reliability-2026-06.md \u00a7R2\n\n**Acceptance Criteria:**\n- [ ] progress-aware on; progressing NOT reclaimed, stalled reclaimed\n- [ ] timeouts reduced both env files only AFTER verify (DG_TIMEOUT 64800, PASS_SOFT 72000, LLM_TIMEOUT 64800, STALE 86400)\n- [ ] no legit pass killed\n- [ ] R2 doc updated implemented+deployed\n\n**Verify:** docker exec eip-mmdpp-worker-graph-1 printenv RECONCILER_PROGRESS_AWARE DOCLING_GRAPH_TIMEOUT PASS_SOFT_TIME_LIMIT\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"userGate\": true, \"tags\": [\"user-gate\"], \"files\": [\".env.example\", \"docs/operational/production-reliability-2026-06.md\"], \"verifyCommand\": \"docker exec eip-mmdpp-worker-graph-1 printenv RECONCILER_PROGRESS_AWARE DOCLING_GRAPH_TIMEOUT PASS_SOFT_TIME_LIMIT\", \"acceptanceCriteria\": [\"progress-aware verified\", \"timeouts reduced after verify\", \"no legit pass killed\", \"R2 doc updated\"], \"requireEvidenceTokens\": [[\"progress-aware-off\", \"before\"], [\"progress-aware-on\", \"after\"]]}\n```",
+   "blockedBy": [
+    7
+   ]
+  }
+ ],
+ "lastUpdated": "2026-06-14T13:20:00Z"
+}
