@@ -26,7 +26,7 @@
   {
    "id": 4,
    "subject": "R2-T4: GET /progress endpoint",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** docling-graph serves registry snapshot for the poller.\n\n**Files:**\n- docker/docling-graph/app/main.py\n- docker/docling-graph/tests/test_progress_endpoint.py\n\n**Acceptance Criteria:**\n- [ ] GET /progress 200 {passes:[...]}\n- [ ] ?pipeline_run_id= filter\n- [ ] empty when idle; read-only\n\n**Verify:** python3 -m pytest docker/docling-graph/tests/test_progress_endpoint.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/main.py\"], \"verifyCommand\": \"python3 -m pytest docker/docling-graph/tests/test_progress_endpoint.py -v\", \"acceptanceCriteria\": [\"200 passes\", \"run_id filter\", \"empty idle\", \"read-only\"], \"modelTier\": \"standard\"}\n```",
    "blockedBy": [
     1
@@ -74,5 +74,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-14T14:10:00Z"
+ "lastUpdated": "2026-06-14T14:25:00Z"
 }
