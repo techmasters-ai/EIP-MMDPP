@@ -9418,14 +9418,22 @@ def _has_pending_retry_for_pass(
     return row.finished_at > cutoff
 
 
-def is_dispatched_phase_progressing(metrics: dict | None, now_ts: float, no_progress_s: float) -> bool:
-    """R2: True iff stage_runs.metrics['progress'].updated_at exists AND advanced
-    within no_progress_s of now_ts (i.e. the pass is still making progress).
-    False when there is no progress data (caller falls back to absolute age)."""
-    prog = (metrics or {}).get("progress") if isinstance(metrics, dict) else None
-    if not isinstance(prog, dict):
+def is_dispatched_phase_progressing(progress_entry: dict | None, now_ts: float, no_progress_s: float) -> bool:
+    """R2: True iff ``progress_entry`` is a dict whose numeric ``updated_at``
+    advanced within no_progress_s of now_ts (i.e. the pass is still making
+    progress).  False otherwise — None / non-dict / missing / non-numeric
+    updated_at — so the caller falls back to absolute age.
+
+    ``progress_entry`` is the per-pass entry the caller extracts from the
+    SUMMARY row's ``metrics['progress'][<pass_name>]``.  Progress is stored on
+    the summary row (pass_name IS NULL) keyed by pass_name because the per-pass
+    StageRun row does NOT exist while a pass is running (it is created only at
+    pass completion by _write_stage_run, from derive_ontology_graph_pass step 5);
+    two concurrent passes share the one summary row, so per-pass keying is
+    required."""
+    if not isinstance(progress_entry, dict):
         return False
-    updated_at = prog.get("updated_at")
+    updated_at = progress_entry.get("updated_at")
     if not isinstance(updated_at, (int, float)):
         return False
     return (now_ts - float(updated_at)) < no_progress_s
@@ -9650,25 +9658,35 @@ def reconcile_ontology_graph_runs(self) -> dict:
 
                     if settings.reconciler_progress_aware:
                         try:
+                            # Progress lives on the SUMMARY row (pass_name IS
+                            # NULL) keyed by pass_name — the per-pass StageRun
+                            # row does NOT exist while the pass is running (it is
+                            # created only at completion by _write_stage_run), so
+                            # querying pass_name == pass_name always missed and
+                            # the progress gate was a no-op.
                             from sqlalchemy import select as _select
                             from app.models.ingest import StageRun as _SR
-                            _sr = db.execute(
+                            _summary = db.execute(
                                 _select(_SR).where(
                                     _SR.pipeline_run_id == uuid.UUID(str(run_id)),
                                     _SR.stage_name == "derive_ontology_graph",
-                                    _SR.pass_name == pass_name,
+                                    _SR.pass_name.is_(None),
                                 ).order_by(_SR.attempt.desc()).limit(1)
                             ).scalars().first()
-                            _metrics = _sr.metrics if _sr is not None else None
+                            _prog_map = (
+                                (_summary.metrics or {}).get("progress") or {}
+                                if _summary is not None else {}
+                            )
+                            _entry = _prog_map.get(pass_name) if isinstance(_prog_map, dict) else None
                         except Exception:
                             logger.warning(
                                 "reconcile_ontology_graph_runs: progress-metrics read "
                                 "failed for run_id=%s pass=%s; falling back to absolute age",
                                 run_id, pass_name, exc_info=True,
                             )
-                            _metrics = None
+                            _entry = None
                         if is_dispatched_phase_progressing(
-                            _metrics, time.time(), settings.reconciler_no_progress_threshold_s
+                            _entry, time.time(), settings.reconciler_no_progress_threshold_s
                         ):
                             logger.info(
                                 "reconcile_ontology_graph_runs: dispatched phase "
@@ -9799,21 +9817,38 @@ def poll_extraction_progress(self) -> dict:
     except Exception:
         logger.warning("poll_extraction_progress: GET %s failed", url, exc_info=True)
         return {"status": "poll_failed"}
+    # Group the /progress passes by run_id. Progress is stored on the SUMMARY
+    # StageRun (pass_name IS NULL) keyed by pass_name — the per-pass StageRun
+    # row does NOT exist while a pass is running (it is created only at pass
+    # completion by _write_stage_run, from derive_ontology_graph_pass step 5),
+    # so writing to a per-pass row silently wrote nothing. Two concurrent passes share the one
+    # summary row, so per-pass keying is REQUIRED (a flat shape would clobber).
+    by_run: dict = {}
+    for p in passes:
+        by_run.setdefault(p["run_id"], []).append(p)
+
     written = 0
     with get_sync_session() as session:
-        for p in passes:
+        for run_id, run_passes in by_run.items():
             row = (session.query(StageRun)
-                   .filter(StageRun.pipeline_run_id == p["run_id"],
+                   .filter(StageRun.pipeline_run_id == run_id,
                            StageRun.stage_name == "derive_ontology_graph",
-                           StageRun.pass_name == p["pass_name"])
+                           StageRun.pass_name.is_(None))
                    .order_by(StageRun.attempt.desc()).first())
             if row is None:
                 continue
+            # Copy-mutate-reassign: metrics JSONB is NOT mutation-tracked in
+            # place, so we must reassign the column to flush the change.
             m = dict(row.metrics or {})
-            m["progress"] = {"done": p.get("done"), "total": p.get("total"),
-                             "phase": p.get("phase"), "updated_at": p.get("updated_at")}
+            prog = dict(m.get("progress") or {})
+            for p in run_passes:
+                prog[p["pass_name"]] = {
+                    "done": p.get("done"), "total": p.get("total"),
+                    "phase": p.get("phase"), "updated_at": p.get("updated_at"),
+                }
+                written += 1
+            m["progress"] = prog
             row.metrics = m
-            written += 1
         session.commit()
     return {"status": "ok", "written": written}
 

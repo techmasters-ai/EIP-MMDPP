@@ -130,17 +130,24 @@ def _seed_phase(db: Session, run_id: uuid.UUID, phase_name: str, entry: dict) ->
 def _seed_stage_run(
     db: Session,
     run_id: uuid.UUID,
-    pass_name: str,
+    pass_name: str | None,
     *,
+    status: str = "FAILED",
     execution_status: str = "FAILED",
     attempt: int = 1,
     finished_at: datetime | None = None,
     metrics: dict | None = None,
 ) -> None:
-    """Insert a StageRun row for the given pass.
+    """Insert a StageRun row.
+
+    ``pass_name=None`` seeds the SUMMARY row (the row that actually exists for
+    the whole stage). Per-pass rows are only created at pass COMPLETION, so the
+    progress-aware reconciler reads progress off the SUMMARY row keyed by
+    pass_name: ``metrics['progress']['<pass_name>'] = {...}``.
 
     ``metrics`` (R2) is written into the JSONB ``metrics`` column — used by the
-    progress-aware reconciler tests to seed ``metrics['progress'].updated_at``.
+    progress-aware reconciler tests to seed
+    ``metrics['progress']['<pass_name>'].updated_at``.
     """
     stage_run_id = uuid.uuid4()
     db.execute(
@@ -151,7 +158,7 @@ def _seed_stage_run(
                  execution_status, finished_at, started_at, metrics)
             VALUES
                 (:id, :run_id, 'derive_ontology_graph', :pass_name, :attempt,
-                 'FAILED', :execution_status, :finished_at, NOW(),
+                 :status, :execution_status, :finished_at, NOW(),
                  CAST(:metrics AS jsonb))
             """
         ),
@@ -160,12 +167,34 @@ def _seed_stage_run(
             "run_id": str(run_id),
             "pass_name": pass_name,
             "attempt": attempt,
+            "status": status,
             "execution_status": execution_status,
             "finished_at": finished_at.isoformat() if finished_at else None,
             "metrics": json.dumps(metrics) if metrics is not None else None,
         },
     )
     db.flush()
+
+
+def _seed_summary_row(
+    db: Session,
+    run_id: uuid.UUID,
+    *,
+    progress: dict | None = None,
+    attempt: int = 1,
+) -> None:
+    """Seed the RUNNING summary StageRun (pass_name IS NULL) carrying per-pass
+    progress under ``metrics['progress']``.  This is the row the dispatcher
+    creates at stage start and that persists for the whole stage — the only row
+    that exists while passes are running."""
+    _seed_stage_run(
+        db, run_id, None,
+        status="RUNNING",
+        execution_status="RUNNING",
+        attempt=attempt,
+        finished_at=None,
+        metrics={"progress": progress} if progress is not None else None,
+    )
 
 
 def _seed_pass_output(
@@ -804,39 +833,36 @@ class TestBeatScheduleRegistered:
 
 
 class TestIsDispatchedPhaseProgressing:
-    """Pure predicate: True iff metrics['progress'].updated_at advanced within
-    no_progress_s of now_ts."""
+    """Pure predicate operating on a single per-pass progress ENTRY: True iff
+    the entry is a dict whose numeric ``updated_at`` advanced within no_progress_s
+    of now_ts.  (The caller extracts the per-pass entry from the summary row's
+    ``metrics['progress'][<pass_name>]`` before calling.)"""
 
     def test_progressing_recent_update_true(self):
-        metrics = {"progress": {"updated_at": 1000.0, "done": 5, "total": 10}}
+        entry = {"updated_at": 1000.0, "done": 5, "total": 10}
         # now=1060, updated 60s ago, threshold 7200 → progressing
-        assert is_dispatched_phase_progressing(metrics, 1060.0, 7200.0) is True
+        assert is_dispatched_phase_progressing(entry, 1060.0, 7200.0) is True
 
     def test_stale_update_false(self):
-        metrics = {"progress": {"updated_at": 1000.0, "done": 5, "total": 10}}
+        entry = {"updated_at": 1000.0, "done": 5, "total": 10}
         # now=1000+10800, updated 10800s (3h) ago, threshold 7200 → NOT progressing
-        assert is_dispatched_phase_progressing(metrics, 1000.0 + 10800, 7200.0) is False
+        assert is_dispatched_phase_progressing(entry, 1000.0 + 10800, 7200.0) is False
 
-    def test_no_progress_key_false(self):
-        assert is_dispatched_phase_progressing({"other": 1}, 1000.0, 7200.0) is False
-
-    def test_non_dict_metrics_false(self):
+    def test_none_entry_false(self):
+        # No per-pass entry (pass key absent on the summary row) → False.
         assert is_dispatched_phase_progressing(None, 1000.0, 7200.0) is False
+
+    def test_non_dict_entry_false(self):
         assert is_dispatched_phase_progressing("not-a-dict", 1000.0, 7200.0) is False  # type: ignore[arg-type]
         assert is_dispatched_phase_progressing(["list"], 1000.0, 7200.0) is False  # type: ignore[arg-type]
 
     def test_missing_updated_at_false(self):
-        metrics = {"progress": {"done": 5, "total": 10}}
-        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
+        entry = {"done": 5, "total": 10}
+        assert is_dispatched_phase_progressing(entry, 1000.0, 7200.0) is False
 
     def test_non_numeric_updated_at_false(self):
-        metrics = {"progress": {"updated_at": "not-a-number"}}
-        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
-
-    def test_progress_not_dict_false(self):
-        # progress present but not a dict → False (defensive)
-        metrics = {"progress": "in-progress"}
-        assert is_dispatched_phase_progressing(metrics, 1000.0, 7200.0) is False
+        entry = {"updated_at": "not-a-number"}
+        assert is_dispatched_phase_progressing(entry, 1000.0, 7200.0) is False
 
 
 # ---------------------------------------------------------------------------
@@ -854,9 +880,13 @@ class TestProgressAwareReconciler:
     def test_progress_aware_skips_when_progressing(
         self, db_session: Session, pipeline_run_factory
     ):
-        """Flag ON; dispatched 3h ago (age >= stale threshold) BUT latest
-        StageRun has fresh progress (updated_at = now-60). The pass is still
-        making progress → skipped, NOT reclaimed, NO revoke."""
+        """Flag ON; dispatched 3h ago (age >= stale threshold) BUT the SUMMARY
+        row carries fresh progress for this pass (updated_at = now-60). The pass
+        is still making progress → skipped, NOT reclaimed, NO revoke.
+
+        Note: only the SUMMARY row (pass_name IS NULL) is seeded — NO per-pass
+        StageRun row exists, mirroring production where the per-pass row is
+        created only at pass completion."""
         import time
 
         run_id = pipeline_run_factory(status="PROCESSING")
@@ -867,12 +897,9 @@ class TestProgressAwareReconciler:
             db_session, run_id, _PHASE_A,
             _build_dispatched_entry(stale_at, task_id="progressing-task"),
         )
-        _seed_stage_run(
-            db_session, run_id, _PASS_A,
-            execution_status="FAILED",
-            attempt=1,
-            finished_at=None,
-            metrics={"progress": {"updated_at": time.time() - 60, "done": 5, "total": 10}},
+        _seed_summary_row(
+            db_session, run_id,
+            progress={_PASS_A: {"updated_at": time.time() - 60, "done": 5, "total": 10}},
         )
 
         with _patched_reconciler(
@@ -891,8 +918,8 @@ class TestProgressAwareReconciler:
     def test_progress_aware_reclaims_when_no_progress(
         self, db_session: Session, pipeline_run_factory
     ):
-        """Flag ON; dispatched 3h ago AND latest StageRun progress is stale
-        (updated_at = now-10800). No progress advance within the window →
+        """Flag ON; dispatched 3h ago AND the SUMMARY row's per-pass progress is
+        stale (updated_at = now-10800). No progress advance within the window →
         reclaimed (absolute backstop), revoke issued."""
         import time
 
@@ -904,12 +931,9 @@ class TestProgressAwareReconciler:
             db_session, run_id, _PHASE_A,
             _build_dispatched_entry(stale_at, task_id="stalled-task"),
         )
-        _seed_stage_run(
-            db_session, run_id, _PASS_A,
-            execution_status="FAILED",
-            attempt=1,
-            finished_at=None,
-            metrics={"progress": {"updated_at": time.time() - 10800, "done": 5, "total": 10}},
+        _seed_summary_row(
+            db_session, run_id,
+            progress={_PASS_A: {"updated_at": time.time() - 10800, "done": 5, "total": 10}},
         )
 
         with _patched_reconciler(
@@ -928,8 +952,9 @@ class TestProgressAwareReconciler:
     def test_progress_aware_no_metrics_falls_back_to_absolute(
         self, db_session: Session, pipeline_run_factory
     ):
-        """Flag ON but NO StageRun metrics → no progress data → fall back to
-        the absolute age path → reclaimed, revoke issued."""
+        """Flag ON but NO summary-row progress (no StageRun seeded at all) →
+        no progress data → fall back to the absolute age path → reclaimed,
+        revoke issued."""
         run_id = pipeline_run_factory(status="PROCESSING")
         _set_run_mode(db_session, run_id)
 
@@ -938,7 +963,7 @@ class TestProgressAwareReconciler:
             db_session, run_id, _PHASE_A,
             _build_dispatched_entry(stale_at, task_id="no-metrics-task"),
         )
-        # No StageRun seeded at all → metrics absent.
+        # No StageRun seeded at all → summary row absent → entry is None.
 
         with _patched_reconciler(
             db_session, progress_aware=True, no_progress_threshold_s=7200
@@ -954,8 +979,8 @@ class TestProgressAwareReconciler:
     def test_flag_off_byte_identical(
         self, db_session: Session, pipeline_run_factory
     ):
-        """Flag OFF (default) + FRESH progress metrics (updated_at = now). The
-        metrics must be IGNORED (no read, today's behavior): the pass is
+        """Flag OFF (default) + FRESH summary-row progress (updated_at = now).
+        The progress must be IGNORED (no read, today's behavior): the pass is
         reclaimed on absolute age alone, revoke issued."""
         import time
 
@@ -967,12 +992,9 @@ class TestProgressAwareReconciler:
             db_session, run_id, _PHASE_A,
             _build_dispatched_entry(stale_at, task_id="flag-off-task"),
         )
-        _seed_stage_run(
-            db_session, run_id, _PASS_A,
-            execution_status="FAILED",
-            attempt=1,
-            finished_at=None,
-            metrics={"progress": {"updated_at": time.time(), "done": 9, "total": 10}},
+        _seed_summary_row(
+            db_session, run_id,
+            progress={_PASS_A: {"updated_at": time.time(), "done": 9, "total": 10}},
         )
 
         # progress_aware defaults to False in the helper → byte-identical path.
