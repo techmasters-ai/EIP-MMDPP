@@ -149,7 +149,7 @@
   {
    "id": 18,
    "subject": "Task 18: selection_mode + shared cut helper + selection diagnostics",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Four [:top_k] slices -> select_candidates helper; topk default byte-identical; guarded_quantile = gates \u222a quantile cut, gates exempt from k_max.\n\n**Files:**\n- app/services/ontology_bundles.py\n- app/services/extraction_candidate_scoring.py\n- app/api/v1/extraction_routing.py\n- app/schemas/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] topk byte-identical at 4 sites\n- [ ] guarded semantics exact incl. gate k_max exemption\n- [ ] edge cases tested\n- [ ] diagnostics schema-stable, worker untouched\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/ontology_bundles.py\", \"app/services/extraction_candidate_scoring.py\", \"app/api/v1/extraction_routing.py\", \"app/schemas/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\", \"acceptanceCriteria\": [\"topk byte-identical at 4 sites\", \"guarded semantics exact incl. gate k_max exemption\", \"edge cases tested\", \"diagnostics schema-stable, worker untouched\"]}\n```",
    "blockedBy": [
     7
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-17T11:00:00Z"
+ "lastUpdated": "2026-06-17T11:10:00Z"
 }
