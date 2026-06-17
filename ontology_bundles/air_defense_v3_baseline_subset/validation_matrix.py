@@ -102,6 +102,17 @@ VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
     ("WEAPON_SYSTEM", RelationshipType.ENGAGES, "PLATFORM"),
     ("WEAPON_SYSTEM", RelationshipType.HAS_COMPONENT, "COMPONENT"),
     ("WEAPON_SYSTEM", RelationshipType.HAS_SUBSYSTEM, "SUBSYSTEM"),
+    # VARIANT_OF — a child designation/model/configuration rolls up to a
+    # parent family entity of the SAME type (e.g. an SA-2 variant → SA-2
+    # family). system_links emits this cross-pass; the merge layer's exact
+    # (source, rel, target) triple check requires the same-type self-edge per
+    # system family. Mirrors the ALIAS_OF / INSTANCE_OF self-edge pattern.
+    ("AIR_DEFENSE_ARTILLERY_SYSTEM", RelationshipType.VARIANT_OF, "AIR_DEFENSE_ARTILLERY_SYSTEM"),
+    ("EQUIPMENT_SYSTEM", RelationshipType.VARIANT_OF, "EQUIPMENT_SYSTEM"),
+    ("MISSILE_SYSTEM", RelationshipType.VARIANT_OF, "MISSILE_SYSTEM"),
+    ("PLATFORM", RelationshipType.VARIANT_OF, "PLATFORM"),
+    ("RADAR_SYSTEM", RelationshipType.VARIANT_OF, "RADAR_SYSTEM"),
+    ("WEAPON_SYSTEM", RelationshipType.VARIANT_OF, "WEAPON_SYSTEM"),
 })
 
 

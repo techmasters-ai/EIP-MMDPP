@@ -23,6 +23,7 @@ relationship_types:
     - LAUNCHES
     - ASSOCIATED_WITH
     - CUES
+    - VARIANT_OF
   derive:
     - HAS_PROVENANCE
     - MENTIONED_IN
