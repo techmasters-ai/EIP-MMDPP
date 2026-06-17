@@ -342,9 +342,13 @@ def test_reclaim_stale_dispatched_revokes_and_resets(
         },
     )
 
-    # Mock the celery_app to capture the revoke call
+    # Mock the celery_app to capture the revoke call. reclaim_stale_phase
+    # imports celery_app lazily (`from app.workers.celery_app import celery_app`
+    # inside the function), so there is no module-level
+    # app.services.run_phase_dispatch.celery_app attribute to patch — patch the
+    # source module attribute the lazy import binds against.
     mock_celery = MagicMock()
-    monkeypatch.setattr("app.services.run_phase_dispatch.celery_app", mock_celery)
+    monkeypatch.setattr("app.workers.celery_app.celery_app", mock_celery)
 
     reclaimed = reclaim_stale_phase(
         db_session,
