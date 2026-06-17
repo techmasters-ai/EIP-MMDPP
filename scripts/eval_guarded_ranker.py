@@ -177,14 +177,14 @@ def frontier_table(df, scores, gate_mask, qs, k_min, k_max) -> list[dict[str, fl
 # ===========================================================================
 # Model: sign-constrained LODO LogReg
 # ===========================================================================
-def _build_pipeline():
+def _build_pipeline(C: float = 1.0):
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
 
     return Pipeline([
         ("scale", StandardScaler()),
-        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced")),
+        ("lr", LogisticRegression(max_iter=2000, class_weight="balanced", C=C)),
     ])
 
 
@@ -221,17 +221,22 @@ def fit_sign_constrained(X_all, y, features: Sequence[str]) -> tuple[list[str], 
     raise SystemExit("[sign-check] ALL features dropped by the sign constraint — nothing to fit")
 
 
-def lodo_oof_scores(X, y, groups, *, label: str = "LODO LogReg") -> dict[str, Any]:
+def lodo_oof_scores(X, y, groups, *, label: str = "LODO LogReg", C: float = 1.0) -> dict[str, Any]:
     """LODO scoring: GroupKFold by run_id; pooled-OOF probabilities via
     cross_val_predict + mean-per-fold AUROC via an explicit fold loop.
-    Falls back to in-sample scoring (clearly labeled) when <2 docs."""
+    Falls back to in-sample scoring (clearly labeled) when <2 docs.
+
+    ``C`` is the LogReg regularization strength used for the LODO pipeline.
+    It defaults to 1.0 (sklearn's default) so existing callers are unchanged;
+    callers that selected a C should pass it so the reported LODO numbers
+    characterize the SAME model whose weights are shipped."""
     import numpy as np
     from sklearn.base import clone
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import GroupKFold, cross_val_predict
 
     out: dict[str, Any] = {"label": label, "n_docs": len(set(groups))}
-    pipe = _build_pipeline()
+    pipe = _build_pipeline(C)
     uniq = sorted(set(groups))
     if len(uniq) < 2:
         print(f"[{label}] WARNING: single doc — scores are IN-SAMPLE, not LODO")
