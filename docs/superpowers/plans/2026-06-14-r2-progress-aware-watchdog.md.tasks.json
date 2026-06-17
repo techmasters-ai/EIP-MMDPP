@@ -67,12 +67,12 @@
   {
    "id": 8,
    "subject": "R2-T8: Flip progress-aware on, then reduce backstop timeouts (USER GATE)",
-   "status": "pending",
+   "status": "completed",
    "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** After heartbeat verified, enable progress-aware reconciler THEN reduce absolute backstops, in that order.\n\n**Files:**\n- .env + .env.example (timeout reductions LAST)\n- docling-graph compose/config_builder for DOCLING_GRAPH_LLM_TIMEOUT\n- docs/operational/production-reliability-2026-06.md \u00a7R2\n\n**Acceptance Criteria:**\n- [ ] progress-aware on; progressing NOT reclaimed, stalled reclaimed\n- [ ] timeouts reduced both env files only AFTER verify (DG_TIMEOUT 64800, PASS_SOFT 72000, LLM_TIMEOUT 64800, STALE 86400)\n- [ ] no legit pass killed\n- [ ] R2 doc updated implemented+deployed\n\n**Verify:** docker exec eip-mmdpp-worker-graph-1 printenv RECONCILER_PROGRESS_AWARE DOCLING_GRAPH_TIMEOUT PASS_SOFT_TIME_LIMIT\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"userGate\": true, \"tags\": [\"user-gate\"], \"files\": [\".env.example\", \"docs/operational/production-reliability-2026-06.md\"], \"verifyCommand\": \"docker exec eip-mmdpp-worker-graph-1 printenv RECONCILER_PROGRESS_AWARE DOCLING_GRAPH_TIMEOUT PASS_SOFT_TIME_LIMIT\", \"acceptanceCriteria\": [\"progress-aware verified\", \"timeouts reduced after verify\", \"no legit pass killed\", \"R2 doc updated\"], \"requireEvidenceTokens\": [[\"progress-aware-off\", \"before\"], [\"progress-aware-on\", \"after\"]]}\n```",
    "blockedBy": [
     7
    ]
   }
  ],
- "lastUpdated": "2026-06-17T12:30:00Z"
+ "lastUpdated": "2026-06-17T18:35:00Z"
 }
