@@ -134,7 +134,7 @@
   {
    "id": 17,
    "subject": "Task 17: Deploy + re-collect 8 docs + evaluate (USER GATE)",
-   "status": "pending",
+   "status": "completed",
    "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** Fresh 8-doc capture with full feature set live; guarded-ranker eval report; PHASE GATE before Phase 4.\n\n**Files:**\n- reports/dataset_v2/\n- docs/operational/phase3-guarded-ranker-eval-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] deploy verified: rebuilt docling-graph + both workers restarted with fresh StartedAt\n- [ ] idle-pool probe before runs\n- [ ] 8 fresh runs, non-empty score_components_all\n- [ ] dataset_v2 new features non-constant\n- [ ] check_gate_coverage exit 0\n- [ ] eval report both LODO conventions + gate/ranker cost table\n- [ ] user go-ahead before Phase 4\n\n**Verify:** python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv && ls docs/operational/phase3-guarded-ranker-eval-2026-06.md\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"reports/dataset_v2/\", \"docs/operational/phase3-guarded-ranker-eval-2026-06.md\"], \"verifyCommand\": \"python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv && ls docs/operational/phase3-guarded-ranker-eval-2026-06.md\", \"acceptanceCriteria\": [\"deploy verified: rebuilt docling-graph + both workers restarted with fresh StartedAt\", \"idle-pool probe before runs\", \"8 fresh runs, non-empty score_components_all\", \"dataset_v2 new features non-constant\", \"check_gate_coverage exit 0\", \"eval report both LODO conventions + gate/ranker cost table\", \"user go-ahead before Phase 4\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"dataset_v1\", \"old\", \"baseline\"], [\"dataset_v2\", \"new\", \"re-collect\"]]}\n```",
    "blockedBy": [
     4,
@@ -158,7 +158,7 @@
   {
    "id": 19,
    "subject": "Task 19: Calibration script (fit_guarded_ranker)",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** dataset_v2 -> sign-constrained LogReg weights + quantile_q + margin -> fit JSON + manifest snippet; refuses on gate-coverage failure.\n\n**Files:**\n- scripts/fit_guarded_ranker.py\n- tests/unit/test_fit_guarded_ranker.py\n\n**Acceptance Criteria:**\n- [ ] sign-constrained drop-and-refit\n- [ ] q selection + margin steps documented as non-guarantee\n- [ ] fit JSON + manifest snippet\n- [ ] gate-coverage precondition\n\n**Verify:** python3 -m pytest tests/unit/test_fit_guarded_ranker.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/fit_guarded_ranker.py\", \"tests/unit/test_fit_guarded_ranker.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_fit_guarded_ranker.py -v\", \"acceptanceCriteria\": [\"sign-constrained drop-and-refit\", \"q selection + margin steps documented as non-guarantee\", \"fit JSON + manifest snippet\", \"gate-coverage precondition\"]}\n```",
    "blockedBy": [
     16,
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-11T02:00:00Z"
+ "lastUpdated": "2026-06-17T11:00:00Z"
 }
