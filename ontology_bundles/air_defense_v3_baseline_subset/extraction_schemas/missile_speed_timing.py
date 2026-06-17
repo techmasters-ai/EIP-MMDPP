@@ -54,7 +54,7 @@ class MissileSpeedTimingRecord(BaseModel):
         description=(
             "Average flight speed in meters per second. Relevant source "
             "labels include 'Average Speed', 'average velocity', "
-            "'mean speed', 'cruise speed', 'typical speed', "
+            "'mean speed', 'cruise speed', "
             "'average Mach', or 'velocity average'. Use average or "
             "nominal flight speed, not peak speed."
         ),
