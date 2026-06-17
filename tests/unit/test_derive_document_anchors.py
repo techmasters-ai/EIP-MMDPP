@@ -205,6 +205,17 @@ def test_derive_document_anchors_marks_stage_failed_on_exception(stubs, monkeypa
 
     monkeypatch.setattr("app.services.docling_anchors.walk", exploding_walk)
 
+    # @guard_stage_run(lifecycle=True) CLAIMs before the body; on the failure
+    # path it computes ctx.dispatch_attempt + 1 <= max_stage_dispatches. Give
+    # the CLAIM row an integer .dispatch_attempt so the wrapper re-raises the
+    # body's RuntimeError instead of a "'<=' not supported between MagicMock
+    # and int" TypeError. Scoped to this test (not the shared stubs fixture)
+    # so the success-path anchors tests are unaffected.
+    from types import SimpleNamespace
+    stubs["db"].execute.return_value.first.return_value = SimpleNamespace(
+        id=1, attempt=1, dispatch_attempt=0,
+    )
+
     with pytest.raises(RuntimeError, match="walk blew up"):
         derive_document_anchors("doc-uuid-1", run_id="run-id-1")
 
