@@ -53,7 +53,7 @@
   {
    "id": 7,
    "subject": "R2-T7: Deploy heartbeat code, flags OFF, current timeouts (USER GATE)",
-   "status": "pending",
+   "status": "completed",
    "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** When dataset lands, deploy R2 code flags-OFF + current timeouts; verify /progress + poller write metrics.progress on a real run; reconciler/extraction unchanged.\n\n**Files:**\n- operational: rebuild docling-graph + recreate worker/api + verify\n\n**Acceptance Criteria:**\n- [ ] dataset landed, nothing PROCESSING\n- [ ] docling-graph rebuilt, /progress 200\n- [ ] worker+api recreated, flags off in-container\n- [ ] poller-on shows advancing metrics.progress; reconciler unchanged\n- [ ] progress-aware stays false\n\n**Verify:** curl -s localhost:8002/progress\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md (same task).\n\n```json:metadata\n{\"userGate\": true, \"tags\": [\"user-gate\"], \"files\": [], \"verifyCommand\": \"curl -s localhost:8002/progress\", \"acceptanceCriteria\": [\"dataset landed nothing processing\", \"docling-graph rebuilt /progress 200\", \"flags off in-container\", \"poller-on metrics.progress advances\", \"progress-aware stays false\"], \"requireEvidenceTokens\": [[\"poller-off\", \"before\"], [\"poller-on\", \"metrics.progress\"]]}\n```",
    "blockedBy": [
     1,
@@ -74,5 +74,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-14T15:40:00Z"
+ "lastUpdated": "2026-06-17T12:30:00Z"
 }
