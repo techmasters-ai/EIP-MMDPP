@@ -168,7 +168,7 @@
   {
    "id": 20,
    "subject": "Task 20: Bundle propagation + docs + full suite",
-   "status": "pending",
+   "status": "completed",
    "description": "**Goal:** Config to air_defense_v3 then 3 siblings; VERIFICATION_CHECKLIST + README; suite green by junit XML; PHASE 4 GATE after.\n\n**Files:**\n- ontology_bundles/air_defense_v3/manifest.yaml\n- ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml\n- ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml\n- ontology_bundles/air_defense_v3_merged_v1/manifest.yaml\n- VERIFICATION_CHECKLIST.md\n- README.md\n\n**Acceptance Criteria:**\n- [ ] 4 bundles parse\n- [ ] unit suite green by junit XML not banner\n- [ ] acceptance file 33 passed run DIRECTLY (unmarked)\n- [ ] docs updated\n- [ ] no new env vars confirmed\n\n**Verify:** bash scripts/run_tests.sh unit && python3 -m pytest tests/integration/test_sa2_dvina_extraction_acceptance.py -q\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"ontology_bundles/air_defense_v3/manifest.yaml\", \"ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml\", \"ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml\", \"ontology_bundles/air_defense_v3_merged_v1/manifest.yaml\", \"VERIFICATION_CHECKLIST.md\", \"README.md\"], \"verifyCommand\": \"bash scripts/run_tests.sh unit && python3 -m pytest tests/integration/test_sa2_dvina_extraction_acceptance.py -q\", \"acceptanceCriteria\": [\"4 bundles parse\", \"unit suite green by junit XML not banner\", \"acceptance file 33 passed run DIRECTLY (unmarked)\", \"docs updated\", \"no new env vars confirmed\"]}\n```",
    "blockedBy": [
     18,
@@ -176,5 +176,5 @@
    ]
   }
  ],
- "lastUpdated": "2026-06-17T11:10:00Z"
+ "lastUpdated": "2026-06-17T11:40:00Z"
 }
