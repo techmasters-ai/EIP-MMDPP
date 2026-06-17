@@ -95,10 +95,23 @@ _MINIMAL_ONTOLOGY: dict = {
 
 
 def _fake_merged_result(n_entities: int = 2, n_edges: int = 1):
-    """A minimal merged result object enough to satisfy the merge task body."""
+    """A minimal merged result object enough to satisfy the merge task body.
+
+    Each entity carries a resolvable-lineage provenance row (non-empty
+    ``element_uid`` + non-null ``page``) so the strict lineage gate
+    (``_partition_entities_by_lineage``) keeps it. Without this the gate
+    rejects every entity and the success-path assertions fail.
+    """
     return SimpleNamespace(
-        entities=[SimpleNamespace(identity="e1")] * n_entities,
-        edges=[SimpleNamespace()] * n_edges,
+        entities=[
+            SimpleNamespace(
+                identity=f"e{i}",
+                provenance=[SimpleNamespace(element_uid=f"uid-{i}", page=1)],
+            )
+            for i in range(n_entities)
+        ],
+        edges=[SimpleNamespace() for _ in range(n_edges)],
+        identity_aliases={},
     )
 
 
@@ -914,7 +927,7 @@ class TestRollbackContract:
         # We achieve this by having _import_graph_phase_nodes call tracker.mark()
         # via side_effect.
 
-        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance):
+        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance, **kwargs):
             tracker.mark()  # simulate first graph write
             return {}
 
@@ -959,7 +972,7 @@ class TestRollbackContract:
         run_id = pipeline_run_factory()
         doc_id = str(uuid.uuid4())
 
-        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance):
+        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance, **kwargs):
             tracker.mark()
             return {}
 
@@ -990,7 +1003,7 @@ class TestRollbackContract:
         run_id = pipeline_run_factory()
         doc_id = str(uuid.uuid4())
 
-        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance):
+        def fake_import_nodes(merged, ontology, doc_id, tracker, provenance, **kwargs):
             tracker.mark()
             return {}
 

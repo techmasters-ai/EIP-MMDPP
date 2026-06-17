@@ -243,19 +243,25 @@ class TestRetrievalProfileUnitGate:
         with pytest.raises(ValidationError):
             RetrievalProfile(nonexistent_key="boom")
 
-    def test_existing_bundles_unit_gate_defaults(self):
-        """Real bundle manifests do not set unit_gate → must read back False."""
+    def test_existing_bundles_unit_gate_roundtrip(self):
+        """Field-group passes enable unit_gate in the manifests (gate
+        propagation, Tasks 11/20); verify the flag round-trips from YAML.
+        radar_power_rf + missile_kinematics are field-group passes present in
+        both the full bundle and the narrowed subset, and both enable the gate.
+        (The unset-default → False contract is covered by
+        test_unit_gate_defaults_to_false.)"""
         from app.services.ontology_bundles import load_bundle_manifest
 
+        expected_true = {"radar_power_rf", "missile_kinematics"}
         for bundle_key in ("air_defense_v3", "air_defense_v3_baseline_subset"):
             m = load_bundle_manifest(bundle_key)
-            for pass_def in m.passes:
-                rp = pass_def.retrieval
-                if rp is None:
-                    continue
-                assert rp.unit_gate is False, (
-                    f"{bundle_key}/{pass_def.name} unit_gate should default False"
-                )
+            gated = {
+                p.name for p in m.passes
+                if p.retrieval is not None and p.retrieval.unit_gate
+            }
+            assert expected_true <= gated, (
+                f"{bundle_key}: expected unit_gate True on {expected_true}, got {gated}"
+            )
 
 
 # ---------------------------------------------------------------------------
