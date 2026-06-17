@@ -104,10 +104,23 @@ need a progress signal, not a shorter deadline.**
 4. **Visibility:** a 24 h `progress` view per active run so a human can see
    done/total without reading container logs.
 
-**Status:** DESIGN only this turn. Heartbeat emission lives in the docling-graph
-fork + worker; needs in-container iteration. Recommend implementing in the
-post-Engagement window (it also makes future large-doc runs observable). Do NOT
-lower the timeout ladder until the heartbeat exists.
+**Status:** IMPLEMENTED + DEPLOYED (2026-06-17). 8-task plan
+`docs/superpowers/plans/2026-06-14-r2-progress-aware-watchdog.md` executed:
+DG progress registry + `GET /progress` (T1/T3/T4), `pipeline_run_id` threaded
+worker→DG via thread-local (T2), flag-gated poller writing the heartbeat into
+`stage_runs.metrics['progress'][pass_name]` on the summary row (T5 + the
+storage-location fix `6138676` — the per-pass row doesn't exist mid-pass),
+progress-aware reconciler (T6, flag-gated). T7: heartbeat code deployed flags-off
+then poller flipped on — VERIFIED LIVE on run `c8025d63` (`written=2`,
+`metrics.progress` advancing per pass). T8: `RECONCILER_PROGRESS_AWARE=true` THEN
+the backstop ladder reduced — live now: `DOCLING_GRAPH_TIMEOUT`/`DOCLING_GRAPH_LLM_TIMEOUT`
+720000→64800 (18h), `PASS_SOFT_TIME_LIMIT` 288000→72000 (20h),
+`RECONCILER_STALE_DISPATCHED_S` 576000→86400 (24h). The progress-aware reconciler
+is what makes the lower stale-dispatched safe (a progressing pass is never
+reclaimed regardless of age). The 18h HTTP backstop is the one progress-blind
+value — it sits above the longest observed legit pass (~11.4h) with margin;
+revisit if a real pass ever approaches it. `.env` + `.env.example` carry the T8
+posture; `CELERY_VISIBILITY_TIMEOUT` (100h) > `GRAPH_TIME_LIMIT` (90h) unchanged.
 
 ---
 
