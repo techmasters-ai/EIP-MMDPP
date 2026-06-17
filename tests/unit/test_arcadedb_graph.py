@@ -665,7 +665,9 @@ class TestValidationMatrix:
             await store.sync_schema()
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(_run())
+        # asyncio.get_event_loop() raises "no current event loop" on Python 3.12+;
+        # asyncio.run() creates and tears down a fresh loop for the coroutine.
+        asyncio.run(_run())
 
         assert store._validation_matrix is None
 

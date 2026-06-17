@@ -42,7 +42,11 @@ def _graph(client: MagicMock | None = None):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.get_event_loop() raises "no current event loop" on Python 3.12+
+    # when no loop is running and none has been set. asyncio.run() creates a
+    # fresh loop, runs the coroutine, and tears it down — the correct way to
+    # drive a single coroutine from synchronous test code.
+    return asyncio.run(coro)
 
 
 def _captured_sql(client: MagicMock) -> str:
