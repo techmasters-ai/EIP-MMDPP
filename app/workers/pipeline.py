@@ -564,11 +564,18 @@ def _partition_entities_by_lineage(merged) -> list:
             if getattr(ed, "from_identity", None) not in rejected_ids
             and getattr(ed, "to_identity", None) not in rejected_ids
         ]
+        # Defensive: identity is a LogicalIdentity in production (has
+        # identity_values_dict), but a diagnostic log must NEVER raise and
+        # fail the merge task — fall back to the raw identity for any other
+        # type (e.g. a str).
+        def _id_repr(_id):
+            f = getattr(_id, "identity_values_dict", None)
+            return f() if callable(f) else _id
         logger.error(
             "LINEAGE_GATE: rejected %d/%d entities lacking resolvable lineage "
             "(element_uid+page) — NOT committed; identities=%r",
             len(rejected), len(keep) + len(rejected),
-            [e.identity.identity_values_dict() for e in rejected][:20],
+            [_id_repr(e.identity) for e in rejected][:20],
         )
     return rejected
 
