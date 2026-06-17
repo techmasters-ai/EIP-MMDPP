@@ -41,12 +41,20 @@ def _fake_pass_def(
     *,
     name: str,
     depends_on: list[str] | None = None,
+    phase: str = "identity",
 ):
+    # The dispatcher partitions manifest passes by an explicit ``phase`` field
+    # (PassPhase = identity | field_group | relationship). The cold-start wave
+    # dispatches identity passes; system_links is recognised via
+    # ``phase == "relationship"``. Default to "identity" so the entity-pass
+    # fixtures land in the initial dispatch wave; relationship/system_links
+    # fixtures pass phase="relationship" explicitly.
     return SimpleNamespace(
         name=name,
         required=True,
         depends_on=list(depends_on or []),
         input_mode="document_only",
+        phase=phase,
     )
 
 
@@ -56,7 +64,7 @@ def _fake_manifest(passes: list | None = None):
         passes = [
             _fake_pass_def(name="radar_identity"),
             _fake_pass_def(name="radar_kinematics"),
-            _fake_pass_def(name="system_links", depends_on=["radar_identity"]),
+            _fake_pass_def(name="system_links", depends_on=["radar_identity"], phase="relationship"),
         ]
     return SimpleNamespace(
         bundle_key=_BUNDLE_KEY,
@@ -201,7 +209,7 @@ class TestDispatcherUsesClaimDispatchFlow:
         manifest = _fake_manifest(passes=[
             _fake_pass_def(name="radar_identity"),
             _fake_pass_def(name="radar_kinematics"),
-            _fake_pass_def(name="system_links", depends_on=["radar_identity"]),
+            _fake_pass_def(name="system_links", depends_on=["radar_identity"], phase="relationship"),
         ])
 
         with patch("app.workers.pipeline.claim_phase", wraps=__import__(
@@ -247,7 +255,7 @@ class TestDispatcherDoesNotDispatchSystemLinksDirectly:
         manifest = _fake_manifest(passes=[
             _fake_pass_def(name="radar_identity"),
             _fake_pass_def(name="radar_kinematics"),
-            _fake_pass_def(name="system_links", depends_on=["radar_identity"]),
+            _fake_pass_def(name="system_links", depends_on=["radar_identity"], phase="relationship"),
         ])
 
         with _patched_dispatcher(db_session, manifest=manifest) as mocks:

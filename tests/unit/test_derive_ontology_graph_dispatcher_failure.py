@@ -222,10 +222,15 @@ class TestPostQueueFailure:
 
         run = _fake_run()
         db1 = _make_db_session(run)
+        db_vr = MagicMock()  # session for vr_index_built metrics persistence (_db_vr)
         db2 = MagicMock()   # session for dispatch loop
         db_fail = MagicMock()  # session opened in the except handler
 
-        db_sessions = [db1, db2, db_fail]
+        # The dispatcher opens 4 sessions in the non-skip path: run/stage fetch,
+        # vr_index_built metrics persistence (_db_vr), dispatch loop, and the
+        # except-handler session. Supplying only 3 used to StopIteration on the
+        # 4th _get_db() and mask the RuntimeError under test.
+        db_sessions = [db1, db_vr, db2, db_fail]
         db_iter = iter(db_sessions)
 
         manifest = _fake_manifest(
@@ -234,7 +239,12 @@ class TestPostQueueFailure:
 
         dispatch_call_count = [0]
 
-        def fake_claim_and_dispatch(db, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(
+            db, doc_id, run_id, pass_name, queued_counter=None, **_kwargs
+        ):
+            # **_kwargs absorbs the VR C.4 params the dispatcher now passes
+            # (pass_def, bundle_key, build_index_failed) so the side_effect
+            # signature stays in sync with _claim_and_dispatch_pass.
             dispatch_call_count[0] += 1
             if dispatch_call_count[0] > n_success:
                 raise RuntimeError(f"Simulated dispatch failure on pass {pass_name}")
@@ -338,10 +348,14 @@ class TestDelayBeforeBookkeepingFailure:
 
         run = _fake_run()
         db1 = _make_db_session(run)
+        db_vr = MagicMock()  # session for vr_index_built metrics persistence (_db_vr)
         db2 = MagicMock()
         db_fail = MagicMock()
 
-        db_sessions = [db1, db2, db_fail]
+        # 4 sessions in the non-skip path: run/stage fetch, vr_index_built
+        # metrics persistence (_db_vr), dispatch loop, except-handler session.
+        # Only 3 used to StopIteration on the 4th _get_db() and mask the error.
+        db_sessions = [db1, db_vr, db2, db_fail]
         db_iter = iter(db_sessions)
 
         manifest = _fake_manifest(
