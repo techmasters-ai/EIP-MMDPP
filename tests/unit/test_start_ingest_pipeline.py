@@ -37,25 +37,33 @@ def fake_manifest():
 class TestStartIngestPipeline:
 
     def test_returns_ingest_dispatch_result(self, fake_db_session, fake_manifest):
-        """The refactored entry point returns IngestDispatchResult."""
+        """The refactored entry point returns IngestDispatchResult.
+
+        Post 2026-05-10 ledger-seed refactor: start_ingest_pipeline no longer
+        builds/dispatches a Celery chain. It seeds the first PENDING ledger row
+        via _seed_first_stage (the dispatcher-poller publishes prepare_document
+        within 5s) and returns celery_task_id="" by contract. The non-empty
+        task id from the old chain().apply_async().id path no longer exists.
+        """
         from app.workers.dispatch_types import IngestDispatchResult
 
         with patch("app.workers.pipeline._get_db", return_value=fake_db_session), \
-             patch("app.workers.pipeline.chain") as mock_chain, \
+             patch("app.workers.pipeline._seed_first_stage") as mock_seed, \
              patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
             # No active run; fake_db_session.execute returns None for the active check
             fake_db_session.execute.return_value.scalar_one_or_none.return_value = None
             fake_db_session.get = MagicMock(return_value=None)  # no Document row is ok for this test
 
-            # Mock the chain apply_async
-            mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
-
             from app.workers.pipeline import start_ingest_pipeline
             result = start_ingest_pipeline("00000000-0000-0000-0000-000000000001")
 
         assert isinstance(result, IngestDispatchResult)
-        assert result.celery_task_id == "task-abc"
+        # Ledger-seed contract: empty task id, first stage seeded for the poller.
+        assert result.celery_task_id == ""
         assert result.pipeline_run_id  # non-empty
+        mock_seed.assert_called_once()
+        # The seeded first stage is prepare_document.
+        assert mock_seed.call_args.kwargs.get("stage_name") == "prepare_document"
 
     def test_snapshots_bundle_on_pipeline_run(self, fake_db_session, fake_manifest):
         """PipelineRun row gets ontology_bundle_key, ontology_name, ontology_version,

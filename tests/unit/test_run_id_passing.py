@@ -18,10 +18,13 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 class TestStartIngestPipeline:
-    @patch("app.workers.pipeline.chain")
+    @patch("app.workers.pipeline._seed_first_stage")
     @patch("app.workers.pipeline._get_db")
     @patch("app.workers.pipeline._create_pipeline_run", return_value="run-123")
-    def test_creates_run_before_chain(self, mock_create_run, mock_get_db, mock_chain):
+    def test_creates_run_before_chain(self, mock_create_run, mock_get_db, mock_seed):
+        """Post ledger-seed refactor (2026-05-10): start_ingest_pipeline creates
+        the PipelineRun, seeds the first PENDING ledger row, commits and closes,
+        and returns celery_task_id="" (no chain().apply_async() task id)."""
         from unittest.mock import patch as _patch
         from app.workers.pipeline import start_ingest_pipeline
         from app.workers.dispatch_types import IngestDispatchResult
@@ -35,36 +38,33 @@ class TestStartIngestPipeline:
         db.execute.return_value.scalar_one_or_none.return_value = None
         db.get.return_value = None  # no Document row
         mock_get_db.return_value = db
-        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
         doc_id = str(uuid.uuid4())
         with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
             result = start_ingest_pipeline(doc_id)
 
-        # PipelineRun created before chain — new signature passes kwargs
+        # PipelineRun created before the ledger seed — new signature passes kwargs
         mock_create_run.assert_called_once()
         assert mock_create_run.call_args.args[0] is db
         assert mock_create_run.call_args.args[1] == doc_id
+        # First ledger row seeded for the dispatcher-poller.
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs.get("pipeline_run_id") == "run-123"
         db.commit.assert_called_once()
         db.close.assert_called_once()
         assert isinstance(result, IngestDispatchResult)
-        assert result.celery_task_id == "task-abc"
+        assert result.celery_task_id == ""
 
-    @patch("app.workers.pipeline.chain")
+    @patch("app.workers.pipeline._seed_first_stage")
     @patch("app.workers.pipeline._get_db")
     @patch("app.workers.pipeline._create_pipeline_run", return_value="run-456")
-    def test_run_id_passed_to_all_tasks(self, mock_create_run, mock_get_db, mock_chain):
+    def test_run_id_passed_to_all_tasks(self, mock_create_run, mock_get_db, mock_seed):
+        """run_id now flows through the ledger, not a Celery chain. The created
+        run id is seeded into the first stage_run row (the lifecycle wrappers
+        carry it forward stage-to-stage), so we assert _seed_first_stage was
+        seeded with that run id rather than inspecting chain .si() args."""
         from unittest.mock import patch as _patch
-        from app.workers.pipeline import (
-            start_ingest_pipeline,
-            prepare_document,
-            derive_text_chunks_and_embeddings,
-            derive_image_embeddings,
-            derive_ontology_graph,
-            derive_structure_links,
-            derive_canonicalization,
-            finalize_document,
-        )
+        from app.workers.pipeline import start_ingest_pipeline
 
         fake_manifest = MagicMock()
         fake_manifest.ontology_name = "Test Ontology"
@@ -75,16 +75,15 @@ class TestStartIngestPipeline:
         db.execute.return_value.scalar_one_or_none.return_value = None
         db.get.return_value = None  # no Document row
         mock_get_db.return_value = db
-        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
         doc_id = str(uuid.uuid4())
         with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
             start_ingest_pipeline(doc_id)
 
-        # Verify chain was called — the .si() calls should include run_id
-        # The chain receives positional args — first is prepare_document.si(doc_id, run_id)
-        # We can't easily inspect .si() mock args, but we verify the chain was called
-        assert mock_chain.called
+        # The run id created for this document is the one seeded into the ledger.
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs.get("pipeline_run_id") == "run-456"
+        assert mock_seed.call_args.kwargs.get("stage_name") == "prepare_document"
 
 
 # ---------------------------------------------------------------------------
