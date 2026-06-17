@@ -309,6 +309,14 @@ Key behavioral differences from the legacy monolithic path: (1) a single bad pas
 | Content-level deduplication (oversample 8x, filter) | Duplicate text appears multiple times | Top-k results have no duplicate content | 2.20 |
 | Min cosine similarity threshold (default 0.25) | Irrelevant noise in results | All returned results score >= threshold | 1, 2.24 |
 | Military ID bonus (0.03 for AN/, NSN, MIL-STD matches) | Exact military system mentions not prioritized | Query with military ID; receives score bonus | 2.20 |
+| Gate-coverage recall floor (unit ∪ table gates) | A field-group positive chunk is pruned before the LLM | `python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv --bundle air_defense_v3` → exit 0 (every `used==1` row covered by a gate) | 4 (guarded-ranker) |
+| `selection_mode` byte-identical default | Default `topk` path changes selection vs legacy | `selection_mode="topk"` → `select_candidates` returns the exact `c5_scored[:top_k]` slice (object-identical); `tests/unit/test_extraction_candidate_scoring.py::...object_identical_slice` + the endpoint default-profile test | 4 |
+| `unit_gate` default False | A bundle pass silently gains a gate it never set | `tests/unit/test_extraction_unit_gate.py::test_unit_gate_defaults_to_false`; manifest values round-trip via `test_existing_bundles_unit_gate_roundtrip` | 4 |
+| Guarded-ranker calibration reproducible | Deployed `ranker_weights`/`quantile_q` drift from the eval | `python3 -m scripts.fit_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv` (refuses unless gate-coverage passes); LODO reported as BOTH pooled-OOF and mean-per-fold | 4 |
+
+> **Mirror-fixture rule (Task 2):** the docling-graph provenance unit matcher and the worker `field_value_grounding` matcher MUST stay in lockstep — both consume `docker/docling-graph/tests/fixtures/unit_matcher_cases.json`. Any matcher change updates the shared fixture and re-runs both test suites; a change to one side only is a defect.
+>
+> **Two LODO conventions:** every guarded-ranker generalization number reports BOTH pooled out-of-fold AND mean-per-fold AUROC (GroupKFold by `run_id` = leave-one-document-out). Never quote one alone.
 
 ---
 

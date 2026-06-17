@@ -162,6 +162,46 @@ PHASE_CLAIM_STALE_SECONDS=30                       # How long a `claimed` phase 
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 
+#### Guarded-ranker chunk selection (extraction chunk-scope)
+
+Each extraction pass selects which document chunks to send to the LLM. The legacy
+behavior is a top-k slice of the reranked pool. The **guarded ranker** adds a
+recall-safe alternative configured **per RetrievalProfile in the bundle manifest**
+(no new env vars — everything is manifest config):
+
+| Manifest field | Default | Meaning |
+|---|---|---|
+| `selection_mode` | `topk` | `topk` = exact `c5_scored[:top_k]` (byte-identical legacy); `guarded_quantile` = gate-keeps ∪ quantile cut |
+| `quantile_q` | `0.8` | Quantile of the ranker score that the cut keeps (within the pool) |
+| `k_min` / `k_max` | `3` / `0` | Floor / cap on ranker-keeps (`k_max=0` = uncapped); **gate-flagged chunks are exempt from `k_max`** |
+| `ranker_weights` | `{}` | component-name → weight; empty ranks by `final_score`. Unknown keys are rejected at manifest load |
+| `unit_gate` | `false` | G1 unit-signature gate on a field-group pass |
+| `table_gate` | `false` | G2 table gate |
+
+**Recall floor by construction:** the OR-gates (`unit_gate ∪ table_gate`) always keep
+the chunks shaped like known positives, so recall stays 1.0 on the labeled corpus;
+the quantile ranker adds a learned-relevance margin on top. Selection diagnostics
+(`gate_unit_keeps`, `gate_table_keeps`, `ranker_keeps`, `selection_threshold`,
+`selection_k`) are emitted in guarded mode and `null` in `topk` mode.
+
+**Calibration + verification scripts** (operate on an exported `reports/dataset_v2/` corpus):
+
+```bash
+# Export the per-(pass,chunk) feature dataset for a set of runs
+python3 -m scripts.export_bakeoff_dataset --runs <r1,r2,...> --out-dir reports/dataset_v2
+# Recall-floor precondition: every used==1 row must be gate-covered (exit 0)
+python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv --bundle air_defense_v3
+# Frontier eval: guarded vs calibrated-only vs final_score top-k
+python3 -m scripts.eval_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv
+# Calibrate deployable ranker_weights + quantile_q (refuses unless gate coverage passes)
+python3 -m scripts.fit_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv
+```
+
+**Two LODO conventions:** generalization is cross-validated by GroupKFold on `run_id`
+(leave-one-document-out) and always reported BOTH ways — pooled out-of-fold AUROC and
+mean-per-fold AUROC. Quote both; never one alone. `selection_mode` stays `topk` in all
+shipped bundles until a deliberate flip to `guarded_quantile`.
+
 #### Per-role Ollama URLs
 
 The three `OLLAMA_*_BASE_URL` variables allow pointing different model types at different Ollama instances (e.g., LLM on GPU-A100, embeddings on CPU, VLM on GPU-3090). Each falls back to `OLLAMA_BASE_URL` when left empty.
