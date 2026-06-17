@@ -53,7 +53,7 @@ from app.services.extraction_candidate_scoring import (
     field_coverage,
     merged_candidate_from_row,
     score_candidates,
-    score_components_for_pool,
+    select_candidates,
 )
 from app.services.extraction_query_builder import (
     build_retrieval_profile,
@@ -496,6 +496,18 @@ async def chunk_scope(
         #     (Blocker 6: cap is BEFORE rerank)
         # ------------------------------------------------------------------
 
+        # Task 18 — shared selection state, threaded through the four selection
+        # sites (initial pass + the three fallback-ladder re-scores). Each site
+        # scores its pool ONCE with return_components=True and reuses the
+        # components both for select_candidates AND the score_components_all
+        # capture (no double-scoring). Overwritten by whichever site runs last,
+        # mirroring reranked_pool / c5_scored / selected_mcs.
+        _c5_components: list[dict] = []
+        # Selection diagnostics (guarded_quantile only; left at None-ish for the
+        # byte-identical topk default). select_candidates writes into this dict.
+        _selection_diag: dict = {}
+        _unit_sig = getattr(signals, "unit_signature", ())
+
         # ------------------------------------------------------------------
         # C8 — identity-anchor channel (OPPORTUNISTIC, NON-BLOCKING).
         #
@@ -676,12 +688,24 @@ async def chunk_scope(
                 ),
             )
 
-        # C5 post-rerank precision boost: re-score + re-sort; then take top_k.
-        # score_candidates returns list[(MergedCandidate, final_score)] sorted
-        # by final desc → reranker_score desc → candidate_key asc.
-        c5_scored = score_candidates(reranked_pool, profile)
-        # top_k cut is HERE (after C5), not before rerank.
-        selected_mcs = c5_scored[: profile.top_k]
+        # C5 post-rerank precision boost: re-score + re-sort; then apply the cut.
+        # Score ONCE with return_components=True (Task 18) so the SAME per-
+        # candidate components feed both the selection cut AND the
+        # score_components_all capture below — no double-scoring. The 2-tuple
+        # c5_scored shape is unchanged (derived from the 3-tuple).
+        _scored3 = score_candidates(
+            reranked_pool, profile,
+            return_components=True, unit_signature=_unit_sig,
+        )
+        c5_scored = [(mc, s) for mc, s, _ in _scored3]
+        _c5_components = [comps for _mc, _s, comps in _scored3]
+        # Shared cut helper: topk (DEFAULT, byte-identical c5_scored[:top_k]) or
+        # guarded_quantile (gate ∪ quantile-ranker). diag_out only written in
+        # guarded mode.
+        _selection_diag = {}
+        selected_mcs = select_candidates(
+            c5_scored, _c5_components, profile, diag_out=_selection_diag,
+        )
 
         if not selected_mcs:
             logger.warning(
@@ -796,8 +820,17 @@ async def chunk_scope(
                 except Exception:
                     reranked_pool = _relaxed_pool_dicts  # reranker fail-open
 
-                c5_scored = score_candidates(reranked_pool, profile)
-                selected_mcs = c5_scored[: profile.top_k]
+                # Task 18 — score once (components), then shared cut.
+                _scored3 = score_candidates(
+                    reranked_pool, profile,
+                    return_components=True, unit_signature=_unit_sig,
+                )
+                c5_scored = [(mc, s) for mc, s, _ in _scored3]
+                _c5_components = [comps for _mc, _s, comps in _scored3]
+                _selection_diag = {}
+                selected_mcs = select_candidates(
+                    c5_scored, _c5_components, profile, diag_out=_selection_diag,
+                )
                 pool_dicts = _relaxed_pool_dicts
 
                 # Re-check coverage
@@ -863,8 +896,17 @@ async def chunk_scope(
                     except Exception:
                         reranked_pool = _combined_dicts
 
-                    c5_scored = score_candidates(reranked_pool, profile)
-                    selected_mcs = c5_scored[: profile.top_k]
+                    # Task 18 — score once (components), then shared cut.
+                    _scored3 = score_candidates(
+                        reranked_pool, profile,
+                        return_components=True, unit_signature=_unit_sig,
+                    )
+                    c5_scored = [(mc, s) for mc, s, _ in _scored3]
+                    _c5_components = [comps for _mc, _s, comps in _scored3]
+                    _selection_diag = {}
+                    selected_mcs = select_candidates(
+                        c5_scored, _c5_components, profile, diag_out=_selection_diag,
+                    )
                     pool_dicts = _combined_dicts
 
                     _kw_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
@@ -921,8 +963,17 @@ async def chunk_scope(
                             except Exception:
                                 reranked_pool = _anchor_dicts
 
-                            c5_scored = score_candidates(reranked_pool, profile)
-                            selected_mcs = c5_scored[: profile.top_k]
+                            # Task 18 — score once (components), then shared cut.
+                            _scored3 = score_candidates(
+                                reranked_pool, profile,
+                                return_components=True, unit_signature=_unit_sig,
+                            )
+                            c5_scored = [(mc, s) for mc, s, _ in _scored3]
+                            _c5_components = [comps for _mc, _s, comps in _scored3]
+                            _selection_diag = {}
+                            selected_mcs = select_candidates(
+                                c5_scored, _c5_components, profile, diag_out=_selection_diag,
+                            )
                             pool_dicts = _anchor_dicts
 
                             _anc_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
@@ -1476,6 +1527,16 @@ async def chunk_scope(
     _f4_active_field_count: int | None = None
     _f4_dropped_field_count: int | None = None
 
+    # Task 18 — guarded-quantile selection diagnostics.
+    # All default None and STAY None on the byte-identical topk path (and on the
+    # per-element + error/early-return paths). Populated from _selection_diag
+    # only when select_candidates ran in guarded_quantile mode.
+    _sel_gate_unit_keeps: int | None = None
+    _sel_gate_table_keeps: int | None = None
+    _sel_ranker_keeps: int | None = None
+    _sel_threshold: float | None = None
+    _sel_selection_k: int | None = None
+
     if _use_multi_channel:
         # channel_counts: one key per retrieval channel.
         # "dense" and "field:<name>" come from mc_search_diag;
@@ -1518,16 +1579,20 @@ async def chunk_scope(
 
         # score_components_all: decomposed per-feature component dict for EVERY
         # candidate in the FULL reranked pool (NOT just the top_k) — the additive
-        # calibration-diagnostics piece. score_components_for_pool replays the
-        # SAME C5 normalisation score_candidates uses (no recompute/drift) and is
-        # a SEPARATE entry point from score_candidates, so endpoint tests that
-        # monkeypatch score_candidates do not perturb this full-pool breakdown.
-        # The existing top_k score_components above is left UNCHANGED.
-        # reranked_pool is the authoritative final pool fed into C5 scoring.
-        # Task 7 (G1 gate union): NO top_n_candidates cap here — gated chunks
-        # are cap-EXEMPT pool members and MUST appear in the capture. The pool
-        # is naturally bounded (top_n + gate extras); the 4x guard below flags
-        # a runaway gate without dropping data.
+        # calibration-diagnostics piece.
+        #
+        # Task 18: REUSE the per-candidate components already computed at the
+        # winning selection site (``_c5_components`` — emitted by the SAME
+        # ``score_candidates(..., return_components=True, unit_signature=...)``
+        # call that drove select_candidates). The site call scores the FULL
+        # reranked_pool (every dict carries "merged_candidate", so the pool that
+        # score_components_for_pool would have scored is identical) with the same
+        # unit_signature, so the breakdown is byte-identical — and we avoid a
+        # second full-pool scoring pass (the "don't double-score" requirement).
+        #
+        # The 4x guard below flags a runaway gate union without dropping data.
+        # Task 7 (G1 gate union): NO top_n_candidates cap here — gated chunks are
+        # cap-EXEMPT pool members and MUST appear in the capture.
         _sca_pool = [d for d in reranked_pool if "merged_candidate" in d]
         if len(_sca_pool) > 4 * profile.top_n_candidates:
             logger.warning(
@@ -1536,15 +1601,17 @@ async def chunk_scope(
                 "over-admitting",
                 len(_sca_pool), profile.top_n_candidates, body.pass_name,
             )
-        # Task 8 — structural text features: thread unit_signature through so
-        # unit_token_count is non-trivial when the pass has unit fields.
-        # signals is in scope here (multi-channel path only; per-element legacy
-        # path does not reach this site — its score_candidates calls are
-        # selection-only and do not produce components).
-        _c7_score_components_all = score_components_for_pool(
-            _sca_pool, profile,
-            unit_signature=getattr(signals, "unit_signature", ()),
-        )
+        _c7_score_components_all = _c5_components
+
+        # Task 18 — surface the guarded-quantile selection diagnostics from the
+        # winning selection site's _selection_diag. Empty dict (topk path) leaves
+        # them None — the schema stays byte-stable on the default path.
+        if _selection_diag:
+            _sel_gate_unit_keeps = _selection_diag.get("gate_unit_keeps")
+            _sel_gate_table_keeps = _selection_diag.get("gate_table_keeps")
+            _sel_ranker_keeps = _selection_diag.get("ranker_keeps")
+            _sel_threshold = _selection_diag.get("selection_threshold")
+            _sel_selection_k = _selection_diag.get("selection_k")
 
         # fallback_level: set by E2 ladder ("none" on the happy path).
         _c7_fallback_level = _e2_fallback_level
@@ -1630,5 +1697,12 @@ async def chunk_scope(
             # Tasks F2+F4 — subset-schema diagnostics (None when off/per-element).
             active_field_count=_f4_active_field_count,
             dropped_field_count=_f4_dropped_field_count,
+            # Task 18 — guarded-quantile selection diagnostics (None on the
+            # byte-identical topk default path + per-element path).
+            gate_unit_keeps=_sel_gate_unit_keeps,
+            gate_table_keeps=_sel_gate_table_keeps,
+            ranker_keeps=_sel_ranker_keeps,
+            selection_threshold=_sel_threshold,
+            selection_k=_sel_selection_k,
         ),
     )

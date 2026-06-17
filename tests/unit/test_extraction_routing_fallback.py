@@ -36,6 +36,33 @@ _BUNDLE_KEY = "air_defense_v3_baseline_subset"
 _PASS_NAME = "radar_power_rf"
 
 
+def _score_candidates_stub(scored2):
+    """``score_candidates`` side_effect that honours ``return_components`` (Task 18).
+
+    The router scores each pool ONCE with ``return_components=True``; a static
+    2-tuple ``return_value`` no longer matches that contract. Returns 2-tuples
+    when ``return_components`` is falsy and 3-tuples (with a minimal gate-flag
+    component dict) when True.
+    """
+    def _side_effect(candidates, cfg, *, return_components=False, unit_signature=()):
+        if return_components:
+            return [
+                (
+                    mc,
+                    final,
+                    {
+                        "candidate_key": mc.candidate_key,
+                        "final_score": float(final),
+                        "unit_gate": 1.0 if "unit" in getattr(mc, "gate_flags", set()) else 0.0,
+                        "table_gate": 1.0 if "table" in getattr(mc, "gate_flags", set()) else 0.0,
+                    },
+                )
+                for mc, final in scored2
+            ]
+        return list(scored2)
+    return _side_effect
+
+
 def _vec(*xs: float, dim: int = 1024) -> list[float]:
     v = [0.0] * dim
     for i, x in enumerate(xs):
@@ -814,7 +841,7 @@ class TestPartialSelectionDegradedLevel:
                       new=AsyncMock(return_value=[])),
                 # score_candidates returns the 1 candidate
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=[(mc, 0.7)]),
+                      side_effect=_score_candidates_stub([(mc, 0.7)])),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=lambda query, candidates, top_k: [
                           dict(c, reranker_score=0.7) for c in candidates

@@ -693,6 +693,146 @@ def score_components_for_pool(
 
 
 # ---------------------------------------------------------------------------
+# Task 18 — select_candidates: shared post-rerank cut helper
+# ---------------------------------------------------------------------------
+# ONE helper subsumes the four ``c5_scored[: profile.top_k]`` slices that lived
+# at the router's selection sites. It supports two modes via cfg.selection_mode:
+#
+#   "topk" (DEFAULT)  — returns EXACTLY ``c5_scored[: cfg.top_k]`` (the SAME
+#                       tuple objects, same order). Byte-identical to the legacy
+#                       slice; no diagnostics written.
+#
+#   "guarded_quantile" — dedup(gate-flagged ∪ quantile-ranker keeps), preserving
+#                       the input rank order:
+#                         * ranker score = final_score (ranker_weights empty)
+#                           else Σ ranker_weights[k] * components[k]
+#                         * threshold = the cfg.quantile_q quantile of in-pool
+#                           ranker scores
+#                         * ranker-keeps = members with score >= threshold,
+#                           clipped to [k_min, (k_max if k_max>0 else len(pool))]
+#                         * gate-flagged members (unit_gate or table_gate == 1.0)
+#                           are ALWAYS kept and NEVER count against k_max.
+#
+# ``components`` is the per-candidate component list from
+# ``score_candidates(..., return_components=True)`` — POSITIONALLY ALIGNED with
+# ``c5_scored`` (both come out of the same sorted score_candidates call). The
+# caller fetches it once and reuses it for both selection and the
+# ``score_components_all`` capture (no double-scoring).
+# ---------------------------------------------------------------------------
+
+
+def select_candidates(
+    c5_scored: list[tuple["MergedCandidate", float]],
+    components: list[dict[str, Any]],
+    cfg: "RetrievalProfile",
+    *,
+    diag_out: dict[str, Any] | None = None,
+) -> list[tuple["MergedCandidate", float]]:
+    """Apply the final post-rerank cut. See module section above for semantics.
+
+    ``c5_scored`` is the ``[(MergedCandidate, final_score), ...]`` list in final
+    rank order. ``components`` is the positionally-aligned per-candidate dict
+    list (``score_candidates(..., return_components=True)`` output, same order).
+
+    Returns the selected ``[(MergedCandidate, final_score), ...]`` subset.
+
+    ``diag_out`` — optional mutable dict; in guarded_quantile mode it is
+    populated with ``gate_unit_keeps``, ``gate_table_keeps``, ``ranker_keeps``,
+    ``selection_threshold`` and ``selection_k``. In topk mode it is left
+    untouched (the schema fields stay None).
+    """
+    # ---- topk (DEFAULT): byte-identical legacy slice ---------------------
+    # guarded_quantile is the EXPLICIT opt-in; ANY other value (including the
+    # "topk" default and a MagicMock profile in tests) takes the byte-identical
+    # legacy slice. This keeps the default path object-identical even when cfg
+    # is a mock whose selection_mode is not a real string.
+    if cfg.selection_mode != "guarded_quantile":
+        # EXACT object-identical slice — same tuple objects, same order.
+        return c5_scored[: cfg.top_k]
+
+    # ---- guarded_quantile ------------------------------------------------
+    n = len(c5_scored)
+    if n == 0:
+        if diag_out is not None:
+            diag_out["gate_unit_keeps"] = 0
+            diag_out["gate_table_keeps"] = 0
+            diag_out["ranker_keeps"] = 0
+            diag_out["selection_threshold"] = None
+            diag_out["selection_k"] = 0
+        return []
+
+    # ``components`` is positionally aligned with c5_scored. Defensive: if a
+    # caller passes a shorter list, treat missing entries as all-zero comps
+    # (gate-absent, score 0.0) rather than indexing out of range.
+    def _comp(i: int) -> dict[str, Any]:
+        return components[i] if i < len(components) else {}
+
+    # Ranker score per member.
+    weights = cfg.ranker_weights or {}
+    if weights:
+        ranker_scores = [
+            sum(float(w) * float(_comp(i).get(k, 0.0)) for k, w in weights.items())
+            for i in range(n)
+        ]
+    else:
+        # Empty weights → rank by the C5 final_score (the float in each pair).
+        ranker_scores = [float(c5_scored[i][1]) for i in range(n)]
+
+    # Quantile threshold over the in-pool ranker scores (numpy linear method —
+    # the standard, well-defined quantile; all-tied → the tied value).
+    import numpy as np  # noqa: PLC0415 (local; numpy already used elsewhere)
+
+    threshold = float(np.quantile(np.asarray(ranker_scores, dtype=float), cfg.quantile_q))
+
+    # Gate-flagged membership: unit_gate OR table_gate == 1.0 in the components.
+    unit_gate_idx: set[int] = {
+        i for i in range(n) if float(_comp(i).get("unit_gate", 0.0)) >= 1.0
+    }
+    table_gate_idx: set[int] = {
+        i for i in range(n) if float(_comp(i).get("table_gate", 0.0)) >= 1.0
+    }
+    gate_idx: set[int] = unit_gate_idx | table_gate_idx
+
+    # Ranker-keeps: NON-gate members clearing the threshold, then floored to
+    # k_min / capped to k_max. Gate-flagged members are handled separately
+    # (always kept, exempt from k_max) so they never consume a ranker-keep slot.
+    #
+    # SELECTION is by RANKER SCORE (descending) — that is what the ranker ranks,
+    # and is what matters when ranker_weights reorder members relative to the C5
+    # final_score. Ties break on the original rank order (lower index first) for
+    # determinism. The k_min floor and k_max cap then operate on this
+    # ranker-score order. (OUTPUT order is restored to the original rank order
+    # at the end, per the spec.)
+    k_floor = cfg.k_min
+    k_cap = cfg.k_max if cfg.k_max > 0 else n
+
+    non_gate_idx = [i for i in range(n) if i not in gate_idx]
+    by_ranker_desc = sorted(non_gate_idx, key=lambda i: (-ranker_scores[i], i))
+    qualifying = [i for i in by_ranker_desc if ranker_scores[i] >= threshold]
+
+    # Clip ranker-keep COUNT to [k_floor, k_cap], selecting the best non-gate
+    # members by ranker score (by_ranker_desc is already in that order).
+    keep_count = len(qualifying)
+    keep_count = max(keep_count, k_floor)
+    keep_count = min(keep_count, k_cap)
+    keep_count = min(keep_count, len(non_gate_idx))
+    ranker_keep_idx: set[int] = set(by_ranker_desc[:keep_count])
+
+    # Final = dedup(gate-flagged ∪ ranker-keeps), preserving original rank order.
+    selected_idx = gate_idx | ranker_keep_idx
+    out = [c5_scored[i] for i in range(n) if i in selected_idx]
+
+    if diag_out is not None:
+        diag_out["gate_unit_keeps"] = len(unit_gate_idx)
+        diag_out["gate_table_keeps"] = len(table_gate_idx)
+        diag_out["ranker_keeps"] = len(ranker_keep_idx)
+        diag_out["selection_threshold"] = threshold
+        diag_out["selection_k"] = len(out)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # E1 — Pure fallback-decision helpers (no DB / LLM / reranker)
 # ---------------------------------------------------------------------------
 # These helpers let the chunk_scope endpoint (E2) decide whether retrieval

@@ -167,6 +167,24 @@ class ChunkScopeDiagnostics(BaseModel):
     active_field_count: int | None = None
     dropped_field_count: int | None = None
 
+    # Task 18 — guarded-quantile selection diagnostics.
+    # All default None and STAY None on the topk path (the byte-identical
+    # default) and on per-element + error/early-return paths. Populated only on
+    # the multi-channel success path when profile.selection_mode ==
+    # "guarded_quantile".
+    #   gate_unit_keeps   — members force-kept by the G1 unit gate.
+    #   gate_table_keeps  — members force-kept by the G2 table gate.
+    #   ranker_keeps      — non-gate members kept by the quantile ranker
+    #                       (after k_min floor / k_max cap).
+    #   selection_threshold — the cfg.quantile_q quantile of in-pool ranker
+    #                       scores used as the keep threshold.
+    #   selection_k       — final selected count (== len(selected_refs source)).
+    gate_unit_keeps: int | None = None
+    gate_table_keeps: int | None = None
+    ranker_keeps: int | None = None
+    selection_threshold: float | None = None
+    selection_k: int | None = None
+
 
 class SelectedChunk(BaseModel):
     """Router-selected merged chunk (Phase 1 Task 6).

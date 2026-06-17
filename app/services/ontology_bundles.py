@@ -319,6 +319,89 @@ class RetrievalProfile(BaseModel):
     )
 
     # ------------------------------------------------------------------
+    # Task 18 — selection_mode + guarded-quantile cut (guarded-ranker spec).
+    #
+    # The router's final post-rerank cut is parameterised here. The DEFAULT
+    # ("topk") is byte-identical to the historical ``c5_scored[: top_k]`` slice
+    # at all selection sites. ``guarded_quantile`` swaps that for a recall-safe
+    # OR-gate ∪ quantile-ranker cut (gates kept by construction; the ranker
+    # supplies the precision floor with k_min/k_max bounds).
+    # ------------------------------------------------------------------
+    selection_mode: Literal["topk", "guarded_quantile"] = Field(
+        default="topk",
+        description=(
+            "Final post-rerank candidate cut. 'topk' (DEFAULT) = the legacy "
+            "c5_scored[: top_k] slice (byte-identical). 'guarded_quantile' = "
+            "dedup(gate-flagged ∪ quantile-ranker keeps) with a k_min floor and "
+            "k_max cap (gate-flagged members are exempt from k_max)."
+        ),
+    )
+    quantile_q: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "guarded_quantile only: the quantile of in-pool ranker scores used "
+            "as the keep threshold. Members with ranker score >= this quantile "
+            "are ranker-keeps. Higher q = stricter (keeps fewer)."
+        ),
+    )
+    k_min: int = Field(
+        default=3,
+        gt=0,
+        description=(
+            "guarded_quantile only: minimum number of ranker-keeps (floor) "
+            "regardless of how few clear the quantile threshold."
+        ),
+    )
+    k_max: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "guarded_quantile only: maximum number of ranker-keeps (cap); "
+            "0 = uncapped. Gate-flagged members are NEVER counted against this "
+            "cap — they are always kept."
+        ),
+    )
+    ranker_weights: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "guarded_quantile only: component-name -> weight for the ranker "
+            "score. Empty {} (DEFAULT) = rank by the C5 final_score. When "
+            "non-empty, ranker score = Σ ranker_weights[k] * components[k]. "
+            "Keys MUST be known scoring-component names (validated at profile "
+            "construction time) — an unknown key is a hard error, not a "
+            "silent 0 at scoring time."
+        ),
+    )
+
+    @field_validator("ranker_weights")
+    @classmethod
+    def _ranker_weight_keys_known(cls, v: dict[str, float]) -> dict[str, float]:
+        """Reject ranker_weights keys that are not known scoring components.
+
+        Guarded-ranker spec: an unknown component name must FAIL LOUD at profile
+        validation time, never silently contribute 0 during scoring. The valid
+        set is the numeric scoring components in
+        ``extraction_candidate_scoring.COMPONENT_KEYS`` (the non-numeric
+        ``candidate_key`` is excluded — it is an identifier, not a feature).
+        """
+        # Local import to avoid a circular import at module load
+        # (extraction_candidate_scoring imports RetrievalProfile for typing).
+        from app.services.extraction_candidate_scoring import (  # noqa: PLC0415
+            COMPONENT_KEYS,
+        )
+
+        valid = set(COMPONENT_KEYS) - {"candidate_key"}
+        unknown = sorted(k for k in v if k not in valid)
+        if unknown:
+            raise ValueError(
+                f"ranker_weights references unknown scoring component(s): "
+                f"{unknown!r}. Valid components: {sorted(valid)!r}."
+            )
+        return v
+
+    # ------------------------------------------------------------------
     # §9 Subset-schema extraction (opt-in; default off) (B5)
     # ------------------------------------------------------------------
     subset_schema_extraction: bool = Field(

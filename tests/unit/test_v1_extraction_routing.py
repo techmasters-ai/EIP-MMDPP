@@ -35,6 +35,33 @@ _VALID_BODY = {
 }
 
 
+def _score_candidates_stub(scored2):
+    """Build a ``score_candidates`` side_effect that honours ``return_components``.
+
+    Task 18: the router now calls ``score_candidates(..., return_components=True)``
+    at each selection site (one score, reused for both the cut and the
+    score_components_all capture). A static ``return_value=[(mc, float), ...]``
+    no longer matches that contract — the 3-tuple unpack would fail. This stub
+    returns the supplied 2-tuples when ``return_components`` is falsy and the
+    same pairs widened to 3-tuples (with a minimal component dict carrying the
+    gate flags select_candidates reads) when it is True.
+    """
+    def _side_effect(candidates, cfg, *, return_components=False, unit_signature=()):
+        if return_components:
+            out = []
+            for mc, final in scored2:
+                comps = {
+                    "candidate_key": mc.candidate_key,
+                    "final_score": float(final),
+                    "unit_gate": 1.0 if "unit" in getattr(mc, "gate_flags", set()) else 0.0,
+                    "table_gate": 1.0 if "table" in getattr(mc, "gate_flags", set()) else 0.0,
+                }
+                out.append((mc, final, comps))
+            return out
+        return list(scored2)
+    return _side_effect
+
+
 @dataclass
 class _FakeResult:
     """Minimal mock for GraphEntityResult used by the endpoint."""
@@ -1206,7 +1233,7 @@ class TestMultiChannelEmptyExpandedRefsFail:
                 patch("app.api.v1.extraction_routing.identity_anchor_queries",
                       new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=scored),
+                      side_effect=_score_candidates_stub(scored)),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=_fake_rerank),
                 patch("app.api.v1.extraction_routing.get_settings",
@@ -1270,7 +1297,7 @@ class TestMultiChannelEmptyExpandedRefsFail:
                 patch("app.api.v1.extraction_routing.identity_anchor_queries",
                       new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=scored),
+                      side_effect=_score_candidates_stub(scored)),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=_fake_rerank),
                 patch("app.api.v1.extraction_routing.get_settings",
@@ -1434,7 +1461,7 @@ class TestF2F4FieldSubset:
                 patch("app.api.v1.extraction_routing.identity_anchor_queries",
                       new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=scored),
+                      side_effect=_score_candidates_stub(scored)),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=_fake_rerank),
                 patch("app.api.v1.extraction_routing.get_settings",
@@ -1515,7 +1542,7 @@ class TestF2F4FieldSubset:
                 patch("app.api.v1.extraction_routing.identity_anchor_queries",
                       new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=scored),
+                      side_effect=_score_candidates_stub(scored)),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=_fake_rerank),
                 patch("app.api.v1.extraction_routing.get_settings",
@@ -1664,7 +1691,7 @@ class TestF2F4FieldSubset:
                 patch("app.api.v1.extraction_routing.identity_anchor_queries",
                       new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
-                      return_value=scored),
+                      side_effect=_score_candidates_stub(scored)),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
                       side_effect=_fake_rerank),
                 patch("app.api.v1.extraction_routing.get_settings",
@@ -1956,6 +1983,162 @@ class TestScoreComponentsAllFullPool:
             ck = d["candidate_key"]
             assert ck in sc_all
             assert d["final_score"] == pytest.approx(sc_all[ck]["final_score"])
+
+
+# ===========================================================================
+# Task 18 — selection_mode on the multi-channel endpoint path.
+#   - topk DEFAULT: byte-identical selection (== c5_scored[:top_k]); all five
+#     new selection diagnostics stay None.
+#   - guarded_quantile: selection diagnostics populated.
+# Uses a REAL RetrievalProfile so the default selection_mode is exercised.
+# ===========================================================================
+
+
+class TestSelectionModeEndpoint:
+    def _make_mc(self, idx: int):
+        from app.services.extraction_candidate_scoring import MergedCandidate
+        return MergedCandidate(
+            candidate_key=f"run-test:chunk_{idx}",
+            chunk_index=idx,
+            self_ref=f"chunk_{idx}",
+            chunk_text=f"chunk text {idx} with 50 kw",
+            source_refs=[f"#/texts/{idx * 2}"],
+            token_count=50,
+            page_number=1,
+            vector_score=0.8 - idx * 0.01,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+        )
+
+    def _make_mc_state(self):
+        from app.services.extraction_chunk_search import MultiChannelState
+        return MultiChannelState(
+            rows=[], entity_dense=[], field_dense={},
+            lex_hits={}, pat_hits={}, raw_row_count=0,
+        )
+
+    def _make_multi_channel_diag(self, pool_size: int):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            raw_row_count=pool_size,
+            entity_dense_count=pool_size,
+            field_dense_total_count=0,
+            per_field_dense_counts={},
+            lexical_hit_count=0,
+            pattern_hit_count=0,
+            pool_size=pool_size,
+            filter_strategy="direct_cosine",
+        )
+
+    def _pass_def(self, profile):
+        pd = MagicMock()
+        pd.name = _PASS_NAME
+        pd.phase = "field_group"
+        pd.required = False
+        pd.primary_entity_types = None
+        pd.module = "extraction_schemas.radar_power_rf"
+        pd.template_class = "RadarPowerRfPass"
+        pd.retrieval = profile
+        return pd
+
+    async def _run(self, app, profile):
+        manifest = MagicMock()
+        pass_def = self._pass_def(profile)
+        manifest.passes = [pass_def]
+
+        pool = [self._make_mc(i) for i in range(10)]
+        diag = self._make_multi_channel_diag(len(pool))
+        state = self._make_mc_state()
+
+        from pydantic import BaseModel
+        class _FakeTemplate(BaseModel):
+            frequency_mhz: str = ""
+
+        def _fake_rerank(query, candidates, top_k):
+            return [dict(c, reranker_score=0.9 - i * 0.05) for i, c in enumerate(candidates)]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+        signals_mock.unit_signature = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest", return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class", return_value=_FakeTemplate),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile", return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store", return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate", new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries", new=AsyncMock(return_value=[])),
+                patch("app.api.v1.extraction_routing.rrk.rerank", side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings", return_value=settings_mock),
+            ):
+                return await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+    @pytest.mark.asyncio
+    async def test_topk_default_byte_identical_and_diags_none(self, app):
+        """AC1+AC3: real default profile (selection_mode='topk') →
+        selection == c5_scored[:top_k] (here top_k=5 of a 10-pool) and ALL five
+        new selection diagnostics stay None (schema byte-stable)."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        profile = RetrievalProfile(top_k=5, min_similarity=0.0, field_query_top_k=3)
+        assert profile.selection_mode == "topk"  # default
+
+        resp = await self._run(app, profile)
+        assert resp.status_code == 200, resp.text
+        diag = resp.json()["diagnostics"]
+
+        # Byte-identical default cut: exactly top_k=5 selected from the 10 pool.
+        assert diag["selected_chunk_count"] == 5
+        assert len(diag["score_components"]) == 5
+
+        # All five Task-18 selection diagnostics stay None on the topk path.
+        assert diag["gate_unit_keeps"] is None
+        assert diag["gate_table_keeps"] is None
+        assert diag["ranker_keeps"] is None
+        assert diag["selection_threshold"] is None
+        assert diag["selection_k"] is None
+
+    @pytest.mark.asyncio
+    async def test_guarded_quantile_populates_selection_diags(self, app):
+        """AC3: guarded_quantile profile → selection diagnostics populated."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        profile = RetrievalProfile(
+            top_k=5,
+            min_similarity=0.0,
+            field_query_top_k=3,
+            selection_mode="guarded_quantile",
+            quantile_q=0.8,
+            k_min=2,
+            k_max=0,
+        )
+        resp = await self._run(app, profile)
+        assert resp.status_code == 200, resp.text
+        diag = resp.json()["diagnostics"]
+
+        assert diag["selection_threshold"] is not None
+        assert isinstance(diag["ranker_keeps"], int)
+        assert isinstance(diag["selection_k"], int)
+        assert diag["gate_unit_keeps"] == 0  # no gate flags on this pool
+        assert diag["gate_table_keeps"] == 0
+        # selection_k reflects the actual selected count.
+        assert diag["selection_k"] == diag["selected_chunk_count"]
 
 
 # ===========================================================================

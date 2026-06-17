@@ -3393,4 +3393,369 @@ class TestPassKeywordNormWithFloatHits:
         result = score_candidates(cands, cfg, return_components=True)
         mc, score, comps = result[0]
         assert comps["pass_keyword_norm"] == pytest.approx(0.0)
-        assert score == pytest.approx(0.0)
+
+
+# ===========================================================================
+# Task 18 — select_candidates shared cut helper (topk | guarded_quantile)
+# ===========================================================================
+
+
+def _sel_pair(candidate_key: str, final_score: float):
+    """Build a (MergedCandidate, final_score) pair for select_candidates tests.
+
+    Only candidate_key + final_score matter to the helper's ranking/dedup; the
+    rest is filler so the dataclass constructs.
+    """
+    from app.services.extraction_candidate_scoring import MergedCandidate
+
+    mc = MergedCandidate(
+        candidate_key=candidate_key,
+        chunk_index=0,
+        self_ref=candidate_key,
+        chunk_text="text",
+        source_refs=[],
+        token_count=10,
+        page_number=None,
+        vector_score=None,
+        field_scores={},
+        alias_hits=0,
+        pattern_hits=0,
+        negative_hits=0,
+        section_hits=0,
+        content_type=None,
+        retrieval_sources=set(),
+        supported_field_hints=set(),
+    )
+    return (mc, float(final_score))
+
+
+def _sel_components(
+    candidate_key: str,
+    final_score: float,
+    *,
+    unit_gate: float = 0.0,
+    table_gate: float = 0.0,
+    cosine: float = 0.0,
+):
+    """Minimal per-candidate component dict matching COMPONENT_KEYS subset the
+    helper reads: candidate_key, final_score, unit_gate, table_gate, + any keys
+    a ranker_weights map might reference (cosine here for tests)."""
+    return {
+        "candidate_key": candidate_key,
+        "final_score": float(final_score),
+        "unit_gate": float(unit_gate),
+        "table_gate": float(table_gate),
+        "cosine": float(cosine),
+    }
+
+
+def _sel_profile(**kwargs):
+    from app.services.ontology_bundles import RetrievalProfile
+
+    return RetrievalProfile(**kwargs)
+
+
+class TestSelectCandidatesImport:
+    def test_helper_importable(self):
+        from app.services.extraction_candidate_scoring import (  # noqa: F401
+            select_candidates,
+        )
+
+
+class TestSelectCandidatesTopkMode:
+    def test_topk_returns_exact_object_identical_slice(self):
+        """AC1: topk mode returns EXACTLY c5_scored[: cfg.top_k] — same objects, same order."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        cfg = _sel_profile(selection_mode="topk", top_k=4)
+
+        out = select_candidates(pairs, comps, cfg)
+
+        # Object-identical slice: the SAME tuple objects, same order.
+        assert out == pairs[:4]
+        for got, want in zip(out, pairs[:4]):
+            assert got is want  # tuple identity preserved
+
+    def test_topk_diag_out_left_none(self):
+        """AC3: topk mode populates no selection diagnostics."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(6)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(6)]
+        cfg = _sel_profile(selection_mode="topk", top_k=3)
+        diag: dict = {}
+        select_candidates(pairs, comps, cfg, diag_out=diag)
+        # topk path writes nothing into diag_out.
+        assert diag == {}
+
+    def test_topk_default_mode_is_topk(self):
+        """selection_mode defaults to topk → byte-identical slice without setting it."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(5)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(5)]
+        cfg = _sel_profile(top_k=2)  # selection_mode unset → "topk"
+        out = select_candidates(pairs, comps, cfg)
+        assert out == pairs[:2]
+
+
+class TestSelectCandidatesEmptyPool:
+    def test_empty_pool_topk(self):
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        cfg = _sel_profile(selection_mode="topk", top_k=5)
+        assert select_candidates([], [], cfg) == []
+
+    def test_empty_pool_guarded(self):
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        cfg = _sel_profile(selection_mode="guarded_quantile", k_min=3)
+        diag: dict = {}
+        out = select_candidates([], [], cfg, diag_out=diag)
+        assert out == []
+        # diag is populated but counts are 0 / threshold None on an empty pool.
+        assert diag["ranker_keeps"] == 0
+        assert diag["selection_k"] == 0
+        assert diag["gate_unit_keeps"] == 0
+        assert diag["gate_table_keeps"] == 0
+
+
+class TestSelectCandidatesGuardedGateExempt:
+    def test_gate_flagged_below_threshold_still_kept(self):
+        """AC2/(b): a unit-gate member BELOW the quantile threshold is kept."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # 10 members, scores 1.0..0.1 descending. The last (c9, lowest) is gate-flagged.
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps[9]["unit_gate"] = 1.0  # lowest-scoring member is unit-gated
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile", quantile_q=0.8, k_min=1, k_max=0
+        )
+
+        out = select_candidates(pairs, comps, cfg)
+        keys = [mc.candidate_key for mc, _ in out]
+        assert "c9" in keys  # gate member kept despite being below threshold
+
+    def test_table_gate_also_exempt(self):
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps[8]["table_gate"] = 1.0
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile", quantile_q=0.9, k_min=1, k_max=0
+        )
+        out = select_candidates(pairs, comps, cfg)
+        keys = [mc.candidate_key for mc, _ in out]
+        assert "c8" in keys
+
+
+class TestSelectCandidatesGuardedKmaxGateExemption:
+    def test_kmax_smaller_than_gate_count_keeps_all_gates(self):
+        """AC2/(c): k_max smaller than the gate-flagged count → all gates still kept."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # 6 members, ALL gate-flagged. k_max=2 must NOT drop any gate member.
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(6)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1, unit_gate=1.0) for i in range(6)]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=0.5,
+            k_min=1,
+            k_max=2,
+        )
+        out = select_candidates(pairs, comps, cfg)
+        keys = {mc.candidate_key for mc, _ in out}
+        assert keys == {f"c{i}" for i in range(6)}  # all 6 gates survive k_max=2
+
+    def test_kmax_caps_non_gate_ranker_keeps(self):
+        """k_max bounds the ranker-keep count for NON-gate members."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # 10 members, none gated. quantile_q=0.0 → threshold = min → all qualify,
+        # but k_max=3 clips the ranker-keeps to the top 3 by rank order.
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=0.0,
+            k_min=1,
+            k_max=3,
+        )
+        out = select_candidates(pairs, comps, cfg)
+        keys = [mc.candidate_key for mc, _ in out]
+        assert keys == ["c0", "c1", "c2"]  # top-3 by rank, capped
+
+
+class TestSelectCandidatesGuardedKmin:
+    def test_kmin_floor_admits_more_than_threshold_qualifies(self):
+        """k_min floors the ranker-keep count even when few clear the threshold."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # quantile_q=1.0 → threshold = max → only the single top member clears it,
+        # but k_min=4 floors ranker-keeps to 4.
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=1.0,
+            k_min=4,
+            k_max=0,
+        )
+        out = select_candidates(pairs, comps, cfg)
+        keys = [mc.candidate_key for mc, _ in out]
+        assert keys[:4] == ["c0", "c1", "c2", "c3"]  # k_min floor of 4
+        assert len(out) == 4
+
+
+class TestSelectCandidatesGuardedAllTied:
+    def test_all_tied_scores(self):
+        """AC2/(e): all-tied scores. threshold == the tied value; >= keeps all,
+        clipped to [k_min, k_max]."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 0.5) for i in range(6)]
+        comps = [_sel_components(f"c{i}", 0.5) for i in range(6)]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=0.8,
+            k_min=1,
+            k_max=4,
+        )
+        out = select_candidates(pairs, comps, cfg)
+        # All clear the (tied) threshold; k_max=4 clips to the first 4 by rank.
+        keys = [mc.candidate_key for mc, _ in out]
+        assert keys == ["c0", "c1", "c2", "c3"]
+
+
+class TestSelectCandidatesGuardedRankerWeights:
+    def test_empty_ranker_weights_ranks_by_final_score(self):
+        """AC2/(f): ranker_weights empty → rank by final_score."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # final_score order is c0 > c1 > c2; cosine deliberately inverted to prove
+        # final_score (not cosine) drives ranking when weights are empty.
+        pairs = [_sel_pair("c0", 0.9), _sel_pair("c1", 0.5), _sel_pair("c2", 0.1)]
+        comps = [
+            _sel_components("c0", 0.9, cosine=0.1),
+            _sel_components("c1", 0.5, cosine=0.5),
+            _sel_components("c2", 0.1, cosine=0.9),
+        ]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            ranker_weights={},
+            quantile_q=0.5,
+            k_min=1,
+            k_max=0,
+        )
+        diag: dict = {}
+        select_candidates(pairs, comps, cfg, diag_out=diag)
+        # threshold = 0.5 quantile of [0.9,0.5,0.1] = 0.5 → c0,c1 clear it.
+        assert diag["selection_threshold"] == pytest.approx(0.5)
+
+    def test_ranker_weights_uses_component_terms(self):
+        """ranker_weights present → score = Σ weights[k]*components[k] (here cosine)."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        # final_score puts c0 top, but cosine inverts the order. With weights on
+        # cosine only, c2 (highest cosine) should clear a high threshold.
+        pairs = [_sel_pair("c0", 0.9), _sel_pair("c1", 0.5), _sel_pair("c2", 0.1)]
+        comps = [
+            _sel_components("c0", 0.9, cosine=0.1),
+            _sel_components("c1", 0.5, cosine=0.5),
+            _sel_components("c2", 0.1, cosine=0.9),
+        ]
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            ranker_weights={"cosine": 1.0},
+            quantile_q=1.0,  # threshold = max cosine = 0.9 → only c2 clears
+            k_min=1,
+            k_max=0,
+        )
+        diag: dict = {}
+        out = select_candidates(pairs, comps, cfg, diag_out=diag)
+        assert diag["selection_threshold"] == pytest.approx(0.9)
+        # k_min=1 → at least c2 (highest cosine) is kept.
+        keys = {mc.candidate_key for mc, _ in out}
+        assert "c2" in keys
+
+
+class TestSelectCandidatesGuardedRankOrderPreserved:
+    def test_final_preserves_original_rank_order(self):
+        """AC2/final: dedup(gate ∪ ranker-keeps) preserves the ORIGINAL rank order."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(8)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(8)]
+        comps[7]["unit_gate"] = 1.0  # last member gated (below threshold)
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=0.7,
+            k_min=1,
+            k_max=0,
+        )
+        out = select_candidates(pairs, comps, cfg)
+        keys = [mc.candidate_key for mc, _ in out]
+        # Order must follow the input rank order: ranker-keeps first (in rank
+        # order), and the late gate member c7 lands at its rank position (last).
+        assert keys == sorted(keys, key=lambda k: int(k[1:]))
+        assert keys[-1] == "c7"
+
+
+class TestSelectCandidatesGuardedDiagnostics:
+    def test_diagnostics_populated(self):
+        """AC3: guarded mode populates all five selection diagnostics."""
+        from app.services.extraction_candidate_scoring import select_candidates
+
+        pairs = [_sel_pair(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps = [_sel_components(f"c{i}", 1.0 - i * 0.1) for i in range(10)]
+        comps[0]["unit_gate"] = 1.0
+        comps[1]["table_gate"] = 1.0
+        comps[9]["unit_gate"] = 1.0
+        cfg = _sel_profile(
+            selection_mode="guarded_quantile",
+            quantile_q=0.8,
+            k_min=2,
+            k_max=0,
+        )
+        diag: dict = {}
+        out = select_candidates(pairs, comps, cfg, diag_out=diag)
+        assert diag["gate_unit_keeps"] == 2  # c0, c9
+        assert diag["gate_table_keeps"] == 1  # c1
+        assert isinstance(diag["ranker_keeps"], int)
+        assert diag["selection_threshold"] is not None
+        assert diag["selection_k"] == len(out)
+
+
+class TestSelectCandidatesProfileValidation:
+    def test_unknown_ranker_weight_key_raises_at_profile_validation(self):
+        """AC2/(g): unknown ranker_weights key → hard error at PROFILE VALIDATION."""
+        from pydantic import ValidationError
+
+        from app.services.ontology_bundles import RetrievalProfile
+
+        with pytest.raises(ValidationError):
+            RetrievalProfile(
+                selection_mode="guarded_quantile",
+                ranker_weights={"not_a_real_component": 1.0},
+            )
+
+    def test_known_ranker_weight_keys_accepted(self):
+        """Known COMPONENT_KEYS are accepted as ranker_weights keys."""
+        from app.services.ontology_bundles import RetrievalProfile
+
+        prof = RetrievalProfile(
+            selection_mode="guarded_quantile",
+            ranker_weights={"cosine": 0.5, "rerank_norm": 0.5},
+        )
+        assert prof.ranker_weights == {"cosine": 0.5, "rerank_norm": 0.5}
+
+    def test_empty_ranker_weights_default_ok(self):
+        from app.services.ontology_bundles import RetrievalProfile
+
+        prof = RetrievalProfile()
+        assert prof.ranker_weights == {}
+        assert prof.selection_mode == "topk"
