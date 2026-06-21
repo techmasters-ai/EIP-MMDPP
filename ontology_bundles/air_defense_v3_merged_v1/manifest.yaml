@@ -48,6 +48,16 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
+      selection_mode: guarded_quantile
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
       # C.10 Task 8 merged-chunk knee: uniform (min_sim=0.30, top_n=50,
       # top_k=15) across all 9 narrowed passes; achieves 100% pseudo-GT
       # coverage on both Dvina + SA-2. Evidence:
@@ -92,6 +102,16 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
+      selection_mode: guarded_quantile
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
       # C.10 Task 8 merged-chunk knee — same uniform config as
       # radar_power_rf. Evidence:
       # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
