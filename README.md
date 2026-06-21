@@ -147,32 +147,77 @@ DOCLING_GRAPH_LLM_PROVIDER=ollama                 # ollama | openai (defaults to
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
-DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout per extraction pass (seconds)
+DOCLING_GRAPH_TIMEOUT=64800                       # R2 backstop: worker→DG HTTP timeout (18h); above the longest legit pass (~11.4h observed) with margin
+DOCLING_GRAPH_LLM_TIMEOUT=64800                  # R2 backstop: per-LLM-call HTTP timeout (18h); 1800s stream-timeout is the real per-call wall
 DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction requests
+DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS=3600    # R1 no-progress (inter-arrival) batch watchdog window (1h); NOT a total-elapsed ceiling
 GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for ArcadeDB import
 GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
 DEFAULT_ONTOLOGY_BUNDLE_KEY=air_defense_v3         # Bundle resolution system default
 PASS_MAX_RETRIES=3                                 # Per-pass retry budget for logic failures (5xx, malformed JSON, validation)
 PASS_MAX_TRANSPORT_RETRIES=3                       # Separate budget for transport failures (disconnect, timeout, DNS); does not burn PASS_MAX_RETRIES
-PASS_SOFT_TIME_LIMIT=3600                          # Per-pass Celery task soft time limit (1h); replaces the legacy 8h graph_soft_time_limit
+PASS_SOFT_TIME_LIMIT=72000                         # R2 backstop: per-pass Celery soft time limit (20h); above the 18h HTTP backstop so HTTP fails the pass cleanly first
 PASS_CONCURRENCY_PER_DOCUMENT=2                    # Max in-flight entity-extraction passes per document
 RECONCILER_PERIOD_SECONDS=60                       # How often reconcile_ontology_graph_runs runs (beat schedule)
 PHASE_CLAIM_STALE_SECONDS=30                       # How long a `claimed` phase entry must be old before reconciler repairs it
+
+# Extraction reliability ladder (R2 progress-aware watchdog — see "Extraction reliability (R1/R2)" below)
+DG_PROGRESS_POLLER_ENABLED=true                   # Beat poller writes docling-graph /progress → stage_runs.metrics.progress
+EXTRACTION_PROGRESS_POLL_SECONDS=30               # Poll interval for the progress poller
+RECONCILER_PROGRESS_AWARE=true                    # A dispatched pass still advancing is NOT reclaimed regardless of age
+RECONCILER_NO_PROGRESS_THRESHOLD_S=7200           # A dispatched pass with no progress advance for this long is reclaimable
+RECONCILER_STALE_DISPATCHED_S=86400               # Absolute stale-dispatched backstop (24h), decoupled from 2×PASS_SOFT_TIME_LIMIT
+INTERNAL_API_BASE_URL=http://api:8000             # worker → /v1/extraction/chunk-scope endpoint base URL
+VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S=1200.0        # Timeout for the chunk-scope HTTP call (R6 fix: 60→1200 so large-doc capture survives)
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
+
+**Extraction reliability (R1/R2).** Two layered guards make the reduced timeout
+ladder above safe for both slow-but-healthy large docs and genuinely stuck passes:
+
+- **R1 — no-progress batch watchdog.** `DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS`
+  (3600s) is an *inter-arrival* window, not a total-elapsed ceiling: the watchdog
+  trips only when NO batch completes within the window, so a large doc that
+  legitimately needs many hours of aggregate batch time never mis-degrades. It sits
+  above the 1800s OllamaPool stream wall-timeout so a single slow generation can't
+  trip it.
+- **R2 — progress heartbeat + progress-aware reconciler.** docling-graph publishes
+  per-pass batch progress (`GET /progress`, port 8002); the beat poller
+  (`DG_PROGRESS_POLLER_ENABLED`) writes it into `stage_runs.metrics.progress`; the
+  reconciler (`RECONCILER_PROGRESS_AWARE`) never reclaims a pass whose progress is
+  still advancing, regardless of absolute age. Only a no-progress pass past
+  `RECONCILER_STALE_DISPATCHED_S` (24h) is reclaimed. This is what makes the reduced
+  18h/20h backstops safe — they are last-resort backstops, not the primary guard.
+
+See `docs/operational/production-reliability-2026-06.md` for the full root-cause
+and deploy detail.
 
 #### Guarded-ranker chunk selection (extraction chunk-scope)
 
 Each extraction pass selects which document chunks to send to the LLM. The legacy
 behavior is a top-k slice of the reranked pool. The **guarded ranker** adds a
 recall-safe alternative configured **per RetrievalProfile in the bundle manifest**
-(no new env vars — everything is manifest config):
+(no new env vars — everything is manifest config).
 
-| Manifest field | Default | Meaning |
+**Live status (production default).** The guarded ranker is the production default,
+not a shadow experiment. The router runs in `VECTOR_ROUTER_MODE=narrow_only` (the
+selector's chunks narrow extraction scope), and all four shipped air_defense bundles
+(`air_defense_v3`, `air_defense_v3_baseline_subset`, `air_defense_v3_narrowing_v1`,
+`air_defense_v3_merged_v1`) run their field-group passes on
+`selection_mode=guarded_quantile` with calibrated `ranker_weights` and
+`quantile_q=0.5`. `WORKER_FORWARD_SELECTED_CHUNKS=false` keeps the path recall-safe:
+the selector's `self_refs` narrow the scope, but docling-graph still re-chunks /
+sanitizes the scoped doc (setting it `true` forwards verbatim merged chunks and was
+measured to LOWER recall on table-heavy docs). `topk` remains the *code* default for
+any new, uncalibrated pass that lacks gates + fit weights. To retrain the selector
+for a new corpus, see "Retraining the Guarded-Ranker Chunk Selector for a New
+Corpus" below.
+
+| Manifest field | Code default | Meaning |
 |---|---|---|
-| `selection_mode` | `topk` | `topk` = exact `c5_scored[:top_k]` (byte-identical legacy); `guarded_quantile` = gate-keeps ∪ quantile cut |
-| `quantile_q` | `0.8` | Quantile of the ranker score that the cut keeps (within the pool) |
+| `selection_mode` | `topk` | `topk` = exact `c5_scored[:top_k]` (byte-identical legacy); `guarded_quantile` = gate-keeps ∪ quantile cut. The shipped air_defense bundles set `guarded_quantile` on their field-group passes. |
+| `quantile_q` | `0.8` | Quantile of the ranker score that the cut keeps (within the pool). Shipped air_defense bundles use the calibrated `0.5`. |
 | `k_min` / `k_max` | `3` / `0` | Floor / cap on ranker-keeps (`k_max=0` = uncapped); **gate-flagged chunks are exempt from `k_max`** |
 | `ranker_weights` | `{}` | component-name → weight; empty ranks by `final_score`. Unknown keys are rejected at manifest load |
 | `unit_gate` | `false` | G1 unit-signature gate on a field-group pass |
@@ -199,8 +244,10 @@ python3 -m scripts.fit_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.c
 
 **Two LODO conventions:** generalization is cross-validated by GroupKFold on `run_id`
 (leave-one-document-out) and always reported BOTH ways — pooled out-of-fold AUROC and
-mean-per-fold AUROC. Quote both; never one alone. `selection_mode` stays `topk` in all
-shipped bundles until a deliberate flip to `guarded_quantile`.
+mean-per-fold AUROC. Quote both; never one alone. `selection_mode` stays `topk` as the
+code default for any new/uncalibrated pass; the four shipped air_defense bundles have
+been flipped to `guarded_quantile` (calibrated) and run live under
+`VECTOR_ROUTER_MODE=narrow_only`.
 
 #### Per-role Ollama URLs
 
@@ -263,6 +310,8 @@ TEXT_EMBEDDING_BASE_URLS=["http://bge-host:11434"]
 ```
 
 For diagnostics on docling-graph extraction fan-out, set `DOCLING_GRAPH_DEBUG_ENDPOINTS=true` and query `GET /debug/routing-metrics` on port 8002. Returns per-URL request counts. Default-off to avoid leaking backend URLs on the published port; disable again after diagnosis.
+
+The docling-graph service also exposes a read-only **`GET /progress`** heartbeat on port 8002 (R2 progress-aware watchdog — see "Extraction reliability (R1/R2)" above). It returns in-flight per-pass batch progress, `{"passes": [{run_id, pass_name, done, total, phase, started_at, updated_at, age_s}, ...]}`, optionally filtered by a `pipeline_run_id` query param. The beat poller (`DG_PROGRESS_POLLER_ENABLED`) consumes it and mirrors it into `stage_runs.metrics.progress`; the progress-aware reconciler reads that to avoid reclaiming a still-advancing pass.
 
 Per-request thinking is configured separately per application:
 
@@ -1148,6 +1197,201 @@ Documents ingested from each source automatically use the source's default bundl
 4. **Keep schemas under 8000 chars.** The JSON schema is sent to the LLM for structured output. Huge schemas degrade extraction quality. Split into more passes if needed.
 5. **Test with `graph_only` reingest.** After tuning schemas, use `mode: "graph_only"` to re-extract without re-processing the document through Docling.
 6. **Check the coverage checker.** Run `python tools/check_extraction_coverage.py` after every schema change. It catches drift before it reaches production.
+
+## Retraining the Guarded-Ranker Chunk Selector for a New Corpus
+
+The **guarded-ranker** decides which document chunks each field-group extraction pass
+sends to the LLM. It is **calibrated per corpus** — the gates derive from the bundle's
+field schema and the ranker weights are fit on labeled data from *your* documents. A
+selector calibrated on one corpus (e.g. air-defense radar/missile datasheets) will keep
+its recall *floor* on a new corpus but its *pruning* weights won't be optimal. This
+section is the complete, every-step procedure to retrain it for a brand-new corpus.
+
+### Mental model (read first)
+
+Two independent mechanisms, combined as a union:
+
+- **Gates (the recall floor).** Label-aligned OR-gates — `unit_gate` (a chunk has a
+  digit token AND a unit token from the pass's field signature) and `table_gate` (a
+  table chunk bearing units). By construction, every chunk shaped like a true positive
+  is kept, so **recall is 1.0 on the labeled data regardless of the ranker**. The gates
+  are *derived from the bundle schema* (the units each field declares), not learned.
+- **Ranker (the pruning).** A sign-constrained logistic regression over per-chunk
+  features (`max_field_cosine`, `mean_top3_field_cosine`, `rerank_norm`,
+  `unit_token_count`, `digit_density`, …). It ranks the non-gate chunks; a per-pool
+  quantile cut keeps the top fraction. This is what *reduces* chunks beyond the gates.
+
+Selection = `dedup(gate-keeps ∪ ranker-keeps)`. The quantile `q` is a **savings dial,
+not a recall lever** — because the gates already cover all positives, recall is 1.0 at
+every `q`; higher `q` keeps fewer chunks (more savings, thinner generalization margin).
+
+Generalization is always reported under **both** leave-one-document-out (LODO)
+conventions: pooled out-of-fold AUROC and mean-per-fold AUROC (GroupKFold by `run_id`).
+
+### Prerequisites
+
+1. **A bundle for the new corpus** (see "Adding a Custom Ontology Bundle" above). The
+   field-group passes must declare their numeric fields with **units** — the unit gate's
+   signature is the union of `units_for(field)` over each pass's fields. If a unit suffix
+   isn't recognized, that field can never gate (and never produce a labeled positive); add
+   it to `SUFFIX_UNITS` in `app/services/extraction_unit_gate.py` (and the docling-graph
+   mirror) — e.g. `_sec`, `_usec`, `_dbi` were added for the air-defense bundle.
+2. **A representative document set** for the new corpus — enough docs that each
+   field-group pass sees positives across several documents (LODO needs ≥2 docs with
+   positives per pass to score a fold; single-positive-doc folds are skipped).
+3. The calibration scripts (already in `scripts/`): `export_bakeoff_dataset`,
+   `check_gate_coverage`, `eval_guarded_ranker`, `fit_guarded_ranker`.
+
+### Step 1 — Start the new bundle in the safe default (topk, shadow)
+
+A new, uncalibrated bundle MUST start at `selection_mode: topk` (the code default) and
+the router in `shadow` or `disabled`. Do NOT set `guarded_quantile` before calibrating —
+without derived gates + fit weights there is no recall floor. Leave the field-group
+passes' `retrieval:` blocks without a `selection_mode` key (inherits `topk`).
+
+### Step 2 — Enable the gates on the field-group passes
+
+In each field-group pass's `retrieval:` block in the bundle manifest, set:
+
+```yaml
+    retrieval:
+      unit_gate: true        # G1 — digit + pass-unit-signature token
+      table_gate: true       # G2 — table chunk bearing units (optional but recommended)
+```
+
+Gates are computed from the schema, so this is the only manifest change needed before
+collecting data. Verify the unit signature is non-empty for each pass (a pass whose
+fields declare no units cannot gate — revisit the schema or `SUFFIX_UNITS`).
+
+### Step 3 — Collect telemetry (shadow ingest)
+
+Ingest the representative corpus with `VECTOR_ROUTER_MODE=shadow`. In shadow the selector
+runs and records `score_components_all` (the per-chunk feature vectors) into
+`ingest.pipeline_pass_outputs.diagnostics_json->'router'`, but **does not affect
+extraction** — zero risk. One run per document; record the run IDs.
+
+```bash
+# create a source bound to the new bundle, upload docs, let them reach a terminal state
+curl -s -X POST localhost:8000/v1/sources -d '{"name":"my_corpus_eval","description":"calibration"}'
+# (bind the source's default_ontology_bundle_key to your new bundle, then upload each doc)
+```
+
+Confirm each field-group pass captured features:
+`diagnostics_json->'router'->'score_components_all'` should be a non-empty array.
+
+### Step 4 — Export the labeled dataset
+
+```bash
+python3 -m scripts.export_bakeoff_dataset --runs <run1,run2,...> --out-dir reports/dataset_mycorpus
+```
+
+This writes `bakeoff_dataset.csv` (one row per (pass, chunk) candidate), with the feature
+columns, the gate columns, and the label column **`used`** (the lineage-grounded target:
+a chunk is a positive if a committed field value was grounded to it). It also prints the
+positive count — if it's very low, collect more / more-diverse docs (the ranker needs
+positives spread across documents to learn and to score LODO folds).
+
+### Step 5 — Verify the recall floor (gate coverage) — MANDATORY
+
+```bash
+python3 -m scripts.check_gate_coverage reports/dataset_mycorpus/bakeoff_dataset.csv --bundle <your_bundle>
+```
+
+This must exit 0: **every `used==1` row is covered by `unit_gate ∪ table_gate`.** A miss
+means the gate lexicon is incomplete for your corpus (a positive chunk's unit isn't
+recognized) → fix `SUFFIX_UNITS` / the field's declared units, re-ingest the affected
+docs, re-export, re-check. Do not proceed until coverage is 100% — this is the recall
+guarantee; calibration refuses to emit without it.
+
+### Step 6 — Evaluate the frontier (decide if it's worth deploying)
+
+```bash
+python3 -m scripts.eval_guarded_ranker --csv reports/dataset_mycorpus/bakeoff_dataset.csv --out reports/dataset_mycorpus/eval.json
+```
+
+Read: **LODO AUROC (both conventions)** — a healthy ranker is ≥ ~0.8 pooled-OOF; the
+**guarded frontier** (recall, kept_frac at each `q`) — gates-alone kept_frac tells you the
+guaranteed savings at recall 1.0; and the **final_score top-k baseline** for comparison.
+If AUROC is near 0.5, the ranker has no usable signal on this corpus (often
+positive-starvation, not a real failure) — you can still deploy the **gates alone**
+(recall 1.0 + whatever the gates prune) and skip the learned ranker.
+
+### Step 7 — Calibrate (fit deployable numbers)
+
+```bash
+python3 -m scripts.fit_guarded_ranker --csv reports/dataset_mycorpus/bakeoff_dataset.csv --bundle <your_bundle>
+```
+
+This fits the sign-constrained L2 logistic regression (C selected via nested GroupKFold),
+drops wrong-signed features, chooses the smallest `quantile_q` whose LODO recall is 1.0 on
+every fold, applies a finite-sample margin, and **refuses to emit unless gate coverage
+passes**. It writes `reports/dataset_mycorpus/guarded_ranker_fit.json` (weights, q,
+per-fold recall, both LODO AUROCs) and prints a ready-to-paste manifest YAML snippet:
+
+```yaml
+selection_mode: guarded_quantile
+quantile_q: 0.5
+k_min: 3
+k_max: 0
+ranker_weights:
+  unit_token_count: 1.242183
+  digit_density: 0.304987
+  mean_top3_field_cosine: 0.272968
+  max_field_cosine: 0.219610
+  rerank_norm: 0.055489
+```
+
+### Step 8 — Write the calibrated config into the bundle
+
+Paste the snippet into each field-group pass's `retrieval:` block (alongside the
+`unit_gate`/`table_gate` keys from Step 2). The `ranker_weights` keys must be exactly the
+feature/component names the scorer emits (the script guarantees this; unknown keys are
+rejected at manifest load). Verify all bundles still parse:
+
+```bash
+python3 -c "from app.services.ontology_bundles import load_bundle_manifest as L; L('<your_bundle>')"
+```
+
+### Step 9 — Validate in shadow (selection diagnostics fire)
+
+Re-ingest one or two docs still in `VECTOR_ROUTER_MODE=shadow`. Confirm the guarded
+selection diagnostics appear (and are non-null) on the field-group passes:
+`diagnostics_json->'router'` should now carry `selection_mode=guarded_quantile`,
+`gate_unit_keeps`, `gate_table_keeps`, `ranker_keeps`, `selection_threshold`,
+`selection_k`. Extraction is still unaffected in shadow — this only proves the selector
+computes correctly.
+
+### Step 10 — Flip live + final end-to-end test
+
+```bash
+# .env (and .env.example): the selector now narrows extraction scope
+VECTOR_ROUTER_MODE=narrow_only
+WORKER_FORWARD_SELECTED_CHUNKS=false   # keep false: self_refs still narrow scope, but
+                                       # docling-graph re-chunks/sanitizes the scoped doc
+                                       # (recall-recovering). true bypasses that and has
+                                       # measured LOWER recall on table-heavy docs.
+```
+
+Recreate the workers + api (`docker compose -p eip-mmdpp up -d --force-recreate api worker
+worker-graph`), then re-ingest one representative doc end-to-end and confirm: run reaches
+`COMPLETE`, the router diagnostics show `mode=selected_refs` with `selected_token_estimate
+< full_doc_token_estimate` (narrowing actually fired), and entity yield holds versus the
+pre-flip baseline (recall didn't regress). Then commit the bundle + env changes.
+
+### Operational notes
+
+- **Keep `topk` as the code default.** New/uncalibrated bundles must inherit `topk` —
+  never ship `guarded_quantile` on a pass that lacks gates or fit weights (no floor → can
+  drop positives). `narrow_only` likewise stays a per-deployment opt-in, not the code
+  default.
+- **Recalibrate when the corpus shifts.** New document types or new field schemas change
+  the feature distribution; re-run Steps 3–8. The gates keep recall safe in the meantime.
+- **`q` is a savings/safety dial.** Lower `q` = more ranker margin (safer on unseen doc
+  types), higher `q` = more pruning. With full gate coverage, recall stays 1.0 either way
+  on the labeled data.
+- **Positive starvation ≠ ranker failure.** If new doc types yield no labeled positives
+  (e.g. prose with no groundable spec-fields, or scanned/no-text-layer docs), the ranker
+  can't be evaluated on them — fall back to gates-only there.
 
 ## Creating Custom Queries
 
