@@ -8541,7 +8541,19 @@ def _compute_effective_chunk_scope(
         effective_chunk_scope = None
         diag["shadow_skipped_narrowing"] = (resp_mode == "selected_refs")
     elif mode == "narrow_only":
-        if resp_mode == "selected_refs" and self_refs:
+        if diag.get("fallback_level") == "degraded":
+            # Recall-safety guard (2026-06-21): the E2 fallback ladder exhausted all
+            # rungs and proceeded with a STARVED pool (coverage low, no gate floor —
+            # gate_unit_keeps=0). Narrowing to those self_refs drops recall, because
+            # the gates can't protect positives that never made it into the starved
+            # pool (observed on small docs: V-75 1866 tokens → 3-chunk/81-token pool →
+            # missile_guidance 6->1, radar_power_rf failed). Fall open to full-doc;
+            # small docs are cheap to run whole and the recall floor is preserved.
+            # The endpoint still reports mode=selected_refs + fallback_level=degraded
+            # for A/B analytics — only the worker's extraction SCOPE falls open.
+            effective_chunk_scope = None
+            diag["fail_open_reason"] = "degraded_fallback_no_gate_floor"
+        elif resp_mode == "selected_refs" and self_refs:
             effective_chunk_scope = {
                 "mode": "selected_refs",
                 "self_refs": self_refs,

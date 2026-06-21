@@ -94,6 +94,36 @@ class TestComputeEffectiveChunkScope:
             "fail_open_reason must be captured in diagnostics"
         )
 
+    def test_narrow_only_fails_open_on_degraded_fallback(self):
+        """mode=narrow_only + selected_refs BUT fallback_level=degraded → fall open
+        to full-doc. RECALL-SAFETY GUARD (2026-06-21): the degraded fallback pool is
+        starved with no gate floor (gate_unit_keeps=0); narrowing to its self_refs
+        drops recall. Must run full instead, even though self_refs are present.
+        """
+        router_response = self._make_response(
+            "selected_refs",
+            self_refs=["#/texts/0", "#/texts/1", "#/texts/2"],
+            diag_extra={"fallback_level": "degraded"},
+        )
+        eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is None, "degraded fallback MUST fall open to full doc (no gate floor)"
+        assert diag.get("fail_open_reason") == "degraded_fallback_no_gate_floor"
+
+    def test_narrow_only_still_narrows_on_nondegraded_fallback(self):
+        """Guard against over-broad fall-open: a non-degraded fallback rung (e.g.
+        relaxed_dense) that still produced a real pool MUST still narrow."""
+        self_refs = ["#/texts/3", "#/tables/1"]
+        router_response = self._make_response(
+            "selected_refs", self_refs=self_refs,
+            diag_extra={"fallback_level": "relaxed_dense"},
+        )
+        eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is not None, "non-degraded fallback must still narrow"
+        assert eff["self_refs"] == self_refs
+        assert diag.get("fail_open_reason") != "degraded_fallback_no_gate_floor"
+
     def test_endpoint_http_error_falls_back_to_run_full(self):
         """router_response=None (HTTP error) → effective_chunk_scope=None."""
         eff, diag = _compute_effective_chunk_scope(None, "narrow_only")
