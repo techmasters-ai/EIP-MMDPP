@@ -52,10 +52,33 @@ So the run-level label (COMPLETE / PARTIAL / FAILED) is incidental to **whether 
 Goal: **all four ❌/⚠️ outcomes become graceful `COMPLETE`.** Three coordinated fixes:
 
 1. **Empty/off-domain entity pass → `SKIPPED`/`ZERO_YIELD`, not `FAILED`.** Extend `_is_clean_empty_pipeline_error` to recognize the `missing_root_instance + empty_output` signature (sub-case 1) as a clean zero-yield. → off-domain passes stop counting against the gate; single-domain docs (Radar Basics, NASA) → COMPLETE; pass-level FAILEDs disappear from the COMPLETE docs too.
-2. **`system_links` must handle "no/partial relationships" gracefully** (the EWIRDB FAILED driver). A required relationship pass that finds nothing should `SKIP`/zero-yield, not `ExtractionError` → run COMPLETE instead of FAILED. Also check whether EWIRDB's `system_links` failure is volume-driven (large upstream-entity catalog → oversized prompt) vs empty — if volume, that's a separate scaling fix.
+2. **`system_links` must handle "no/partial relationships" gracefully** (the EWIRDB FAILED driver). A required relationship pass that finds nothing should `SKIP`/zero-yield, not `ExtractionError` → run COMPLETE instead of FAILED. **UPDATE (2026-06-22): EWIRDB's failure is CONFIRMED volume-driven, not empty** — a clean re-run on healthy infra reproduced it (FAILED, 2/12 passes). It's the *oversized-input* scaling defect, documented separately below ("Deferred defect: oversized-table extraction batching").
 3. **Diagnose the "no chunk metadata" sub-case (2b)** for scanned docs: confirm legit-empty vs propagation bug by comparing the worker chunk count (had chunks → SCA=9) against docling-graph's `doc_processor.last_chunk_metadata`. If bug → fix the hand-off (these docs would then actually extract); if legit → clean-skip per fix #1.
 
 Acceptance: re-ingest the 5 ❌/⚠️ docs → all terminate `COMPLETE`; no pass-level `FAILED` for off-domain/empty passes (they show `SKIPPED`); EWIRDB completes.
+
+## Deferred defect: oversized-table extraction batching (EWIRDB — CONFIRMED volume-driven)
+
+**Status:** DEFERRED — separate from graceful-completion (fixes #1–#3 above) AND orthogonal to the chunk-selector. Confirmed 2026-06-22 by a clean `reingest graph_only` of EWIRDB on healthy infra (docling-graph up, LLM hosts 200): reproduced FAILED, 2/12 passes, `narrowed=9`. So it is not the docling-graph outage and not narrowing — it bites full-doc extraction the same way.
+
+**Symptom.** EWIRDB_Production (a production-database-dump PDF) fails most passes with `ExtractionError` → `retry_exhausted` → pass FAILED → run FAILED. Quality gate: `empty_output`. The LLM (`gemma4:31b`) returns nothing usable because the prompt is enormous.
+
+**Evidence.** docling-graph log for the failing pass: `markdown_chars=8,609,421` (~8.6M characters of markdown in a single extraction input) while the worker's `full_doc_token_estimate=27,195` — i.e. ~**316 chars/token** vs the normal ~4, an **~80× undercount**. The doc indexed 72 chunks; EWIRDB's content is huge raw tables (table-norm is disabled upstream: `EXTRACTION_INDEX_UPSTREAM_TABLE_NORM=false` → raw markdown tables land verbatim).
+
+**Root cause (two compounding flaws in the delta batcher):**
+1. **No intra-chunk splitting.** `chunk_batches_by_token_limit()` (`docling_graph/core/extractors/contracts/delta/helpers.py:132`) only decides where to cut *between* chunks — it packs whole chunks until the running sum would exceed `max_batch_tokens`, then starts a new batch, but it **always appends the current chunk even if that single chunk alone exceeds the limit**. A chunk == one document element, and docling-graph keeps a table as one element. So a single multi-million-char table element becomes **one over-budget batch = one giant prompt**. (`max_batch_tokens` = `DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE=512` for field passes, `…SYSTEM_LINKS…=4096` for `system_links`.)
+2. **Token counts undercount tables.** The batcher's `token_counts` come from `chunk_metadata["token_count"]` or fall back to `len(chunk.split())` (`orchestrator.py:530-538`, `runtime.py:339-344`). Both badly undercount dense numeric tables (the ~80× gap above), so the batcher (and the worker's `narrow_min_doc_tokens` size-gate, which keys on the same estimate) are blind to the true volume — they "see" a small doc and never force enough batches.
+
+**Why most docs are fine.** Normal prose chunks are well under 512 tokens, so the batcher produces many small prompts. Only docs with pathologically large single elements (DB-dump tables) trip the gap. EWIRDB is the only doc in the corpus that does.
+
+**Fix sketch (when addressed):**
+1. **Row-wise / intra-element table splitting before batching:** split a large table element into multiple bounded chunks (header repeated + N rows each) so no single chunk exceeds `max_batch_tokens`.
+2. **Accurate size accounting:** count by characters (or a real tokenizer), not `len(split)` / metadata `token_count`, so both the batcher and the worker size-gate see true volume. Propagate the same char-based measure to `full_doc_token_estimate` / `narrow_min_doc_tokens`.
+3. **Defensive cap:** if a single chunk still exceeds `max_batch_tokens` after splitting, truncate-with-diagnostic or clean-skip that chunk rather than emitting a multi-MB prompt that deterministically returns `empty_output`.
+
+**Acceptance:** re-ingest EWIRDB → no single extraction prompt exceeds ~`max_batch_tokens`; passes COMPLETE (or clean-skip per graceful-completion fix #1/#2) instead of FAILED-on-oversized-input.
+
+**Cross-ref:** the char-based size accounting (fix #2) is the same blind spot behind the worker-side `narrow_min_doc_tokens` recall-safety gate — both trust `full_doc_token_estimate`, which undercounts table-heavy docs.
 
 ## Cross-refs
 - `ISSUES.md` (this collection) — raw per-doc flags.
