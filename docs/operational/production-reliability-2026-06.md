@@ -200,6 +200,62 @@ lack of liveness is the substantive part — covered by R2.
 
 ---
 
+## R7 — Orphaned Celery extraction tasks survive launcher death (no clean per-run cancel)  [S2, operational/code]
+
+**Observed (2026-06-22/23, multiple times).** Killing a host-side launcher (an
+ingest/validation driver script) does **not** cancel the `derive_ontology_graph_pass`
+Celery tasks it already dispatched. The driver only *polls*; the extraction runs
+in the worker/`docling-graph` containers. So `pkill <driver>` leaves the run's
+in-flight passes alive — still consuming the (dedicated) LLM pool. Evidence: after
+killing the re-run driver, run `b3d8a671` (Fandom Dvina) kept extracting for
+**9.8h / 11 passes**; earlier, the abandoned SNR-75 run `46c60074` overlapped the
+all-notebooks run, manufacturing pool contention that looked external.
+
+**Effect.** (a) Wasted compute + skewed A/B timing (zombie runs contend with new
+work on the same pool). (b) No safe way to abandon a run: `/cancel` **hard-deletes
+the document** (forbidden as a stop-restart, see memory), and `docker restart
+worker*` kills **all** in-flight passes indiscriminately, not just the target run.
+
+**Fix design.** A per-run "abort in-flight passes" path that (1) revokes the run's
+Celery tasks (`celery_app.control.revoke(..., terminate=True)` for that run's pass
+task-ids, tracked on the summary stage-run) and (2) marks the run `CANCELLED`
+without deleting derived data. Surface it as a worker control task or an API
+endpoint distinct from `/cancel`. Until then: operational note — abandoning a
+driver requires either waiting the run out or a full worker restart.
+
+**Status:** DEFERRED (post-merge). Noted at user request 2026-06-23.
+
+---
+
+## R8 — Pipeline under-utilizes a dedicated LLM pool (low concurrency → pathological wall-time)  [S2, throughput]
+
+**Observed (2026-06-23, pool confirmed dedicated — no other tenants).** With both
+LLM hosts (`10.0.1.121/109`) idle-capable and `gemma4:31b` resident, a single run
+drives only **~1.4 LLM calls in-flight** (33 calls / 10 min at ~20–28 s each) vs a
+configured cap of `MAX_CONCURRENT_EXTRACTIONS(8) × PARALLEL_WORKERS(2) = 16`. The
+worker extracts **one pass at a time**, and a small doc has few batches per pass,
+so concurrency stays near 1–2 and both hosts sit mostly idle. Result: a 1.3 MB doc
+(Fandom Dvina) took 9.8h. This is NOT the R1 no-progress watchdog (which by design
+lets slow-but-progressing runs continue) and NOT external contention — it's pure
+under-feeding.
+
+**Effect.** Wall-time is dominated by serialization, not model speed; the dedicated
+pool's second host adds little. Big docs (and any A/B that needs repetition) become
+impractically slow, and slow wall-time was repeatedly mis-read as contention.
+
+**Fix directions (to evaluate post-merge).** (a) Dispatch passes for a run
+concurrently (respecting upstream-dependency ordering: identity → field → links),
+or (b) shard a pass's batches across both hosts more aggressively, or (c) run
+multiple documents concurrently when a batch of docs is queued. Pair with a
+per-call latency budget so slow generations don't serialize the whole run. Note:
+recall is unaffected by concurrency (only wall-time), so an A/B for the
+chunk-selector can run repetitions concurrently on the healthy pool without
+biasing entity counts — only failures (not slowness) corrupt recall.
+
+**Status:** DEFERRED (post-merge). Noted at user request 2026-06-23.
+
+---
+
 ## Deploy plan (post-Engagement window, batched)
 
 When `66a2afef` reaches terminal:
