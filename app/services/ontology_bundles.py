@@ -329,13 +329,16 @@ class RetrievalProfile(BaseModel):
     # OR-gate ∪ quantile-ranker cut (gates kept by construction; the ranker
     # supplies the precision floor with k_min/k_max bounds).
     # ------------------------------------------------------------------
-    selection_mode: Literal["topk", "guarded_quantile"] = Field(
+    selection_mode: Literal["topk", "guarded_quantile", "absolute_union"] = Field(
         default="topk",
         description=(
             "Final post-rerank candidate cut. 'topk' (DEFAULT) = the legacy "
             "c5_scored[: top_k] slice (byte-identical). 'guarded_quantile' = "
             "dedup(gate-flagged ∪ quantile-ranker keeps) with a k_min floor and "
-            "k_max cap (gate-flagged members are exempt from k_max)."
+            "k_max cap (gate-flagged members are exempt from k_max). "
+            "'absolute_union' = keep each candidate iff any per-pass signal fires "
+            "(measurement/categorical/image/cosine>=cosine_tau); may return 0..all, "
+            "no k_min/k_max."
         ),
     )
     quantile_q: float = Field(
@@ -348,6 +351,21 @@ class RetrievalProfile(BaseModel):
             "are ranker-keeps. Higher q = stricter (keeps fewer)."
         ),
     )
+    cosine_tau: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "absolute_union only: keep a candidate if its max_field_cosine >= "
+            "cosine_tau (OR'd with the measurement/categorical/image signals). "
+            "Per-pass override allowed in the manifest retrieval block."
+        ),
+    )
+    # absolute_union per-pass signal config. NOT set in the manifest — populated
+    # at request time by the endpoint from derive_pass_signal_config(bundle_key).
+    signal_dimensions: set[str] = Field(default_factory=set)
+    signal_categorical: set[str] = Field(default_factory=set)
+    signal_has_image: bool = Field(default=False)
     k_min: int = Field(
         default=3,
         gt=0,

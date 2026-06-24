@@ -741,6 +741,33 @@ def select_candidates(
     ``selection_threshold`` and ``selection_k``. In topk mode it is left
     untouched (the schema fields stay None).
     """
+    # ---- absolute_union: keep iff ANY per-pass signal fires ---------------
+    if cfg.selection_mode == "absolute_union":
+        from app.services.extraction_signal_detectors import (  # noqa: PLC0415
+            measurement_present, categorical_present, image_present,
+        )
+        dims = getattr(cfg, "signal_dimensions", set()) or set()
+        cats = getattr(cfg, "signal_categorical", set()) or set()
+        has_img = bool(getattr(cfg, "signal_has_image", False))
+        tau = float(getattr(cfg, "cosine_tau", 0.55))
+        out, mk, ck, ik, kk = [], 0, 0, 0, 0
+        for mc, score in c5_scored:
+            m = measurement_present(dims, mc.chunk_text)
+            c = categorical_present(cats, mc.chunk_text)
+            i = has_img and image_present(mc.source_refs)
+            k = float(getattr(mc, "max_field_cosine", 0.0) or 0.0) >= tau
+            if m or c or i or k:
+                out.append((mc, score))
+                mk += m; ck += c; ik += i; kk += k
+        if diag_out is not None:
+            diag_out["selection_mode"] = "absolute_union"
+            diag_out["selection_k"] = len(out)
+            diag_out["measurement_keeps"] = mk
+            diag_out["categorical_keeps"] = ck
+            diag_out["image_keeps"] = ik
+            diag_out["cosine_keeps"] = kk
+        return out
+
     # ---- topk (DEFAULT): byte-identical legacy slice ---------------------
     # guarded_quantile is the EXPLICIT opt-in; ANY other value (including the
     # "topk" default and a MagicMock profile in tests) takes the byte-identical
