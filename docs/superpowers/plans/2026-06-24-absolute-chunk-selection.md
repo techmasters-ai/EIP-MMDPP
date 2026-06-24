@@ -18,6 +18,7 @@
 - Derive per-pass config (dimensions/categorical/image) from the bundle schema (single source of truth), not hardcoded literals.
 - Default `τ` = **0.55** global, with optional per-pass override.
 - Online validation (NMUSAF/SA-2/Engagement under `absolute_union` vs full-doc baseline) is **required before flipping any production default** — Task 7 (user-ordered gate).
+- **True chunk selection (no fallback ladder for `absolute_union`)** — "I want a true chunk selection." The `absolute_union` path does NOT enter the E2 fallback ladder (`relaxed_dense → … → full`) and never escalates to full-doc. The signal-union result IS the answer: empty → `empty_selection` (→ ZERO_YIELD); non-empty → exactly those chunks via `selected_refs`. The ladder remains only for the legacy `topk`/`guarded_quantile` modes.
 
 **Spec:** `docs/superpowers/specs/2026-06-24-absolute-chunk-selection-design.md` (commit `71115fb`).
 
@@ -378,17 +379,20 @@ def test_empty_when_nothing_fires():
 
 ## Task 3: Endpoint — inject per-pass config + emit `empty_selection`
 
-**Goal:** The chunk-scope endpoint injects the pass's signal config into the profile, and when `absolute_union` selects 0, returns a NEW `mode="empty_selection"` (distinct from `full`/`would_skip`/`selected_refs`), instead of falling open to `mode="full"`.
+**Goal:** The chunk-scope endpoint injects the pass's signal config into the profile, runs the signal-union selection on the PRIMARY candidate pool, and treats the result as the final answer — **true chunk selection, bypassing the E2 fallback ladder**. Empty → a NEW `mode="empty_selection"` (distinct from `full`/`would_skip`/`selected_refs`), never falling open to `mode="full"`; non-empty → `mode="selected_refs"` with exactly those chunks, without entering the ladder.
+
+> **Real endpoint structure (the plan's earlier line refs were approximate):** the response models live in `app/schemas/extraction_routing.py` (`ChunkScopeDiagnostics` ~line 36, `ChunkScopeResponse` ~line 233 — both have `mode: Literal["selected_refs","full","would_skip"]`; add `"empty_selection"` to BOTH). The endpoint `chunk_scope` in `app/api/v1/extraction_routing.py` has a PRIMARY `select_candidates` call (~line 706) followed by an **E2 fallback ladder** (~line 742: `relaxed_dense → … → full`) plus three more `select_candidates` re-score sites (~831/907/974) inside that ladder. For `absolute_union` the ladder MUST be skipped entirely (per the "true chunk selection" user decision) — handle the primary result and return before the ladder.
 
 **Files:**
-- Modify: `app/api/v1/extraction_routing.py` (the `select_candidates` call site; the `mode="full"` empty paths ~710, ~1279; `ChunkScopeResponse`/`ChunkScopeDiagnostics`)
+- Modify: `app/schemas/extraction_routing.py` (add `"empty_selection"` to the `mode` Literal on `ChunkScopeDiagnostics` and `ChunkScopeResponse`)
+- Modify: `app/api/v1/extraction_routing.py` (inject signal config after profile resolution; branch the primary-selection result for `absolute_union`; guard the E2 ladder entry with `selection_mode != "absolute_union"`)
 - Test: `tests/unit/test_empty_selection_contract.py` (endpoint half)
 
 **Acceptance Criteria:**
-- [ ] For an `absolute_union` pass, the endpoint sets `profile.signal_dimensions/signal_categorical/signal_has_image` from `derive_pass_signal_config(bundle_key)[pass_name]` before calling `select_candidates`.
-- [ ] When `absolute_union` returns 0 candidates, the response is `ChunkScopeResponse(mode="empty_selection", self_refs=[], diagnostics=...)` — NOT `mode="full"`.
-- [ ] The selected (non-empty) case still returns `mode="selected_refs"` with `self_refs` populated as today.
-- [ ] `topk`/`guarded_quantile` empty handling is unchanged (still `mode="full"`/`would_skip`).
+- [ ] For an `absolute_union` pass, the endpoint sets `profile.signal_dimensions/signal_categorical/signal_has_image` from `derive_pass_signal_config(bundle_key)[pass_name]` (via `model_copy(update=...)`; the fields are declared so `extra="forbid"` is satisfied) before calling `select_candidates`.
+- [ ] When `absolute_union` selects 0 candidates, the response is `ChunkScopeResponse(mode="empty_selection", self_refs=[], diagnostics=...)` — NOT `mode="full"` — and the E2 fallback ladder is NOT entered.
+- [ ] When `absolute_union` selects ≥1, the response is `mode="selected_refs"` with exactly those `self_refs`, and the E2 ladder is NOT entered (no escalation to relaxed_dense/full).
+- [ ] `topk`/`guarded_quantile` empty handling AND the E2 ladder for those modes are unchanged (regression).
 
 **Verify:** `pytest tests/unit/test_empty_selection_contract.py -k endpoint -v` → pass.
 
@@ -561,6 +565,102 @@ def test_narrow_only_empty_selection_maps_to_zero_scope(self):
 - [ ] **Step 2:** Session-proof driver: for each of {NMUSAF, SA-2/SR-71 PDF, Engagement}, run a full-doc (shadow) baseline + an absolute_union run via reingest graph_only; record entity counts + terminal status to the verdict file.
 - [ ] **Step 3:** Compare per doc; PASS iff all three hold ≥0.9× recall and COMPLETE.
 - [ ] **Step 4 (gate):** If PASS → the design is validated; a FOLLOW-UP (not this plan) may then remove `narrow_min_doc_tokens`. If FAIL → hold; do not flip any production default; tune `cosine_tau` / signals and re-validate.
+
+---
+
+## Task 8: Recompute selection performance metrics (shipped code vs baseline)
+
+**Goal:** With the feature fully implemented and validated, recompute the full selection performance-stats suite — **recall, precision, fraction-selected, F1, per-signal keep contribution, and per-pass breakdown** — for the SHIPPED `absolute_union` selector vs the `guarded_quantile` baseline, against the bake-off ground-truth dataset. Confirm the shipped code reproduces the offline-prototype figures recorded in the spec (no implementation drift), and capture the comparison table as the project's final performance report.
+
+> Runs LAST (after Task 7). Uses the SHIPPED detectors/selector (`measurement_present`/`categorical_present`/`image_present` + the `absolute_union` keep-rule from `select_candidates`) — not the offline prototype scripts — so the numbers reflect production code, not a re-implementation. Purely offline against existing ground truth; no new extraction runs required (it may also cross-check the Task 7 live entity counts where available).
+
+**Files:**
+- Create: `reports/absolute_union_metrics.py` (recompute script)
+- Output: `reports/absolute_union_metrics_report.txt` (captured comparison table)
+- (No production source changes.)
+
+**Acceptance Criteria:**
+- [ ] The script loads the bake-off ground-truth parquet(s) (`reports/*/bakeoff_dataset.parquet`; columns include `run_id`, `pass_name`, `chunk_index`, `used`, `max_field_cosine`, `chunk_text`), dedups on `(run_id, pass_name, chunk_index)`, and derives each chunk's per-pass `{dimensions, categorical_fields, has_image_field}` from `derive_pass_signal_config("air_defense_v3")`.
+- [ ] For `absolute_union` it applies the SHIPPED detectors + keep-rule (`measurement OR categorical OR image OR max_field_cosine >= τ`, τ=0.55) and computes **recall, precision, fraction-selected, F1**, plus **per-signal keep counts** (`measurement_keeps`, `categorical_keeps`, `image_keeps`, `cosine_keeps`) — both per-pass and aggregate. (`used==1` is the positive label.)
+- [ ] For the `guarded_quantile` baseline it computes the same recall/precision/fraction-selected (q=0.5 median cut, the deployed value) for side-by-side comparison.
+- [ ] The image signal requires `source_refs` (absent from the parquet); the script either joins `source_refs` from ArcadeDB (`ExtractionChunk`, by `pipeline_run_id`+`chunk_index`, as the prototype `ab_guidance_andor.py` did) for the `_photo` passes, OR explicitly reports image-signal coverage as "validated via Task 7 live runs" — no silent omission.
+- [ ] A comparison table is written to `reports/absolute_union_metrics_report.txt` (per-pass + aggregate: recall / precision / frac-selected / F1 for `absolute_union` vs `guarded_quantile`, plus the per-signal keep breakdown).
+- [ ] Shipped-code aggregate recall is within tolerance of the spec's offline-prototype figure (~89.6% recall @ ~22% selected @ ~7.7% precision). A material drop (>3 pts recall) is flagged as a regression to investigate before the report is considered final.
+
+**Verify:** `.venv/bin/python reports/absolute_union_metrics.py && cat reports/absolute_union_metrics_report.txt` → per-pass + aggregate table present for both selectors; aggregate recall ≈ offline prototype.
+
+**Steps:**
+
+- [ ] **Step 1: Implement the recompute** using the shipped code (representative skeleton — flesh out the baseline quantile cut + optional ArcadeDB source_refs join):
+
+```python
+# reports/absolute_union_metrics.py
+"""Recompute selection performance (recall/precision/frac-sel/F1 + per-signal)
+for the SHIPPED absolute_union vs guarded_quantile, over the bake-off ground truth."""
+import glob
+import numpy as np
+import pandas as pd
+from app.services.extraction_pass_signal_config import derive_pass_signal_config
+from app.services.extraction_signal_detectors import (
+    measurement_present, categorical_present)  # image handled via source_refs join
+
+CFG = derive_pass_signal_config("air_defense_v3")
+TAU = 0.55
+
+df = pd.concat([pd.read_parquet(p) for p in glob.glob("reports/*/bakeoff_dataset.parquet")],
+               ignore_index=True).drop_duplicates(subset=["run_id", "pass_name", "chunk_index"])
+df["used"] = pd.to_numeric(df["used"], errors="coerce").fillna(0.0)
+df["mfc"] = pd.to_numeric(df["max_field_cosine"], errors="coerce").fillna(0.0)
+df["txt"] = df["chunk_text"].astype(str)
+df = df[df["pass_name"].isin(CFG)]  # routable passes only
+
+def signals(row):
+    c = CFG.get(row["pass_name"])
+    if c is None:
+        return False, False, False
+    m = measurement_present(c.dimensions, row["txt"])
+    cat = categorical_present(c.categorical_fields, row["txt"])
+    k = row["mfc"] >= TAU
+    return m, cat, k  # image omitted here (no source_refs in parquet) — see Step 2
+
+S = df.apply(signals, axis=1, result_type="expand")
+df["M"], df["C"], df["K"] = S[0], S[1], S[2]
+df["au_keep"] = df["M"] | df["C"] | df["K"]
+df["gq_keep"] = df.groupby(["run_id", "pass_name"])["mfc"].transform(
+    lambda s: s >= np.quantile(s, 0.5))  # guarded_quantile median baseline (ranker≈mfc)
+
+def stats(mask):
+    sel, used = mask.sum(), (df["used"] == 1).sum()
+    tp = (mask & (df["used"] == 1)).sum()
+    rec = tp / used if used else 0.0
+    prec = tp / sel if sel else 0.0
+    frac = sel / len(df) if len(df) else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+    return rec, prec, frac, f1
+
+lines = []
+lines.append(f"{'pass':24s} {'sel':>5s} {'AUrec':>6s} {'AUprec':>7s} {'AUfrac':>7s} {'GQrec':>6s} {'GQfrac':>7s}")
+for pn, g in df.groupby("pass_name"):
+    gm = df["pass_name"] == pn
+    ar, ap, af, _ = stats(df["au_keep"] & gm)
+    gr, _, gf, _ = stats(df["gq_keep"] & gm)
+    lines.append(f"{pn:24s} {int(g['used'].sum()):>5d} {ar:>6.1%} {ap:>7.1%} {af:>7.1%} {gr:>6.1%} {gf:>7.1%}")
+ar, ap, af, af1 = stats(df["au_keep"])
+gr, gp, gf, gf1 = stats(df["gq_keep"])
+lines.append("-" * 70)
+lines.append(f"AGGREGATE absolute_union: recall={ar:.1%} precision={ap:.1%} frac_sel={af:.1%} F1={af1:.3f}")
+lines.append(f"AGGREGATE guarded_quantile: recall={gr:.1%} precision={gp:.1%} frac_sel={gf:.1%} F1={gf1:.3f}")
+lines.append(f"per-signal keeps: measurement={int(df['M'].sum())} categorical={int(df['C'].sum())} cosine={int(df['K'].sum())}")
+lines.append(f"SPEC offline-prototype reference: recall~89.6% frac_sel~22% precision~7.7%")
+report = "\n".join(lines)
+print(report)
+open("reports/absolute_union_metrics_report.txt", "w").write(report + "\n")
+```
+
+- [ ] **Step 2 (image signal):** For the `_photo` passes (`missile_guidance`, `radar_antenna`), either join `source_refs` from ArcadeDB `ExtractionChunk` and fold `image_present` into `au_keep`, or add a one-line note to the report that image-presence recall is validated via the Task 7 live runs. Do not silently drop it.
+- [ ] **Step 3: Run + capture** the report (Verify command); confirm aggregate recall ≈ the spec prototype figure. If it drifted >3 pts, investigate before finalizing.
+- [ ] **Step 4 (optional cross-check):** Append the Task 7 live per-doc entity recall/precision (absolute_union vs full-doc) to the report so the final performance picture has both the cell-level bake-off metrics and the live entity-level metrics.
+- [ ] **Step 5: Commit** `git add reports/absolute_union_metrics.py reports/absolute_union_metrics_report.txt && git commit -m "feat(selection): final performance-metrics recompute (absolute_union vs guarded_quantile)"`
 
 ---
 
