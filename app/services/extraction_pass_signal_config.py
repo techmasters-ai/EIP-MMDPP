@@ -14,7 +14,7 @@ SUFFIX_DIMENSION = {
     "mhz": "frequency", "ghz": "frequency", "khz": "frequency", "hz": "frequency",
     "mps": "velocity",
     "kg": "mass", "g": "mass",
-    "dbi": "gain", "db": "gain",
+    "dbi": "gain",
     "kw": "power", "w": "power",
 }
 # enum field -> matchable categorical phrases (enum values + schema prose mappings)
@@ -27,6 +27,7 @@ class PassSignalConfig:
     dimensions: set[str] = dc_field(default_factory=set)
     categorical_fields: set[str] = dc_field(default_factory=set)
     has_image_field: bool = False
+
 
 def _suffix_dimension(field_name: str) -> str | None:
     m = re.search(r"_([a-z]+)$", field_name)

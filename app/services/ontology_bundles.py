@@ -582,8 +582,13 @@ def iter_routable_pass_fields(bundle_key: str) -> list[tuple[str, list[str]]]:
         if pass_def.retrieval is None:
             continue
         full_module_path = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
-        template_module = importlib.import_module(full_module_path)
-        template_cls = getattr(template_module, pass_def.template_class)
+        try:
+            template_module = importlib.import_module(full_module_path)
+            template_cls = getattr(template_module, pass_def.template_class)
+        except (ImportError, AttributeError) as exc:
+            raise BundleResolutionError(
+                f"cannot load template {full_module_path}.{pass_def.template_class}: {exc}"
+            ) from exc
         # Unwrap the list-of-records container to get the actual record field names.
         # Pattern: template_cls has one list field; its item type is the record model.
         field_names: list[str] | None = None
@@ -595,7 +600,12 @@ def iter_routable_pass_fields(bundle_key: str) -> list[tuple[str, list[str]]]:
                     field_names = list(item_cls.model_fields.keys())
                     break
         if field_names is None:
-            # Fallback: use the top-level model's own field names.
+            logger.warning(
+                "iter_routable_pass_fields: no nested record model found for "
+                "bundle=%s pass=%s template=%s; falling back to container-level "
+                "field names (signal config may be empty for this pass).",
+                bundle_key, pass_def.name, pass_def.template_class,
+            )
             field_names = list(template_cls.model_fields.keys())
         result.append((pass_def.name, field_names))
     return result
