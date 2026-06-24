@@ -72,6 +72,28 @@ def test_diag_per_signal_counts():
     assert diag["image_keeps"] == 0
 
 
+def test_categorical_signal_keeps_candidate():
+    cfg = SimpleNamespace(
+        selection_mode="absolute_union", cosine_tau=0.55, top_k=15,
+        signal_dimensions=set(), signal_categorical={"guidance_type"}, signal_has_image=False,
+    )
+    cands = [
+        (_mc(0, "uses semi-active radar homing", [], 0.1), 0.5),  # categorical fires
+        (_mc(1, "unrelated prose", [], 0.1), 0.2),                # nothing fires
+    ]
+    diag = {}
+    out = select_candidates(cands, [{}] * 2, cfg, diag_out=diag)
+    assert {c.chunk_index for c, _ in out} == {0}
+    assert diag["categorical_keeps"] == 1
+    assert diag["measurement_keeps"] == 0
+
+
+def test_no_crash_with_diag_out_none():
+    cands = [(_mc(0, "max range 2500 km", [], 0.1), 0.5)]
+    out = select_candidates(cands, [{}], _cfg(), diag_out=None)
+    assert isinstance(out, list)
+
+
 def test_image_signal_keeps_candidate():
     cfg = SimpleNamespace(
         selection_mode="absolute_union",

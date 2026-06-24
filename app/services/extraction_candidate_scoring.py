@@ -713,6 +713,12 @@ def score_components_for_pool(
 #                         * gate-flagged members (unit_gate or table_gate == 1.0)
 #                           are ALWAYS kept and NEVER count against k_max.
 #
+#   "absolute_union" — keep each candidate iff any per-pass signal fires
+#                      (measurement/categorical/image/cosine>=cosine_tau).
+#                      Returns 0..all; no k_min/k_max. diag_out receives:
+#                        selection_mode, selection_k, measurement_keeps,
+#                        categorical_keeps, image_keeps, cosine_keeps.
+#
 # ``components`` is the per-candidate component list from
 # ``score_candidates(..., return_components=True)`` — POSITIONALLY ALIGNED with
 # ``c5_scored`` (both come out of the same sorted score_candidates call). The
@@ -738,8 +744,10 @@ def select_candidates(
 
     ``diag_out`` — optional mutable dict; in guarded_quantile mode it is
     populated with ``gate_unit_keeps``, ``gate_table_keeps``, ``ranker_keeps``,
-    ``selection_threshold`` and ``selection_k``. In topk mode it is left
-    untouched (the schema fields stay None).
+    ``selection_threshold`` and ``selection_k``. In ``absolute_union`` mode it
+    receives ``selection_mode``/``selection_k``/``measurement_keeps``/
+    ``categorical_keeps``/``image_keeps``/``cosine_keeps``. In topk mode it is
+    left untouched (the schema fields stay None).
     """
     # ---- absolute_union: keep iff ANY per-pass signal fires ---------------
     if cfg.selection_mode == "absolute_union":
@@ -758,7 +766,10 @@ def select_candidates(
             k = float(getattr(mc, "max_field_cosine", 0.0) or 0.0) >= tau
             if m or c or i or k:
                 out.append((mc, score))
-                mk += m; ck += c; ik += i; kk += k
+                mk += int(m)
+                ck += int(c)
+                ik += int(i)
+                kk += int(k)
         if diag_out is not None:
             diag_out["selection_mode"] = "absolute_union"
             diag_out["selection_k"] = len(out)
