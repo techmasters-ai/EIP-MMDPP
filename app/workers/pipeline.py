@@ -807,6 +807,77 @@ def _execute_pass_attempt(
         _raw_fs = chunk_scope.get("field_subset")
         if isinstance(_raw_fs, list) and _raw_fs:
             forwarded_field_subset = _raw_fs
+    # 3a. empty_selection short-circuit (Task 5).
+    # When absolute_union selected 0 chunks the router emits
+    # mode="empty_selection".  _compute_effective_chunk_scope (Task 4) maps
+    # that to the sentinel {"mode": "empty_selection", "self_refs": []}.
+    # There is nothing to extract — return COMPLETE/EMPTY immediately without
+    # building or sending the request.
+    if chunk_scope is not None and chunk_scope.get("mode") == "empty_selection":
+        import importlib as _importlib
+        from app.services.extraction_merge import (
+            ExtractionMetadata as _ExtractionMetadata,
+            PassResult as _PassResult,
+            PreMergeWalkSummary as _PreMergeWalkSummary,
+        )
+        logger.info(
+            "EXTRACT_PASS_EMPTY_SELECTION bundle=%s pass=%s document_id=%s — "
+            "absolute_union selected 0 chunks; ZERO_YIELD (COMPLETE/EMPTY), no extraction call.",
+            bundle_key, pass_def.name, document_id,
+        )
+        _full_module = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
+        try:
+            _tmod = _importlib.import_module(_full_module)
+            _tcls = getattr(_tmod, pass_def.template_class)
+            _template_instance = _tcls.model_validate({})
+        except Exception as _exc:
+            # Fallback: use a MagicMock-free sentinel — an empty SimpleNamespace
+            # is safe because _build_pre_merge_walk_summary / classify_yield /
+            # _count_pass_output all guard with hasattr() checks.
+            import types as _types
+            _template_instance = _types.SimpleNamespace()
+        _empty_pass_result = _PassResult(
+            pass_name=pass_def.name,
+            template_instance=_template_instance,
+            metadata=_ExtractionMetadata(
+                schema_size_chars=0,
+                structured_output_mode="strict",
+            ),
+            pre_merge_rejections=[],
+            provenance=[],
+            field_evidence={},
+            relationship_provenance=[],
+            table_overlay=None,
+        )
+        _empty_pass_result.pre_merge_walk = _PreMergeWalkSummary(
+            entities=[],
+            raw_edge_count=0,
+        )
+        _empty_yield_val = classify_yield(_empty_pass_result, pass_def, ontology)
+        _empty_yield_str = (
+            _empty_yield_val.value
+            if hasattr(_empty_yield_val, "value")
+            else str(_empty_yield_val)
+        )
+        _empty_counts = _count_pass_output(_empty_pass_result, pass_def, ontology)
+        return PassAttemptOutcome(
+            execution_status="COMPLETE",
+            skip_reason=None,
+            yield_status=_empty_yield_str,
+            pass_result=_empty_pass_result,
+            raw_response_payload=None,
+            counts=_empty_counts,
+            error=None,
+            worker_diagnostics={
+                **(caller_worker_diag or {}),
+                "request_bytes": 0,
+                "response_bytes": 0,
+                "service_queue_wait_ms": 0.0,
+                "pass_wall_ms": 0.0,
+                "zero_yield_reason": "empty_selection",
+            },
+        )
+
     request_body = _build_extract_pass_request(
         bundle_key=bundle_key,
         pass_def=pass_def,

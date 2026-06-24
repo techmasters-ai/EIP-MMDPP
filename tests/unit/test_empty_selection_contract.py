@@ -473,3 +473,186 @@ class TestAbsoluteUnionEndpoint:
         )
         assert data["mode"] != "empty_selection"
         assert data["self_refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# Worker tests (Task 5) — all names contain "worker" so -k worker selects them
+# ---------------------------------------------------------------------------
+
+def _make_worker_pass_def(
+    *,
+    name="missile_kinematics",
+    kind="entities_and_relationships",
+    input_mode="document_only",
+    required=True,
+    primary=("MISSILE_SYSTEM",),
+    bridge=(),
+    rels=(),
+    module="extraction_schemas.missile_kinematics",
+    template_class="MissileKinematicsPass",
+):
+    """Minimal SimpleNamespace pass_def for _execute_pass_attempt worker tests.
+
+    Uses the real missile_kinematics module so importlib resolution in the
+    empty_selection short-circuit can find the template class without mocking.
+    """
+    return SimpleNamespace(
+        name=name,
+        kind=kind,
+        input_mode=input_mode,
+        required=required,
+        depends_on=[],
+        skip_if_no_upstream_endpoints=False,
+        primary_entity_types=list(primary),
+        bridge_entity_types=list(bridge),
+        extracted_relationship_types=list(rels),
+        module=module,
+        template_class=template_class,
+    )
+
+
+def _make_worker_manifest(bundle_key="air_defense_v3"):
+    return SimpleNamespace(bundle_key=bundle_key)
+
+
+_WORKER_ONTOLOGY = {
+    "entity_types": [
+        {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"],
+         "identity_scope": "global"},
+    ],
+    "validation_matrix": [],
+}
+
+_EMPTY_SELECTION_SCOPE = {"mode": "empty_selection", "self_refs": []}
+
+
+class TestWorkerEmptySelection:
+    """Task 5 — _execute_pass_attempt with chunk_scope mode=empty_selection."""
+
+    def _common_kwargs(self):
+        return dict(
+            pipeline_run_id=str(uuid.uuid4()),
+            pass_def=_make_worker_pass_def(),
+            manifest=_make_worker_manifest(),
+            ontology=_WORKER_ONTOLOGY,
+            bundle_key="air_defense_v3",
+            doc_json={},
+            upstream_refs={},
+            document_id="doc-worker-test",
+            caller_worker_diag=None,
+        )
+
+    def test_worker_empty_selection_no_extract_call(self):
+        """_call_extract_pass must NOT be called when chunk_scope is empty_selection.
+
+        The short-circuit should return COMPLETE/EMPTY immediately.
+        """
+        from app.workers.pipeline import _execute_pass_attempt
+
+        with patch("app.workers.pipeline._call_extract_pass") as mock_call:
+            outcome = _execute_pass_attempt(
+                **self._common_kwargs(),
+                chunk_scope=_EMPTY_SELECTION_SCOPE,
+            )
+
+        mock_call.assert_not_called()
+        assert outcome.execution_status == "COMPLETE", (
+            f"empty_selection must return COMPLETE, got {outcome.execution_status!r}"
+        )
+        assert outcome.yield_status == "EMPTY", (
+            f"empty_selection must return EMPTY yield, got {outcome.yield_status!r}"
+        )
+
+    def test_worker_empty_selection_zero_counts_and_reason(self):
+        """empty_selection outcome must have zero primary_entities_extracted
+        and worker_diagnostics['zero_yield_reason'] == 'empty_selection'."""
+        from app.workers.pipeline import _execute_pass_attempt
+
+        with patch("app.workers.pipeline._call_extract_pass"):
+            outcome = _execute_pass_attempt(
+                **self._common_kwargs(),
+                chunk_scope=_EMPTY_SELECTION_SCOPE,
+            )
+
+        assert outcome.counts is not None, "empty_selection outcome must have counts dict"
+        assert outcome.counts["primary_entities_extracted"] == 0, (
+            f"primary_entities_extracted must be 0, got {outcome.counts['primary_entities_extracted']!r}"
+        )
+        assert outcome.counts["bridge_entities_extracted"] == 0
+        assert outcome.counts["relationships_extracted"] == 0
+
+        assert outcome.worker_diagnostics is not None
+        assert outcome.worker_diagnostics.get("zero_yield_reason") == "empty_selection", (
+            f"zero_yield_reason must be 'empty_selection', got "
+            f"{outcome.worker_diagnostics.get('zero_yield_reason')!r}"
+        )
+        # Standard telemetry keys must be present
+        assert "request_bytes" in outcome.worker_diagnostics
+        assert "response_bytes" in outcome.worker_diagnostics
+        assert outcome.worker_diagnostics["request_bytes"] == 0
+        assert outcome.worker_diagnostics["response_bytes"] == 0
+
+    def test_worker_normal_scope_still_calls_extract(self):
+        """A NON-empty_selection chunk_scope must NOT trigger the short-circuit.
+
+        _call_extract_pass must be reached, proving the guard is correctly gated
+        on mode='empty_selection' only.
+        """
+        from app.workers.pipeline import _execute_pass_attempt
+        from app.services.extraction_merge import (
+            ExtractionMetadata,
+            PassResult,
+            PreMergeWalkSummary,
+        )
+
+        fake_pass_result = PassResult(
+            pass_name="missile_kinematics",
+            template_instance=SimpleNamespace(),
+            metadata=ExtractionMetadata(
+                schema_size_chars=0,
+                structured_output_mode="strict",
+            ),
+            pre_merge_rejections=[],
+            provenance=[],
+            field_evidence={},
+            relationship_provenance=[],
+            table_overlay=None,
+            pre_merge_walk=PreMergeWalkSummary(entities=[], raw_edge_count=0),
+        )
+
+        normal_scope = {"mode": "selected_refs", "self_refs": ["#/texts/1"]}
+        fake_raw_payload = {"pass_output": {}, "metadata": {}}
+
+        with (
+            patch("app.workers.pipeline._call_extract_pass",
+                  return_value=fake_raw_payload) as mock_call,
+            patch("app.workers.pipeline._parse_pass_response",
+                  return_value=fake_pass_result),
+            patch("app.workers.pipeline._build_pre_merge_walk_summary",
+                  return_value=PreMergeWalkSummary(entities=[], raw_edge_count=0)),
+            patch("app.workers.pipeline.classify_yield", return_value="EMPTY"),
+            patch("app.workers.pipeline._count_pass_output", return_value={
+                "primary_entities_extracted": 0,
+                "bridge_entities_extracted": 0,
+                "relationships_extracted": 0,
+                "relationships_rejected": 0,
+                "schema_size_chars": 0,
+                "structured_output_mode": "strict",
+                "salvaged": False,
+            }),
+        ):
+            outcome = _execute_pass_attempt(
+                **self._common_kwargs(),
+                chunk_scope=normal_scope,
+            )
+
+        mock_call.assert_called_once(), (
+            "_call_extract_pass must be called for a non-empty_selection chunk_scope"
+        )
+        assert outcome.execution_status == "COMPLETE"
+        # zero_yield_reason must NOT be present for a normal (non-short-circuit) path
+        assert outcome.worker_diagnostics is None or (
+            "zero_yield_reason" not in (outcome.worker_diagnostics or {})
+        ), (
+            "zero_yield_reason must not appear on a normal (non-empty_selection) outcome"
+        )
