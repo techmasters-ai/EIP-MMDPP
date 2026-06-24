@@ -276,6 +276,9 @@ class TestAbsoluteUnionEndpoint:
         )
         assert data["self_refs"] == [], data
         assert data["diagnostics"]["mode"] == "empty_selection"
+        # fallback_reason is an implementation detail (WHY the pool was empty),
+        # not part of the public empty_selection contract — asserted for trace
+        # completeness, not as a stability guarantee.
         assert data["diagnostics"]["fallback_reason"] == "no_selected_refs_after_rerank"
 
     @pytest.mark.asyncio
@@ -410,3 +413,63 @@ class TestAbsoluteUnionEndpoint:
             f"select_candidates must be called exactly once for absolute_union "
             f"(no ladder re-scores); called {mock_select.call_count} times"
         )
+
+    @pytest.mark.asyncio
+    async def test_endpoint_topk_empty_still_returns_full(self, app):
+        """NEGATIVE GATE: a NON-absolute_union (topk) pass with empty
+        select_candidates must still return the legacy mode=full — proves the
+        empty_selection conversion is correctly gated on _is_absolute_union (an
+        inverted condition would surface here)."""
+        # selection_mode="topk" → _is_absolute_union must be False.
+        pass_def = _make_mc_pass_def(selection_mode="topk", fallback_to_full=True)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        mc_a = _make_mc(0)
+        pool = [mc_a]
+        diag = _make_mc_diag(pool_size=1)
+        state = _make_mc_state()
+
+        scored_empty: list = []
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=_make_signals_mock()),
+                patch("app.api.v1.extraction_routing.inject_pass_keywords",
+                      side_effect=lambda p, s: p),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
+                patch("app.api.v1.extraction_routing.score_candidates",
+                      side_effect=_score_candidates_stub(scored_empty)),
+                patch("app.api.v1.extraction_routing.select_candidates",
+                      return_value=[]),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings",
+                      return_value=_make_settings_mock()),
+                patch("app.api.v1.extraction_routing.derive_pass_signal_config",
+                      return_value={}),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "full", (
+            f"NON-absolute_union (topk) empty selection must stay mode=full, "
+            f"NOT empty_selection; got mode={data['mode']!r}"
+        )
+        assert data["mode"] != "empty_selection"
+        assert data["self_refs"] == []
