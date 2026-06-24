@@ -9,7 +9,7 @@ DIMENSION_UNITS: dict[str, list[str]] = {
     "length": ["km","mm","cm","nmi","ft","yd","kilometers","kilometres","kilometer","kilometre",
                "meters","metres","meter","metre","millimeters","millimeter","centimeters","centimeter",
                "miles","mile","feet","foot","yards","yard","inches","nautical miles","nautical mile"],
-    "mass": ["kg","g","mg","t","lb","lbs","kilograms","kilogram","grams","gram","tonnes","tonne",
+    "mass": ["kg","mg","lb","lbs","kilograms","kilogram","grams","gram","tonnes","tonne",
              "tons","ton","pounds","pound"],
     "time": ["sec","secs","ms","ns","µs","us","hr","hrs","min","mins","seconds","second",
              "milliseconds","millisecond","microseconds","microsecond","nanoseconds","nanosecond",

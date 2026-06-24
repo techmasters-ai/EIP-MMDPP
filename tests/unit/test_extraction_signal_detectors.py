@@ -13,6 +13,14 @@ def test_measurement_spelled_and_imperial():
     assert measurement_present({"length"}, "about 40 feet tall") is True
     assert measurement_present({"velocity"}, "4500 meters per second") is True
 
+def test_measurement_mass_rejects_designators_keeps_real():
+    # designators must NOT fire the mass signal
+    assert measurement_present({"mass"}, "the Yak-130G aircraft") is False
+    assert measurement_present({"mass"}, "engage the T-90 at close range") is False
+    # real mass measurements still fire
+    assert measurement_present({"mass"}, "warhead weighs 190 kg") is True
+    assert measurement_present({"mass"}, "payload of 2 tonnes") is True
+
 def test_categorical():
     assert categorical_present({"guidance_type"}, "uses semi-active radar homing") is True
     assert categorical_present({"guidance_type"}, "the warhead weighs 200 kg") is False
