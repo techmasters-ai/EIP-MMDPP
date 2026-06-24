@@ -217,6 +217,31 @@ class TestComputeEffectiveChunkScope:
         # No self_refs → can't narrow meaningfully; should be None
         assert eff is None
 
+    def test_narrow_only_empty_selection_maps_to_zero_scope(self):
+        """mode=narrow_only + router returns empty_selection → sentinel zero-chunk
+        scope (NOT None/full-doc, NOT selected_refs)."""
+        resp = self._make_response("empty_selection", self_refs=[],
+                                   diag_extra={"fallback_reason": "no_selected_refs_after_rerank"})
+        eff, diag = _compute_effective_chunk_scope(resp, "narrow_only")
+        assert eff == {"mode": "empty_selection", "self_refs": []}
+        assert diag.get("empty_selection") is True
+
+    def test_narrow_only_empty_selection_wins_over_small_doc(self):
+        """empty_selection must NOT fall open to full-doc even on a small doc."""
+        resp = self._make_response("empty_selection", self_refs=[],
+                                   diag_extra={"full_doc_token_estimate": 100})
+        eff, diag = _compute_effective_chunk_scope(resp, "narrow_only")
+        assert eff == {"mode": "empty_selection", "self_refs": []}
+        assert diag.get("empty_selection") is True
+
+    def test_narrow_only_empty_selection_wins_over_degraded(self):
+        """empty_selection must NOT fall open to full-doc even with degraded fallback_level."""
+        resp = self._make_response("empty_selection", self_refs=[],
+                                   diag_extra={"fallback_level": "degraded"})
+        eff, diag = _compute_effective_chunk_scope(resp, "narrow_only")
+        assert eff == {"mode": "empty_selection", "self_refs": []}
+        assert diag.get("empty_selection") is True
+
 
 # ---------------------------------------------------------------------------
 # _call_chunk_scope_endpoint unit tests

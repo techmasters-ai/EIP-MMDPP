@@ -8541,7 +8541,15 @@ def _compute_effective_chunk_scope(
         effective_chunk_scope = None
         diag["shadow_skipped_narrowing"] = (resp_mode == "selected_refs")
     elif mode == "narrow_only":
-        if diag.get("fallback_level") == "degraded":
+        if resp_mode == "empty_selection":
+            # absolute_union true chunk selection returned 0 chunks. This is a
+            # LEGITIMATE zero (no appropriate content) — extract nothing for this
+            # pass (-> ZERO_YIELD in finalization), NEVER full-doc. Wins over the
+            # degraded/small-doc fall-opens below: the user requires that 0 stays 0
+            # even on small docs ("true chunk selection").
+            effective_chunk_scope = {"mode": "empty_selection", "self_refs": []}
+            diag["empty_selection"] = True
+        elif diag.get("fallback_level") == "degraded":
             # Recall-safety guard (2026-06-21): the E2 fallback ladder exhausted all
             # rungs and proceeded with a STARVED pool (coverage low, no gate floor —
             # gate_unit_keeps=0). Narrowing to those self_refs drops recall, because
