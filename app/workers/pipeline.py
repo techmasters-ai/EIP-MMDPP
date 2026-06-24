@@ -8553,6 +8553,27 @@ def _compute_effective_chunk_scope(
             # for A/B analytics — only the worker's extraction SCOPE falls open.
             effective_chunk_scope = None
             diag["fail_open_reason"] = "degraded_fallback_no_gate_floor"
+        elif (
+            resp_mode == "selected_refs"
+            and self_refs
+            and settings.narrow_min_doc_tokens
+            and isinstance(diag.get("full_doc_token_estimate"), (int, float))
+            and diag["full_doc_token_estimate"] < settings.narrow_min_doc_tokens
+        ):
+            # Recall-safety gate (2026-06-21): narrowing only earns wall-time on
+            # LARGE documents. A small doc is cheap to extract whole, so narrowing
+            # it is all recall-risk for negligible savings. Observed: NMUSAF
+            # (3,459 tokens, a mostly-image museum page) lost 33% recall when
+            # narrowed (24->16 entities) — its sparse text spread entities across
+            # chunks the narrowed set dropped, and one pass hard-FAILED on an
+            # empty narrowed pool; SA-2/SR-71 (7,118 tokens) held recall. Fall open
+            # to full-doc below settings.narrow_min_doc_tokens. The endpoint still
+            # reports mode=selected_refs for A/B analytics — only the worker's
+            # extraction SCOPE falls open. (degraded is checked first above, so it
+            # keeps its own reason when both apply.)
+            effective_chunk_scope = None
+            diag["fail_open_reason"] = "small_doc_no_narrow_benefit"
+            diag["narrow_min_doc_tokens"] = settings.narrow_min_doc_tokens
         elif resp_mode == "selected_refs" and self_refs:
             effective_chunk_scope = {
                 "mode": "selected_refs",

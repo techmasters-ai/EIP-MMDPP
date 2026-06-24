@@ -124,6 +124,65 @@ class TestComputeEffectiveChunkScope:
         assert eff["self_refs"] == self_refs
         assert diag.get("fail_open_reason") != "degraded_fallback_no_gate_floor"
 
+    def test_narrow_only_fails_open_on_small_doc(self):
+        """mode=narrow_only + selected_refs BUT full_doc_token_estimate below the
+        narrow_min_doc_tokens gate → fall open to full-doc. RECALL-SAFETY GUARD
+        (2026-06-21): narrowing a small doc is all recall-risk for negligible
+        wall-time savings (observed: NMUSAF 3459 tokens lost 33% recall when
+        narrowed). Must run full instead, even though self_refs are present.
+        """
+        router_response = self._make_response(
+            "selected_refs",
+            self_refs=["#/texts/0", "#/texts/1", "#/texts/2"],
+            diag_extra={"full_doc_token_estimate": 3459, "fallback_level": "none"},
+        )
+        with patch("app.workers.pipeline.settings.narrow_min_doc_tokens", 6000):
+            eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is None, "small doc MUST fall open to full doc (narrowing risks recall)"
+        assert diag.get("fail_open_reason") == "small_doc_no_narrow_benefit"
+
+    def test_narrow_only_narrows_on_large_doc(self):
+        """Guard against over-broad fall-open: a doc at/above the size gate that
+        returned selected_refs MUST still narrow."""
+        self_refs = ["#/texts/3", "#/tables/1"]
+        router_response = self._make_response(
+            "selected_refs", self_refs=self_refs,
+            diag_extra={"full_doc_token_estimate": 7118, "fallback_level": "none"},
+        )
+        with patch("app.workers.pipeline.settings.narrow_min_doc_tokens", 6000):
+            eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is not None, "doc above the size gate must still narrow"
+        assert eff["self_refs"] == self_refs
+        assert diag.get("fail_open_reason") != "small_doc_no_narrow_benefit"
+
+    def test_narrow_only_size_gate_disabled_when_zero(self):
+        """narrow_min_doc_tokens=0 disables the gate: a tiny doc still narrows."""
+        self_refs = ["#/texts/0"]
+        router_response = self._make_response(
+            "selected_refs", self_refs=self_refs,
+            diag_extra={"full_doc_token_estimate": 100, "fallback_level": "none"},
+        )
+        with patch("app.workers.pipeline.settings.narrow_min_doc_tokens", 0):
+            eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is not None, "size gate disabled (0) must allow narrowing any doc"
+        assert eff["self_refs"] == self_refs
+
+    def test_narrow_only_degraded_takes_precedence_over_size_gate(self):
+        """degraded fall-open and size-gate fall-open both yield None; degraded is
+        checked first, so its reason wins when both apply."""
+        router_response = self._make_response(
+            "selected_refs", self_refs=["#/texts/0"],
+            diag_extra={"full_doc_token_estimate": 100, "fallback_level": "degraded"},
+        )
+        with patch("app.workers.pipeline.settings.narrow_min_doc_tokens", 6000):
+            eff, diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is None
+        assert diag.get("fail_open_reason") == "degraded_fallback_no_gate_floor"
+
     def test_endpoint_http_error_falls_back_to_run_full(self):
         """router_response=None (HTTP error) → effective_chunk_scope=None."""
         eff, diag = _compute_effective_chunk_scope(None, "narrow_only")

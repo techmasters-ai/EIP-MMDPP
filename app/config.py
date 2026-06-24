@@ -634,6 +634,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Recall-safety gate for narrow_only (2026-06-21): minimum full-document
+    # token estimate below which the worker REFUSES to narrow and falls open to
+    # full-doc extraction. Rationale: narrowing only earns wall-time on large
+    # documents; a small document is cheap to extract whole, so narrowing it is
+    # all recall-risk for negligible savings. Observed: NMUSAF (3,459 tokens, a
+    # mostly-image museum page) lost 33% recall when narrowed (24->16 entities)
+    # because its sparse text spread entities across chunks the narrowed set
+    # dropped, while SA-2/SR-71 (7,118 tokens) held recall. Set 0 to disable the
+    # gate (narrow regardless of size). Tune upward to be more conservative.
+    narrow_min_doc_tokens: int = Field(
+        default=6000,
+        description=(
+            "In narrow_only mode, fall open to full-doc extraction when the "
+            "full-document token estimate is below this value. Guards against "
+            "recall loss from narrowing small/sparse-text docs where narrowing "
+            "saves negligible wall-time. 0 disables the gate."
+        ),
+    )
+
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
 
