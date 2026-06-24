@@ -37,7 +37,7 @@ class ChunkScopeDiagnostics(BaseModel):
     """All diagnostics merged into pipeline_pass_outputs.diagnostics_json.router
     at worker terminal-save time (C.4 work)."""
 
-    mode: Literal["selected_refs", "full", "would_skip"]
+    mode: Literal["selected_refs", "full", "would_skip", "empty_selection"]
     fallback_reason: str | None = None  # "reranker_unavailable", "no_chunks_above_threshold", "would_skip_in_narrow_only_mode", etc.
 
     # Query construction
@@ -231,7 +231,7 @@ class SelectedChunk(BaseModel):
 
 
 class ChunkScopeResponse(BaseModel):
-    mode: Literal["selected_refs", "full", "would_skip"]
+    mode: Literal["selected_refs", "full", "would_skip", "empty_selection"]
     self_refs: list[str] = Field(
         default_factory=list,
         description=(

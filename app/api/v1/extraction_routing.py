@@ -64,6 +64,7 @@ from app.services.ontology_bundles import RetrievalProfile, load_bundle_manifest
 from app.services.ontology_templates import UnknownBundleError
 from app.services import reranker as rrk
 from app.services.table_normalization.tokens import count_bge_m3_tokens
+from app.services.extraction_pass_signal_config import derive_pass_signal_config
 
 if TYPE_CHECKING:
     from app.services.graph_store import GraphEntityResult
@@ -417,6 +418,7 @@ async def chunk_scope(
     #   signals = PassRetrievalSignals  (structured; used by multi-channel path)
     #   profile = RetrievalProfile      (config from pass_def.retrieval; UNCHANGED)
     # NEVER name a variable "retrieval_profile" — see C6 spec naming constraint.
+    _is_absolute_union = False  # set inside the try block below; False if template fails
     try:
         template_cls = _resolve_template_class(body.bundle_key, pass_def)
         signals = build_retrieval_profile(pass_def, template_cls)
@@ -429,6 +431,18 @@ async def chunk_scope(
         # Score-neutral today: pass_keyword_weight defaults to 0.0; contributes
         # to final_score only when lexical_decomposed=True (calibration opt-in).
         profile = inject_pass_keywords(profile, signals)
+        # absolute_union: inject the per-pass signal config so select_candidates
+        # can evaluate measurement/categorical/image signals. True chunk selection
+        # (no fallback ladder) — see _is_absolute_union guards below.
+        _is_absolute_union = profile.selection_mode == "absolute_union"
+        if _is_absolute_union:
+            _sc = derive_pass_signal_config(body.bundle_key).get(body.pass_name)
+            if _sc is not None:
+                profile = profile.model_copy(update={
+                    "signal_dimensions": _sc.dimensions,
+                    "signal_categorical": _sc.categorical_fields,
+                    "signal_has_image": _sc.has_image_field,
+                })
     except Exception as exc:
         logger.warning(
             "chunk-scope: template resolution failed for pass=%s: %r — "
@@ -573,12 +587,13 @@ async def chunk_scope(
         # Empty pool handling
         if not pool:
             would_skip_if_fallback_disabled = True
-            if profile.fallback_to_full:
+            if _is_absolute_union:
+                _empty_mode = "empty_selection"
+            elif profile.fallback_to_full:
                 _empty_mode = "full"
-                _empty_fallback = "no_chunks_above_threshold"
             else:
                 _empty_mode = "would_skip"
-                _empty_fallback = "no_chunks_above_threshold"
+            _empty_fallback = "no_chunks_above_threshold"
             return ChunkScopeResponse(
                 mode=_empty_mode,
                 self_refs=[],
@@ -708,16 +723,17 @@ async def chunk_scope(
         )
 
         if not selected_mcs:
+            _prim_mode = "empty_selection" if _is_absolute_union else "full"
             logger.warning(
                 "chunk-scope multi-channel: C5 scoring produced 0 selected "
-                "candidates for pass=%s run=%s — failing open to mode=full",
-                body.pass_name, body.pipeline_run_id,
+                "candidates for pass=%s run=%s — failing open to mode=%s",
+                body.pass_name, body.pipeline_run_id, _prim_mode,
             )
             return ChunkScopeResponse(
-                mode="full",
+                mode=_prim_mode,
                 self_refs=[],
                 diagnostics=ChunkScopeDiagnostics(
-                    mode="full",
+                    mode=_prim_mode,
                     fallback_reason="no_selected_refs_after_rerank",
                     query_text=query_text,
                     vector_threshold=profile.min_similarity,
@@ -770,7 +786,7 @@ async def chunk_scope(
         _e3_candidate_count_before: int = len(_all_pool_mcs)
         _e3_field_coverage_before: dict[str, int] = field_coverage(_all_pool_mcs)
 
-        if not _enough:
+        if not _enough and not _is_absolute_union:
             # ---------------------------------------------------------------
             # Level 1: relaxed_dense — re-run C4 merge with a larger top_n cap
             # (2× top_n_candidates) to admit lower-scoring candidates already
@@ -1126,12 +1142,13 @@ async def chunk_scope(
         if not results:
             # Counterfactual (rev 10 M6): what WOULD have happened without fallback
             would_skip_if_fallback_disabled = True
-            if profile.fallback_to_full:
+            fallback_reason = "no_chunks_above_threshold"
+            if _is_absolute_union:
+                mode = "empty_selection"
+            elif profile.fallback_to_full:
                 mode = "full"
-                fallback_reason = "no_chunks_above_threshold"
             else:
                 mode = "would_skip"
-                fallback_reason = "no_chunks_above_threshold"
 
             return ChunkScopeResponse(
                 mode=mode,
@@ -1276,11 +1293,13 @@ async def chunk_scope(
     # lack a self_ref key, or when top_k slicing yields zero items.  C.4 would
     # attempt to narrow to an empty scoped doc, which is incorrect.  Fail open
     # to mode=full instead so the pass runs against the full document.
+    # absolute_union: return empty_selection instead of full (true chunk selection).
     if not selected_refs:
+        _post_ladder_mode = "empty_selection" if _is_absolute_union else "full"
         logger.warning(
             "chunk-scope: rerank produced top_k_results=%d but 0 valid self_refs for "
-            "pass=%s run=%s — failing open to mode=full",
-            len(top_k_results), body.pass_name, body.pipeline_run_id,
+            "pass=%s run=%s — failing open to mode=%s",
+            len(top_k_results), body.pass_name, body.pipeline_run_id, _post_ladder_mode,
         )
         # Build the rerank_score_range from top_k_results (works for both branches).
         _shared_rerank_scores = [
@@ -1291,10 +1310,10 @@ async def chunk_scope(
             if _shared_rerank_scores else None
         )
         return ChunkScopeResponse(
-            mode="full",
+            mode=_post_ladder_mode,
             self_refs=[],
             diagnostics=ChunkScopeDiagnostics(
-                mode="full",
+                mode=_post_ladder_mode,
                 fallback_reason="no_selected_refs_after_rerank",
                 query_text=query_text,
                 vector_threshold=profile.min_similarity,
@@ -1463,7 +1482,7 @@ async def chunk_scope(
                 (min(_exp_rerank_scores), max(_exp_rerank_scores))
                 if _exp_rerank_scores else None
             )
-            _exp_mode = "full" if profile.fallback_to_full else "would_skip"
+            _exp_mode = "empty_selection" if _is_absolute_union else ("full" if profile.fallback_to_full else "would_skip")
             return ChunkScopeResponse(
                 mode=_exp_mode,
                 self_refs=[],
