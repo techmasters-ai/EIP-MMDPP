@@ -37,7 +37,7 @@ keep(chunk) ⇔  measurement(pass)          # numeric fields: a number + a unit 
             OR max_field_cosine ≥ τ         # semantic catch-all (the only tunable signal)
 ```
 
-- Pure per-chunk; no quantile, no median, no `k_min` floor. Returns 0 when no chunk fires any signal; returns all when every chunk does.
+- Pure per-chunk; no quantile, no median, no `k_min` floor. Returns 0 when no chunk fires any signal; returns all when every chunk does. **The 0-chunk case requires an explicit endpoint→worker contract — see §3.5; a `select_candidates`-only change will NOT produce 0-yield (it falls open to full-doc).**
 - `τ` is the **single tunable knob** (recall ↑ as τ ↓). Default **0.55–0.60** ≈ quantile-level recall at ~3× the narrowing.
 - The three lexical/structural signals (measurement, categorical, image) are the precision workhorses; the cosine floor is the recall catch-all.
 
@@ -46,7 +46,7 @@ keep(chunk) ⇔  measurement(pass)          # numeric fields: a number + a unit 
 A number immediately followed by a unit belonging to one of the **pass's dimensions**. Dimensions are derived from the pass's field-name unit suffixes (`_km`→length, `_m`→length, `_deg`→angle, `_sec`/`_usec`→time, `_mhz`→frequency, `_mps`→velocity, `_kg`→mass, `_dbi`→gain, `_kw`→power).
 
 - **Dimension-grouped vocabulary** (a length field accepts *any* length unit): abbreviations + spelled-out + plurals + imperial. E.g. length = {m, meter(s), metre(s), km, kilometer(s), mm/cm + spelled, mile(s), feet/foot, yard(s), inch(es), nmi}; time = {s, sec, ms, µs/us, ns, second(s), minute(s), hour(s)}; frequency = {Hz/kHz/MHz/GHz + hertz forms}; velocity = {m/s, mps, km/s, km/h, mph, knots, Mach, "meters per second"}; mass = {kg, g, t, gram(s), kilogram(s), ton(s), lb(s)}; angle = {deg, °, degree(s), rad, radian(s), mrad}; gain = {dBi, dBm, dBW, dB, decibel(s)}; power = {W, kW, MW, watt(s)+}. (Full lists derived at build time; see §6.)
-- Regex form: `(?<![\w.])\d[\d,]*(?:\.\d+)?(?:\s?[x×]\s?10\^?-?\d+)?  \s{0,2}-?\s{0,2}  (unit-alternation, longest-first)  (?![A-Za-z])`.
+- **Use the existing bounded unit matcher, not a hand-rolled permissive regex.** Reuse `app/services/extraction_unit_gate.py` (`SUFFIX_UNITS` + `_compiled_unit_re`) / `field_value_grounding.py:100,150`, which already encode unit boundaries. The exploratory prototype regex `\d\s{0,2}-?\s{0,2}(unit)` is **too permissive for short single-letter units**: optional whitespace before `m`/`s`/`g`/`w` makes designators like `S-75M`, `13DM`, `5Ya23` casefold into apparent measurements, which directly undercuts the "0 chunks when none appropriate" property (false positives). Required hardening: (a) **single-letter units** (`m`, `s`, `g`, `w`) require a real separator (space or explicit boundary) between number and unit and a trailing word boundary — no `\s{0,2}` zero-space match; (b) reject matches where the digit is part of an alphanumeric designator token (preceded by `-`/letter within a token like `S-75`); (c) prefer multi-char/spelled forms which are unambiguous. Validate the matcher against a designator block (`S-75M`, `V-88`, `1D/13DM/5Ya23`) → 0 measurement hits.
 - Pass-specific cut: a chunk with `190 kg` is NOT selected for `radar_antenna` (dimensions {length, angle, gain}); it IS for `missile_airframe` ({length, mass}). This halved false-positive selection vs a generic detector (40% → 21%) at ~equal recall.
 
 ### 3.2 Signal: categorical (enum fields)
@@ -67,6 +67,20 @@ For passes with a `_photo`/image field (`missile_guidance.missile_photo`, `radar
 ### 3.4 Signal: cosine floor
 
 `max_field_cosine ≥ τ` (per-chunk similarity to the pass's field set; already computed in `score_components_all`). The only tunable signal and the catch-all for entity chunks not caught lexically (names/designations, unlabeled prose).
+
+### 3.5 Empty-selection contract (0 chunks) — REQUIRED, not just `select_candidates`
+
+The "return 0 → clean ZERO_YIELD" property does **not** come for free from changing `select_candidates`. The current chunk-scope endpoint and worker actively convert an empty selection into **full-doc extraction**, which would silently defeat the 0-to-all goal:
+- The endpoint emits `mode="full"` on its empty/no-selected-refs paths (`extraction_routing.py:710`, `:1279`).
+- `ChunkScopeResponse.self_refs` is only populated for `mode="selected_refs"`.
+- `_compute_effective_chunk_scope` only narrows when `resp_mode == "selected_refs" AND self_refs` is non-empty — anything else → `effective_chunk_scope=None` → **full-doc**.
+
+So a 0-chunk absolute-union result on the current code path falls open to full-doc, not ZERO_YIELD. The redesign therefore **must add an explicit empty-selection contract** spanning three layers:
+1. **Endpoint:** when the absolute union selects 0, return a NEW response mode (e.g. `mode="empty_selection"`) — distinct from both `selected_refs` and `full` — carrying the diagnostics (which signals were evaluated) so it's auditable and not confused with the existing `would_skip`/`full` fall-opens.
+2. **Worker (`_compute_effective_chunk_scope`):** map `mode="empty_selection"` to "extract nothing for this pass" (a sentinel scope), NOT to `None` (which means full-doc).
+3. **Extraction/finalization:** a pass that legitimately selected 0 chunks terminates as **ZERO_YIELD → COMPLETE/EMPTY**, never FAILED or full-doc — reusing/extending `_is_clean_empty_pipeline_error`'s clean-empty path (ties to the deferred legitimate-empty→COMPLETE remediation). 
+
+Each layer needs a unit test; the end-to-end check is an off-domain pass on an in-domain doc → 0 chunks → run COMPLETE with that pass ZERO_YIELD (not full-doc, not FAILED).
 
 ## 4. Routing — which passes use this
 
@@ -119,7 +133,7 @@ Bake-off dataset: 6,130 chunks across 243 (run,pass) groups, 115 ground-truth `u
 
 ## 6. Implementation outline (for the plan)
 
-- **Where:** replace the `guarded_quantile` branch in `select_candidates` (`extraction_candidate_scoring.py`) with the absolute union. Inputs available: `score_components_all` features per chunk (incl `max_field_cosine`, `unit_gate`, `field_label_norm`), chunk text, and `source_refs`. Note: the current selector does NOT have chunk text/`source_refs` in-loop — the chunk-scope endpoint must pass `chunk_text` + `source_refs` (or precompute the measurement/categorical/image booleans as features) into the candidate components.
+- **Where:** replace the `guarded_quantile` branch in `select_candidates` (`extraction_candidate_scoring.py:724`) with the absolute union. **The inputs are already in-loop:** `select_candidates` receives `MergedCandidate` objects, which carry **`chunk_text` and `source_refs`** directly (`extraction_candidate_scoring.py:73`), plus the per-chunk features (`max_field_cosine`, `unit_gate`, `field_label_norm`) in the components. So the measurement/categorical/image booleans can be computed from `MergedCandidate.chunk_text`/`.source_refs` (or precomputed as features) **with no new endpoint plumbing** — earlier draft note about passing them in was wrong. (The empty-selection RESULT still needs the §3.5 endpoint→worker contract — that's the part that changes outside `select_candidates`.)
 - **Per-pass config derivation (single source of truth = the bundle schema):**
   - dimensions ← parse unit suffixes of each pass's field names.
   - categorical phrases ← enum values + the prose-mapping phrases in field `description`s.
@@ -127,7 +141,7 @@ Bake-off dataset: 6,130 chunks across 243 (run,pass) groups, 115 ground-truth `u
   Prefer deriving at bundle-load time over hardcoding, so new bundles work without code edits (cf. generalization guardrails: no equipment names; operate on schema, not literals).
 - **`selection_mode`:** add `"absolute_union"` alongside `topk`/`guarded_quantile`; keep `topk` as the byte-identical default so the change is opt-in per manifest.
 - **Config:** `cosine_tau` (the τ knob) on `RetrievalProfile`, default 0.55; optional per-pass override. No `k_min`/`k_max`/`quantile_q` for this mode.
-- **Drop** the `narrow_min_doc_tokens` size-gate dependence on a token estimate that undercounts tables (see cross-ref) — the absolute union's 0-to-all behaviour subsumes the small-doc fall-open.
+- **Retain `narrow_min_doc_tokens` (do NOT drop until §7.4 validation passes)** — it exists because narrowing lost recall on small docs (NMUSAF 24->16). Its token-estimate-undercounts-tables flaw (see cross-ref) is a reason to eventually replace its sizing signal, not to drop the guard now. — the absolute union's 0-to-all behaviour is *expected* to subsume the small-doc fall-open, but that is unproven until §7.4 validation passes — so the gate stays active in the first ship.
 
 ## 7. Open decisions (resolve in the plan / with user)
 
