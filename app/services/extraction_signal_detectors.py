@@ -5,13 +5,15 @@ from __future__ import annotations
 from app.services.field_value_grounding import has_unit_token, nfc
 
 # Dimension -> expanded unit surface forms (abbrev + spelled-out + plural + imperial).
+# bare single-char units (m,g,t,s,w) and ambiguous "us"/"hr" omitted: they
+# false-match designators (S-75M, Yak-130G, T-90) or common prose ("us", "HR").
 DIMENSION_UNITS: dict[str, list[str]] = {
     "length": ["km","mm","cm","nmi","ft","yd","kilometers","kilometres","kilometer","kilometre",
                "meters","metres","meter","metre","millimeters","millimeter","centimeters","centimeter",
                "miles","mile","feet","foot","yards","yard","inches","nautical miles","nautical mile"],
     "mass": ["kg","mg","lb","lbs","kilograms","kilogram","grams","gram","tonnes","tonne",
              "tons","ton","pounds","pound"],
-    "time": ["sec","secs","ms","ns","µs","us","hr","hrs","min","mins","seconds","second",
+    "time": ["sec","secs","ms","ns","µs","hrs","min","mins","seconds","second",
              "milliseconds","millisecond","microseconds","microsecond","nanoseconds","nanosecond",
              "minutes","minute","hours","hour"],
     "frequency": ["hz","khz","mhz","ghz","hertz","kilohertz","megahertz","gigahertz"],
@@ -25,6 +27,8 @@ DIMENSION_UNITS: dict[str, list[str]] = {
 
 # Categorical enum field -> matchable phrases (enum values + schema prose-mapping phrases).
 # (Lifted from the schema field descriptions; keep in sync if descriptions change.)
+# Source: ontology_bundles/air_defense_v3/extraction_schemas/ (missile_guidance.py,
+# _radar_shared.py field descriptions).
 CATEGORICAL_PHRASES: dict[str, list[str]] = {
     "scan_type": ["rotating antenna","mechanical rotation","360-degree scan","rotating dish",
                   "sector scan","raster scan","electronically scanned","phased array","phased-array",
@@ -36,7 +40,7 @@ CATEGORICAL_PHRASES: dict[str, list[str]] = {
                          "mfr","amdr"],
     "system_status": ["operational","in service","deployed","fielded","developmental","prototype",
                       "decommissioned","modernized","retired","exported","fms"],
-    "guidance_type": ["command guidance","command-to-line-of-sight","clos","semi-active radar homing",
+    "guidance_type": ["command guidance","command-to-line-of-sight","semi-active radar homing",
                       "sarh","active radar homing","track-via-missile","tvm","inertial guidance",
                       "beam-rider","beam riding","infrared homing","ir homing","imaging infrared","iir",
                       "passive radar homing","prh","home-on-jam","hoj","homing","guidance"],
@@ -52,6 +56,7 @@ def measurement_present(dimensions: set[str], text: str) -> bool:
         units.extend(DIMENSION_UNITS.get(d, ()))
     return has_unit_token(nfc(text), units)
 
+
 def categorical_present(categorical_fields: set[str], text: str) -> bool:
     if not categorical_fields or not text:
         return False
@@ -62,5 +67,6 @@ def categorical_present(categorical_fields: set[str], text: str) -> bool:
                 return True
     return False
 
-def image_present(source_refs) -> bool:
+
+def image_present(source_refs: list[str] | None) -> bool:
     return any(str(r).startswith("#/pictures/") for r in (source_refs or []))

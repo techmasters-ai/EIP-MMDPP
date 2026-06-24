@@ -29,3 +29,23 @@ def test_image():
     assert image_present(["#/pictures/2", "#/texts/9"]) is True
     assert image_present(["#/texts/9"]) is False
     assert image_present(None) is False
+
+def test_empty_inputs():
+    assert categorical_present(set(), "semi-active radar homing") is False
+    assert measurement_present(set(), "2500 km") is False
+    assert image_present([]) is False
+
+def test_categorical_unknown_field():
+    assert categorical_present({"nonexistent_field"}, "semi-active radar homing") is False
+
+def test_categorical_multi_field():
+    assert categorical_present({"scan_type", "guidance_type"}, "phased array active radar homing") is True
+
+def test_categorical_other_fields():
+    assert categorical_present({"scan_type"}, "phased array radar antenna") is True
+    assert categorical_present({"system_status"}, "system is operational") is True
+    assert categorical_present({"emitter_function"}, "early warning radar") is True
+
+def test_time_signal_rejects_prose_us():
+    assert measurement_present({"time"}, "the system provides us more range") is False
+    assert measurement_present({"time"}, "burn time 22 seconds") is True
