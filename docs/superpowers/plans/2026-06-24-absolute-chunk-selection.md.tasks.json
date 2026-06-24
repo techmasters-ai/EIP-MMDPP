@@ -1,0 +1,60 @@
+{
+  "planPath": "docs/superpowers/plans/2026-06-24-absolute-chunk-selection.md",
+  "tasks": [
+    {
+      "id": 42,
+      "subject": "Task 0: Per-pass signal config (schema-derived)",
+      "status": "pending",
+      "description": "**Goal:** Derive per-pass {dimensions, categorical_fields, has_image_field} from the bundle schema (field suffixes + enum fields + _photo), no hardcoded literals.\n\n**Files:** Create `app/services/extraction_pass_signal_config.py`; Test `tests/unit/test_extraction_pass_signal_config.py`; may add `iter_routable_pass_fields` helper in `app/services/ontology_bundles.py`.\n\n**Acceptance Criteria:** derive_pass_signal_config(bundle_key)->dict[str,PassSignalConfig]; kinematics dims {length,angle}; guidance categorical {guidance_type,seeker_type}+has_image True; antenna has_image True+dims {length,angle,gain}; identity passes not consumed.\n\n**Verify:** `pytest tests/unit/test_extraction_pass_signal_config.py -v`\n\n```json:metadata\n{\"files\": [\"app/services/extraction_pass_signal_config.py\", \"tests/unit/test_extraction_pass_signal_config.py\", \"app/services/ontology_bundles.py\"], \"verifyCommand\": \"pytest tests/unit/test_extraction_pass_signal_config.py -v\", \"acceptanceCriteria\": [\"derive_pass_signal_config returns dict[str,PassSignalConfig]\", \"kinematics dims {length,angle}\", \"guidance categorical {guidance_type,seeker_type}+image\", \"antenna image+dims {length,angle,gain}\", \"identity passes excluded\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 43,
+      "subject": "Task 1: Signal-detector primitives (measurement/categorical/image)",
+      "status": "pending",
+      "description": "**Goal:** Pure per-chunk detectors: pass-specific measurement (bounded matcher + dimension vocab), categorical (enum phrases), image-presence (#/pictures/).\n\n**Files:** Create `app/services/extraction_signal_detectors.py`; Test `tests/unit/test_extraction_signal_detectors.py`.\n\n**Acceptance Criteria:** measurement pass-specific true/false; designators S-75M/V-88/5Ya23 => no measurement (reuse field_value_grounding.has_unit_token); spelled+imperial (feet, meters per second) match; categorical guidance phrase true, 200 kg false; image_present true only for #/pictures/.\n\n**Verify:** `pytest tests/unit/test_extraction_signal_detectors.py -v`\n\n```json:metadata\n{\"files\": [\"app/services/extraction_signal_detectors.py\", \"tests/unit/test_extraction_signal_detectors.py\"], \"verifyCommand\": \"pytest tests/unit/test_extraction_signal_detectors.py -v\", \"acceptanceCriteria\": [\"measurement pass-specific correct\", \"designators => no measurement\", \"spelled+imperial match\", \"categorical guidance true; 200 kg false\", \"image_present only #/pictures/\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 44,
+      "subject": "Task 2: absolute_union selection mode",
+      "status": "pending",
+      "blockedBy": [42, 43],
+      "description": "**Goal:** Add absolute_union to select_candidates + cosine_tau/Literal to RetrievalProfile; keep candidate iff any signal fires; return subset (possibly empty, no k_min).\n\n**Files:** Modify `app/services/ontology_bundles.py` (RetrievalProfile), `app/services/extraction_candidate_scoring.py` (select_candidates ~724); Test `tests/unit/test_absolute_union_selection.py`.\n\n**Acceptance Criteria:** selection_mode accepts absolute_union + cosine_tau=0.55; measurement/cosine kept, no-signal dropped; [] when nothing fires; diag_out per-signal keep counts; topk/guarded unchanged.\n\n**Verify:** `pytest tests/unit/test_absolute_union_selection.py tests/unit/test_dispatcher_vr_wiring.py -v`\n\n```json:metadata\n{\"files\": [\"app/services/ontology_bundles.py\", \"app/services/extraction_candidate_scoring.py\", \"tests/unit/test_absolute_union_selection.py\"], \"verifyCommand\": \"pytest tests/unit/test_absolute_union_selection.py tests/unit/test_dispatcher_vr_wiring.py -v\", \"acceptanceCriteria\": [\"absolute_union + cosine_tau 0.55\", \"signal-bearing kept, no-signal dropped\", \"returns [] when nothing fires\", \"diag per-signal keeps\", \"topk/guarded unchanged\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 45,
+      "subject": "Task 3: Endpoint — inject config + emit empty_selection",
+      "status": "pending",
+      "blockedBy": [44],
+      "description": "**Goal:** Endpoint injects per-pass signal config; absolute_union 0-select returns mode=empty_selection (not full).\n\n**Files:** Modify `app/api/v1/extraction_routing.py` (call site; empty paths ~710/1279; mode Literal); Test `tests/unit/test_empty_selection_contract.py` (endpoint).\n\n**Acceptance Criteria:** injects signal_dimensions/categorical/has_image from derive_pass_signal_config; 0-select -> mode=empty_selection; non-empty -> selected_refs; topk/guarded empty unchanged.\n\n**Verify:** `pytest tests/unit/test_empty_selection_contract.py -k endpoint -v`\n\n```json:metadata\n{\"files\": [\"app/api/v1/extraction_routing.py\", \"tests/unit/test_empty_selection_contract.py\", \"app/services/extraction_pass_signal_config.py\"], \"verifyCommand\": \"pytest tests/unit/test_empty_selection_contract.py -k endpoint -v\", \"acceptanceCriteria\": [\"injects config\", \"0-select -> empty_selection not full\", \"non-empty selected_refs\", \"topk/guarded unchanged\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 46,
+      "subject": "Task 4: Worker — map empty_selection to zero-chunk scope",
+      "status": "pending",
+      "blockedBy": [45],
+      "description": "**Goal:** _compute_effective_chunk_scope maps mode=empty_selection -> {mode:empty_selection,self_refs:[]} (not None=full-doc).\n\n**Files:** Modify `app/workers/pipeline.py` (_compute_effective_chunk_scope ~8543); Test `tests/unit/test_dispatcher_vr_wiring.py`.\n\n**Acceptance Criteria:** empty_selection -> sentinel scope + diag.empty_selection True; not None/selected_refs; other modes unchanged.\n\n**Verify:** `pytest tests/unit/test_dispatcher_vr_wiring.py -k empty_selection -v`\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_dispatcher_vr_wiring.py\"], \"verifyCommand\": \"pytest tests/unit/test_dispatcher_vr_wiring.py -k empty_selection -v\", \"acceptanceCriteria\": [\"empty_selection -> sentinel scope\", \"diag.empty_selection True\", \"not None/selected_refs\", \"other modes unchanged\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 47,
+      "subject": "Task 5: Finalization — empty_selection pass => ZERO_YIELD/COMPLETE",
+      "status": "pending",
+      "blockedBy": [46],
+      "description": "**Goal:** empty_selection scope => no extraction call; pass terminates ZERO_YIELD/COMPLETE (not full-doc, not FAILED).\n\n**Files:** Modify `app/workers/pipeline.py` (dispatch/scope->request; reuse clean-empty path ~4480); Test `tests/unit/test_empty_selection_contract.py` (worker).\n\n**Acceptance Criteria:** empty_selection => no docling-graph call; COMPLETE entities=0 zero_yield_reason=empty_selection; run not FAILED/PARTIAL; reuse existing ZERO_YIELD payload.\n\n**Verify:** `pytest tests/unit/test_empty_selection_contract.py -k worker -v`\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_empty_selection_contract.py\"], \"verifyCommand\": \"pytest tests/unit/test_empty_selection_contract.py -k worker -v\", \"acceptanceCriteria\": [\"empty_selection => no extraction call\", \"COMPLETE entities=0 zero_yield_reason=empty_selection\", \"run not FAILED/PARTIAL\", \"reuse ZERO_YIELD payload\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 48,
+      "subject": "Task 6: Manifests — opt routable passes into absolute_union",
+      "status": "pending",
+      "blockedBy": [44],
+      "description": "**Goal:** Flip 9 routable passes in air_defense_v3 (+narrowing_v1+merged_v1) to selection_mode: absolute_union + cosine_tau: 0.55; keep narrow_min_doc_tokens.\n\n**Files:** Modify the 3 manifest.yaml.\n\n**Acceptance Criteria:** 9 routable passes set absolute_union+cosine_tau 0.55; no quantile_q/ranker_weights needed; v3 first then siblings; bundle loads.\n\n**Verify:** `python -c \"from app.services.ontology_bundles import load_bundle; load_bundle('air_defense_v3')\"` && `grep -c 'selection_mode: absolute_union' ontology_bundles/air_defense_v3/manifest.yaml` (==9)\n\n```json:metadata\n{\"files\": [\"ontology_bundles/air_defense_v3/manifest.yaml\", \"ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml\", \"ontology_bundles/air_defense_v3_merged_v1/manifest.yaml\"], \"verifyCommand\": \"python -c \\\"from app.services.ontology_bundles import load_bundle; load_bundle('air_defense_v3')\\\" && grep -c 'selection_mode: absolute_union' ontology_bundles/air_defense_v3/manifest.yaml\", \"acceptanceCriteria\": [\"9 passes absolute_union+cosine_tau 0.55\", \"no quantile_q/ranker_weights needed\", \"all 3 bundles (v3 first)\", \"bundle loads; grep==9\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 49,
+      "subject": "Task 7: Online validation (USER-ORDERED GATE)",
+      "status": "pending",
+      "blockedBy": [45, 46, 47, 48],
+      "description": "**USER-ORDERED GATE — NON-SKIPPABLE.** Close only after every acceptanceCriteria is re-validated independently with captured output.\n\n**Goal:** Prove end-to-end that absolute_union holds entity-recall vs full-doc baseline on NMUSAF, SA-2/SR-71 PDF, Engagement before any default flip or removal of narrow_min_doc_tokens.\n\n**Files:** none (operational; harness in /home/josh/.guardrank_eval_state/).\n\n**Acceptance Criteria:** deployed live (selection_mode=absolute_union verified in-container); full-doc baseline + absolute_union run per doc on idle pool; per doc absolute_union entities >= 0.9x full-doc AND status COMPLETE; per-doc entity table captured to verdict file.\n\n**Verify:** `cat /home/josh/.guardrank_eval_state/absolute_union_validation_verdict.txt`\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"cat /home/josh/.guardrank_eval_state/absolute_union_validation_verdict.txt\", \"acceptanceCriteria\": [\"deployed live; absolute_union verified in-container\", \"full-doc + absolute_union per doc on idle pool\", \"each doc >=0.9x recall AND COMPLETE\", \"per-doc entity table captured\"], \"modelTier\": \"standard\", \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"fulldoc\", \"full-doc\", \"baseline\", \"shadow\"], [\"absolute_union\", \"narrowed\"]]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-06-24T00:00:00Z"
+}
