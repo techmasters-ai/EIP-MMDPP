@@ -9,7 +9,9 @@ Spec §2 Bundle loader API.
 """
 from __future__ import annotations
 
+import importlib
 import logging
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -557,6 +559,46 @@ def load_bundle_manifest(bundle_key: str) -> BundleManifest:
     with open(path) as f:
         raw = yaml.safe_load(f)
     return BundleManifest.model_validate(raw)
+
+
+def iter_routable_pass_fields(bundle_key: str) -> list[tuple[str, list[str]]]:
+    """Return (pass_name, field_names) for every routable (field_group) pass in the bundle.
+
+    "Routable" is defined as passes whose ``retrieval`` attribute is not None —
+    only field_group passes carry a RetrievalProfile; identity and relationship
+    passes are excluded by construction.
+
+    Field names are resolved from the pass's Pydantic template class by
+    following the same importlib pattern used in pipeline.py. The template
+    class holds a single list field (e.g. ``radar_systems``) whose item type
+    is the per-entity record class; the record class's ``model_fields`` yields
+    the actual extraction field names (e.g. ``gain_dbi``, ``beamwidth_az_deg``).
+    Falls back to the top-level template's own ``model_fields`` if no list
+    item with a nested Pydantic model is found.
+    """
+    manifest = load_bundle_manifest(bundle_key)
+    result: list[tuple[str, list[str]]] = []
+    for pass_def in manifest.passes:
+        if pass_def.retrieval is None:
+            continue
+        full_module_path = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
+        template_module = importlib.import_module(full_module_path)
+        template_cls = getattr(template_module, pass_def.template_class)
+        # Unwrap the list-of-records container to get the actual record field names.
+        # Pattern: template_cls has one list field; its item type is the record model.
+        field_names: list[str] | None = None
+        for top_field_info in template_cls.model_fields.values():
+            args = typing.get_args(top_field_info.annotation)
+            if args:
+                item_cls = args[0]
+                if hasattr(item_cls, "model_fields"):
+                    field_names = list(item_cls.model_fields.keys())
+                    break
+        if field_names is None:
+            # Fallback: use the top-level model's own field names.
+            field_names = list(template_cls.model_fields.keys())
+        result.append((pass_def.name, field_names))
+    return result
 
 
 def list_available_bundles() -> list[str]:
