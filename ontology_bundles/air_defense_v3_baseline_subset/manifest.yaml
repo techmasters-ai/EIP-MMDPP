@@ -54,7 +54,8 @@ passes:
       # Phase-4 guarded-ranker activation (TEST SUBSET ONLY, 2026-06-17). Calibrated by
       # scripts.fit_guarded_ranker on dataset_v2 (LODO AUROC 0.92, recall 1.0 on all 8 folds).
       # Production air_defense_v3 stays selection_mode=topk until validated in shadow.
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -111,7 +112,8 @@ passes:
       # Phase-4 guarded-ranker activation (TEST SUBSET ONLY, 2026-06-17). Calibrated by
       # scripts.fit_guarded_ranker on dataset_v2 (LODO AUROC 0.92, recall 1.0 on all 8 folds).
       # Production air_defense_v3 stays selection_mode=topk until validated in shadow.
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0

@@ -38,7 +38,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -76,7 +77,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -114,7 +116,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -150,7 +153,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -200,7 +204,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -236,7 +241,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -274,7 +280,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -312,7 +319,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
@@ -349,7 +357,8 @@ passes:
     depends_on: []
     retrieval:
       unit_gate: true
-      selection_mode: guarded_quantile
+      selection_mode: absolute_union
+      cosine_tau: 0.55
       quantile_q: 0.5
       k_min: 3
       k_max: 0
