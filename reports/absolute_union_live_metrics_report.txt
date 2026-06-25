@@ -1,0 +1,41 @@
+======================================================================================================================
+ABSOLUTE_UNION — PER-DOC + CUMULATIVE LIVE-RUN-vs-GT SELECTION METRICS
+  source = live-run reconstructed selection vs bake-off GT  |  τ = 0.55
+  generated-from = 6 completed sweep runs (state file: /home/josh/.guardrank_eval_state/t7_results.txt)
+  selection = measurement OR categorical OR (image AND has_image_field) OR (live max_field_cosine >= τ)
+  JOIN = normalized chunk_text (pooled across GT runs); live re-chunks images, so chunk_index is NOT stable.
+  used_cells = GT-positive cells that text-align to a live chunk (scoreable). Positives present only in stale GT chunkings are reported as 're-chunk drift'.
+======================================================================================================================
+
+ # doc                                         used  recall    prec    fsel      F1  note
+----------------------------------------------------------------------------------------------------------------------
+ 1 Handwritten_Text.pdf                           0   N/A     0.000   0.222   N/A    0 used-cells (recall N/A)
+ 2 EWIRDB_Production.pdf                          0   N/A     N/A     N/A     N/A    no GT
+ 3 S-75 Dvina.pdf                                 1   1.000   0.053   0.352   0.100  text-align 55%; 1 pos not in live (re-chunk drift)
+ 4 Images_Demo_Doc.pdf                            0   N/A     0.000   0.257   N/A    text-align 52%; 1 pos not in live (re-chunk drift); 0 used-cells (recall N/A)
+ 5 SNR-75 - Wikipedia.pdf                         1   1.000   0.056   0.250   0.105  text-align 73%
+ 6 Radar Basics.pdf                               0   N/A     0.000   0.333   N/A    0 used-cells (recall N/A)
+----------------------------------------------------------------------------------------------------------------------
+   CUMULATIVE (all text-aligned GT cells)         2   1.000   0.021   0.278   0.041  tp=2 selected=95 cells=342
+======================================================================================================================
+
+ALIGNMENT DETAIL (chunk_text join; per completed doc)
+----------------------------------------------------------------------------------------------------------------------
+doc                                         gt_cells  aligned  align%  gt_pos  pos_align  pos_drift  cos_pairs
+----------------------------------------------------------------------------------------------------------------------
+Handwritten_Text.pdf                              27       27    100%       0          0          0          6
+EWIRDB_Production.pdf                              0        0     N/A       0          0          0          0
+S-75 Dvina.pdf                                    99       54     55%       2          1          1         42
+Images_Demo_Doc.pdf                              279      144     52%       1          0          1         96
+SNR-75 - Wikipedia.pdf                            99       72     73%       1          1          0         72
+Radar Basics.pdf                                  45       45    100%       0          0          0         45
+----------------------------------------------------------------------------------------------------------------------
+
+SIGNAL-COVERAGE FLAGS (recall < 0.75 over used_cells >= 3)
+----------------------------------------------------------------------------------------------------------------------
+  None over a non-trivial denominator (used_cells >= 3). Most completed docs so far are sparse/zero-GT; dense docs pending.
+----------------------------------------------------------------------------------------------------------------------
+
+======================================================================================================================
+END OF REPORT
+======================================================================================================================
