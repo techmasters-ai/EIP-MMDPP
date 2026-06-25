@@ -905,6 +905,147 @@ class TestCallExtractPass:
                     timeout=10.0,
                 )
 
+    # -----------------------------------------------------------------------
+    # Raised-on-empty path tests — directly exercise _is_clean_empty_pipeline_error
+    # -----------------------------------------------------------------------
+
+    def test_raised_on_empty_no_quality_gate_is_clean_empty(self):
+        """Bug repro: when the upstream library raises ExtractionError BEFORE
+        the delta quality gate runs, library_log has no 'Quality gate failed:'
+        line and quality_gate is absent. The previous code returned False here
+        (no reasons → False) → PassRetryable → 3 wasted retries → FAILED.
+
+        With the fix, the pipeline_error type/message signature is detected and
+        the call correctly returns True (ZERO_YIELD, no retry).
+
+        This test MUST FAIL before the fix and PASS after.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            # No quality_gate field — raised before the gate ran.
+            # No 'Quality gate failed:' in library_log.
+            "library_log": (
+                "[Extraction] Running extraction on 3 chunks\n"
+                "[LlmBackend] Sending batch 1/3\n"
+                "[LlmBackend] Sending batch 2/3\n"
+                "[LlmBackend] Sending batch 3/3\n"
+                "[Extraction] ExtractionError: no schema-matching records found\n"
+            ),
+            # No batch_errors.
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_raised_on_empty_hard_failure_sig_still_retries(self):
+        """Retry preserved: same raised-on-empty shape but library_log carries
+        a hard-failure signature (LLM returned no valid JSON). The empty is NOT
+        a legitimate domain miss — retry can recover it.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": (
+                "[LlmBackend] No valid JSON returned from LLM after retries\n"
+                "[Extraction] ExtractionError: no schema-matching records found\n"
+            ),
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_raised_on_empty_batch_errors_still_retries(self):
+        """Retry preserved: same raised-on-empty shape but diagnostics carries
+        batch_errors — a batch genuinely failed, so it may be recoverable.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": (
+                "[Extraction] Running extraction on 3 chunks\n"
+            ),
+            "batch_errors": [{"batch": 2, "error": "JSONDecodeError: unterminated string"}],
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_raised_on_empty_unrecognized_error_still_retries(self):
+        """Retry preserved: pipeline_error message does NOT contain 'ExtractionError'
+        or 'Failed to extract data from DoclingDocument' — an unknown internal
+        error at a different stage. Stay conservative: retry.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": "Pipeline failed at stage 'Sanitize': MemoryError",
+            },
+            "library_log": "[Sanitize] OOM during normalization\n",
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_existing_reasons_path_still_works(self):
+        """Existing behavior unchanged: when library_log contains the
+        'Quality gate failed:' line with clean-empty reasons (empty_output,
+        missing_root_instance), the classifier still returns True.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "ExtractionError",
+                "message": "Failed to extract data from DoclingDocument",
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: empty_output, missing_root_instance"
+                " | path_counts={}\n"
+            ),
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_nonzero_yield_not_clean_empty(self):
+        """Retry preserved (actually not-applicable path): nonzero node_count
+        means the pass produced something — cannot be a clean empty regardless
+        of pipeline_error presence.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": "",
+        }
+        metadata = {"node_count": 1, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
 
 # ---------------------------------------------------------------------------
 # Plan Task 9 — _parse_pass_response reads response_json["table_overlay"]

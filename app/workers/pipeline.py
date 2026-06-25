@@ -4537,6 +4537,15 @@ _HARD_FAILURE_LOG_SIGNATURES = (
     "retrying legacy",
 )
 
+# pipeline_error type/message substrings that mark the upstream library's
+# "raise on empty extraction" path (ExtractionError before the quality gate).
+# When one of these is the ONLY signal (zero yield, no batch_errors, no hard-
+# failure log marker, no quality-gate reasons), the empty is legitimate.
+_EMPTY_EXTRACTION_PIPELINE_ERROR_SIGNATURES = (
+    "ExtractionError",
+    "Failed to extract data from DoclingDocument",
+)
+
 _QUALITY_GATE_LOG_RE = re.compile(r"Quality gate failed:\s*([^|\n]+)")
 
 
@@ -4590,9 +4599,21 @@ def _is_clean_empty_pipeline_error(diagnostics: dict, metadata: dict) -> bool:
         if any(sig in log for sig in _HARD_FAILURE_LOG_SIGNATURES):
             return False  # transient/hard failure marker → retryable
     reasons = _quality_gate_reasons(diagnostics)
-    if not reasons:
-        return False  # no positive empty signal → keep current (retry) behavior
-    return reasons.issubset(_CLEAN_EMPTY_GATE_REASONS)
+    if reasons:
+        return reasons.issubset(_CLEAN_EMPTY_GATE_REASONS)
+    # No quality-gate reasons surfaced. This is the "raised-on-empty" path: the
+    # upstream library raises ExtractionError when the LLM produced no schema-
+    # matching records, BEFORE the delta quality gate runs, so the "Quality gate
+    # failed: ..." line never reaches library_log. We've already ruled out every
+    # transient marker above (nonzero yield, batch_errors, hard-failure log
+    # signatures). An ExtractionError stub with zero yield and no transient
+    # marker is a legitimate off-domain empty → ZERO_YIELD, not a retry. Other
+    # (unrecognized) internal errors keep the conservative retry behavior.
+    pe = diagnostics.get("pipeline_error") or {}
+    pe_blob = f"{pe.get('type', '')} {pe.get('message', '')}"
+    if any(sig in pe_blob for sig in _EMPTY_EXTRACTION_PIPELINE_ERROR_SIGNATURES):
+        return True
+    return False
 
 
 def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
