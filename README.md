@@ -193,61 +193,35 @@ ladder above safe for both slow-but-healthy large docs and genuinely stuck passe
 See `docs/operational/production-reliability-2026-06.md` for the full root-cause
 and deploy detail.
 
-#### Guarded-ranker chunk selection (extraction chunk-scope)
+#### Absolute-union chunk selection (extraction chunk-scope)
 
-Each extraction pass selects which document chunks to send to the LLM. The legacy
-behavior is a top-k slice of the reranked pool. The **guarded ranker** adds a
-recall-safe alternative configured **per RetrievalProfile in the bundle manifest**
-(no new env vars — everything is manifest config).
+Each field-group extraction pass selects which document chunks to send to the LLM. The production selector is **absolute_union**: an *absolute, per-chunk* keep test (not a relative top-k or quantile cut), so a pass selects **0 to all** chunks based purely on whether each chunk carries content that pass can use.
 
-**Live status (production default).** The guarded ranker is the production default,
-not a shadow experiment. The router runs in `VECTOR_ROUTER_MODE=narrow_only` (the
-selector's chunks narrow extraction scope), and all four shipped air_defense bundles
-(`air_defense_v3`, `air_defense_v3_baseline_subset`, `air_defense_v3_narrowing_v1`,
-`air_defense_v3_merged_v1`) run their field-group passes on
-`selection_mode=guarded_quantile` with calibrated `ranker_weights` and
-`quantile_q=0.5`. `WORKER_FORWARD_SELECTED_CHUNKS=false` keeps the path recall-safe:
-the selector's `self_refs` narrow the scope, but docling-graph still re-chunks /
-sanitizes the scoped doc (setting it `true` forwards verbatim merged chunks and was
-measured to LOWER recall on table-heavy docs). `topk` remains the *code* default for
-any new, uncalibrated pass that lacks gates + fit weights. To retrain the selector
-for a new corpus, see "Retraining the Guarded-Ranker Chunk Selector for a New
-Corpus" below.
+A chunk is kept for a pass iff **any** of four content signals fires:
 
-| Manifest field | Code default | Meaning |
+`keep ⇔ measurement(pass) OR categorical(pass) OR image_presence(pass) OR max_field_cosine ≥ cosine_tau`
+
+All four signals are **derived from the bundle's ontology schema** — there is **no per-corpus training or weight fitting** (contrast the legacy `guarded_quantile`, which fit `ranker_weights` per corpus).
+
+| Signal | Derived from | Fires when the chunk… |
 |---|---|---|
-| `selection_mode` | `topk` | `topk` = exact `c5_scored[:top_k]` (byte-identical legacy); `guarded_quantile` = gate-keeps ∪ quantile cut. The shipped air_defense bundles set `guarded_quantile` on their field-group passes. |
-| `quantile_q` | `0.8` | Quantile of the ranker score that the cut keeps (within the pool). Shipped air_defense bundles use the calibrated `0.5`. |
-| `k_min` / `k_max` | `3` / `0` | Floor / cap on ranker-keeps (`k_max=0` = uncapped); **gate-flagged chunks are exempt from `k_max`** |
-| `ranker_weights` | `{}` | component-name → weight; empty ranks by `final_score`. Unknown keys are rejected at manifest load |
-| `unit_gate` | `false` | G1 unit-signature gate on a field-group pass |
-| `table_gate` | `false` | G2 table gate |
+| **measurement** | the pass's numeric field **unit suffixes** (e.g. `range_km`→length, `mass_kg`→mass) | contains a number+unit token in any of the pass's *dimensions*. Dimension-grouped: a length field makes the pass fire on **any** length unit (km, m, mi, feet, …). |
+| **categorical** | the pass's **enum fields** (e.g. `scan_type`, `guidance_type`) | contains an enum value or a mapped prose phrase. |
+| **image_presence** | the pass's **`_photo`/image fields** | has a `#/pictures/` ref in its `source_refs`. |
+| **cosine** | per-field dense retrieval cosine | `max_field_cosine ≥ cosine_tau` — the catch-all for relevant chunks with no explicit signal. |
 
-**Recall floor by construction:** the OR-gates (`unit_gate ∪ table_gate`) always keep
-the chunks shaped like known positives, so recall stays 1.0 on the labeled corpus;
-the quantile ranker adds a learned-relevance margin on top. Selection diagnostics
-(`gate_unit_keeps`, `gate_table_keeps`, `ranker_keeps`, `selection_threshold`,
-`selection_k`) are emitted in guarded mode and `null` in `topk` mode.
+Because measurement/categorical are **pass-specific**, units distinguish usefulness per pass: a propulsion pass (`*_kg`/`*_sec` fields) fires on mass/time chunks; an antenna pass (`*_deg`/`*_dbi`) fires on angle/gain chunks; neither fires on the other's chunks. This is the core design lever — see "Adapting the Chunk Selector to a New Corpus or Ontology".
 
-**Calibration + verification scripts** (operate on an exported `reports/dataset_v2/` corpus):
+**0-to-all + empty-selection contract.** If no chunk fires for a pass, the chunk-scope endpoint returns `mode=empty_selection`; the worker maps it to a zero-chunk scope and the pass finalizes **ZERO_YIELD / COMPLETE** — it does **not** fall open to full-doc and does **not** FAIL. (Off-domain passes — e.g. a radar-modulation pass on a pure missile doc — correctly yield 0.) If every chunk fires, all are selected. There is no `k_min` floor or `k_max` cap.
 
-```bash
-# Export the per-(pass,chunk) feature dataset for a set of runs
-python3 -m scripts.export_bakeoff_dataset --runs <r1,r2,...> --out-dir reports/dataset_v2
-# Recall-floor precondition: every used==1 row must be gate-covered (exit 0)
-python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv --bundle air_defense_v3
-# Frontier eval: guarded vs calibrated-only vs final_score top-k
-python3 -m scripts.eval_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv
-# Calibrate deployable ranker_weights + quantile_q (refuses unless gate coverage passes)
-python3 -m scripts.fit_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv
-```
+| Manifest field (per-pass `retrieval:` block) | Default | Meaning |
+|---|---|---|
+| `selection_mode` | `topk` (code default) | `absolute_union` = the signal-union above; `topk` = byte-identical legacy `c5_scored[:top_k]`; `guarded_quantile` = legacy gate∪quantile cut. |
+| `cosine_tau` | `0.55` | absolute_union only — the single tunable knob (raise for precision, lower for recall). |
 
-**Two LODO conventions:** generalization is cross-validated by GroupKFold on `run_id`
-(leave-one-document-out) and always reported BOTH ways — pooled out-of-fold AUROC and
-mean-per-fold AUROC. Quote both; never one alone. `selection_mode` stays `topk` as the
-code default for any new/uncalibrated pass; the four shipped air_defense bundles have
-been flipped to `guarded_quantile` (calibrated) and run live under
-`VECTOR_ROUTER_MODE=narrow_only`.
+**Live status (production default).** All four shipped air_defense bundles (`air_defense_v3`, `air_defense_v3_baseline_subset`, `air_defense_v3_narrowing_v1`, `air_defense_v3_merged_v1`) run their field-group passes on `selection_mode: absolute_union`, `cosine_tau: 0.55`, under `VECTOR_ROUTER_MODE=narrow_only` with `WORKER_FORWARD_SELECTED_CHUNKS=false` (the selector's `self_refs` narrow scope; docling-graph still re-chunks/sanitizes the scoped doc — recall-safe). Identity passes are not routable and run full-doc. Selection diagnostics emitted per pass: `selection_mode`, `selection_k`, `measurement_keeps`, `categorical_keeps`, `image_keeps`, `cosine_keeps`.
+
+Validated against bake-off ground truth: absolute_union ≈ **95.7% recall at ≈24% of chunks selected**, vs guarded_quantile ≈ 60.9% at ≈51%. The `topk` and `guarded_quantile` modes remain supported for legacy/uncalibrated passes.
 
 #### Per-role Ollama URLs
 
@@ -1096,6 +1070,8 @@ class ClinicalEntitiesPass(BaseModel):
 
 **Naming convention:** The top-level pass class field names MUST be the lowercase plural of the entity type name (e.g., `PATIENT` -> `patients`, `LAB_RESULT` -> `lab_results`). The merge layer uses this convention to discover entity lists.
 
+> **Chunk-selector design:** name numeric fields with unit suffixes (`*_km`, `*_kg`, `*_sec`), use enum fields for closed vocabularies, and `*_photo` fields for figures — these drive the `absolute_union` chunk selector's per-pass signals with no training. See "Adapting the Chunk Selector to a New Corpus or Ontology".
+
 #### Step 5: Write shared validators (`validators.py`)
 
 Copy from `ontology_bundles/air_defense_v3/validators.py` as a starting point. Add domain-specific validators if needed (e.g., ICD-10 code normalization).
@@ -1198,200 +1174,53 @@ Documents ingested from each source automatically use the source's default bundl
 5. **Test with `graph_only` reingest.** After tuning schemas, use `mode: "graph_only"` to re-extract without re-processing the document through Docling.
 6. **Check the coverage checker.** Run `python tools/check_extraction_coverage.py` after every schema change. It catches drift before it reaches production.
 
-## Retraining the Guarded-Ranker Chunk Selector for a New Corpus
+## Adapting the Chunk Selector to a New Corpus or Ontology
 
-The **guarded-ranker** decides which document chunks each field-group extraction pass
-sends to the LLM. It is **calibrated per corpus** — the gates derive from the bundle's
-field schema and the ranker weights are fit on labeled data from *your* documents. A
-selector calibrated on one corpus (e.g. air-defense radar/missile datasheets) will keep
-its recall *floor* on a new corpus but its *pruning* weights won't be optimal. This
-section is the complete, every-step procedure to retrain it for a brand-new corpus.
+The **absolute_union** selector needs **no per-corpus training** — no labeled data, no weight fitting, no quantile calibration. Its per-pass discrimination is **derived entirely from your ontology's field schema**. Adapting it to a new domain (medical, legal, finance, …) means **designing the schema so each pass's content signals are meaningful**, not fitting a model.
 
-### Mental model (read first)
+### Mental model
 
-Two independent mechanisms, combined as a union:
+For each field-group pass the selector keeps a chunk iff `measurement OR categorical OR image OR cosine≥τ` (see "Absolute-union chunk selection"). Three of the four signals come straight from how you NAME and TYPE the pass's fields; the fourth (cosine) is a fixed threshold. So the design question per pass is: **what surface signal marks a chunk as relevant — a unit, an enum phrase, an image, or just semantic similarity?**
 
-- **Gates (the recall floor).** Label-aligned OR-gates — `unit_gate` (a chunk has a
-  digit token AND a unit token from the pass's field signature) and `table_gate` (a
-  table chunk bearing units). By construction, every chunk shaped like a true positive
-  is kept, so **recall is 1.0 on the labeled data regardless of the ranker**. The gates
-  are *derived from the bundle schema* (the units each field declares), not learned.
-- **Ranker (the pruning).** A sign-constrained logistic regression over per-chunk
-  features (`max_field_cosine`, `mean_top3_field_cosine`, `rerank_norm`,
-  `unit_token_count`, `digit_density`, …). It ranks the non-gate chunks; a per-pool
-  quantile cut keeps the top fraction. This is what *reduces* chunks beyond the gates.
+### Design principle 1 — Units make passes selective (the main lever)
 
-Selection = `dedup(gate-keeps ∪ ranker-keeps)`. The quantile `q` is a **savings dial,
-not a recall lever** — because the gates already cover all positives, recall is 1.0 at
-every `q`; higher `q` keeps fewer chunks (more savings, thinner generalization margin).
+Name every numeric field with a **unit suffix**. The suffix maps to a physical **dimension**, and a pass's dimension set is the union over its fields. Because the measurement matcher is **dimension-grouped**, declaring one `*_km` field makes the pass fire on *any* length-bearing chunk (km, m, mi, feet, …) — and NOT on a chunk that only has, say, frequency units. This is how units distinguish per-pass usefulness:
 
-Generalization is always reported under **both** leave-one-document-out (LODO)
-conventions: pooled out-of-fold AUROC and mean-per-fold AUROC (GroupKFold by `run_id`).
+- a **propulsion** pass with `burn_time_sec`, `mass_kg` → dimensions {time, mass} → fires on seconds/kilograms chunks, not antenna-gain chunks.
+- an **antenna** pass with `beamwidth_deg`, `gain_dbi` → {angle, gain} → fires on degree/dBi chunks, not burn-time chunks.
 
-### Prerequisites
+The suffix→dimension map lives in `app/services/extraction_pass_signal_config.py` (`SUFFIX_DIMENSION`); the unit surface forms in `app/services/extraction_signal_detectors.py` (`DIMENSION_UNITS`). Shipped: `_km/_m/_mm/_cm`→length, `_deg/_rad`→angle, `_sec/_usec/_ms/_ns`→time, `_mhz/_ghz/_khz/_hz`→frequency, `_mps`→velocity, `_kg/_g`→mass, `_dbi`→gain, `_kw/_w`→power. **For a new domain add your units** — e.g. medical `_mgdl`/`_mmhg`, finance `_usd` — by adding the suffix→dimension to `SUFFIX_DIMENSION` and the unit surface forms (abbreviations + spelled-out + plurals) to `DIMENSION_UNITS`. **Avoid bare single-character units** (m, s, g) in `DIMENSION_UNITS`: they false-match inside identifiers (e.g. the `m` in `S-75M`). Rely on 2+ char abbreviations and spelled-out forms.
 
-1. **A bundle for the new corpus** (see "Adding a Custom Ontology Bundle" above). The
-   field-group passes must declare their numeric fields with **units** — the unit gate's
-   signature is the union of `units_for(field)` over each pass's fields. If a unit suffix
-   isn't recognized, that field can never gate (and never produce a labeled positive); add
-   it to `SUFFIX_UNITS` in `app/services/extraction_unit_gate.py` (and the docling-graph
-   mirror) — e.g. `_sec`, `_usec`, `_dbi` were added for the air-defense bundle.
-2. **A representative document set** for the new corpus — enough docs that each
-   field-group pass sees positives across several documents (LODO needs ≥2 docs with
-   positives per pass to score a fold; single-positive-doc folds are skipped).
-3. The calibration scripts (already in `scripts/`): `export_bakeoff_dataset`,
-   `check_gate_coverage`, `eval_guarded_ranker`, `fit_guarded_ranker`.
+### Design principle 2 — Enum fields enable categorical matching
 
-### Step 1 — Start the new bundle in the safe default (topk, shadow)
+For attributes with a closed vocabulary (status, type, mode), declare an **enum field** and register it: add the field name to `CATEGORICAL_PHRASE_FIELDS` (`extraction_pass_signal_config.py`) and its values / prose phrases to `CATEGORICAL_PHRASES` (`extraction_signal_detectors.py`). A chunk then fires the categorical signal if it contains one of those phrases. **Keep phrases ≥4 chars and prefer multi-word** to avoid substring false-positives (a bare `arh` matches "warhead"; `clos` matches "closure"). This lets passes whose content is qualitative (e.g. a guidance pass: "semi-active radar homing") be selected without numeric units.
 
-A new, uncalibrated bundle MUST start at `selection_mode: topk` (the code default) and
-the router in `shadow` or `disabled`. Do NOT set `guarded_quantile` before calibrating —
-without derived gates + fit weights there is no recall floor. Leave the field-group
-passes' `retrieval:` blocks without a `selection_mode` key (inherits `topk`).
+### Design principle 3 — Image fields enable image-presence
 
-### Step 2 — Enable the gates on the field-group passes
+For entities documented by figures/photos, declare a `*_photo` (or `*_image`) field. The pass then fires on any chunk whose `source_refs` include a `#/pictures/` ref — catching figure-bearing chunks that may have little text.
 
-In each field-group pass's `retrieval:` block in the bundle manifest, set:
+### Design principle 4 — cosine_tau catches the rest
 
-```yaml
-    retrieval:
-      unit_gate: true        # G1 — digit + pass-unit-signature token
-      table_gate: true       # G2 — table chunk bearing units (optional but recommended)
-```
+`cosine_tau` (default 0.55) keeps chunks semantically relevant to the pass's fields but carrying no explicit unit/enum/image signal. It is the one tunable knob: raise for precision, lower for recall. Leave it at 0.55 unless a validation run shows a systematic gap.
 
-Gates are computed from the schema, so this is the only manifest change needed before
-collecting data. Verify the unit signature is non-empty for each pass (a pass whose
-fields declare no units cannot gate — revisit the schema or `SUFFIX_UNITS`).
+### Procedure
 
-### Step 3 — Collect telemetry (shadow ingest)
+1. **Build the bundle + schema** (see "Adding a Custom Ontology Bundle"), applying design principles 1–3: unit-suffixed numeric fields, enum fields for closed vocabularies, `*_photo` fields for figures.
+2. **Extend the signal lexicons** for your domain's units/enums: `SUFFIX_DIMENSION` + `DIMENSION_UNITS` (units); `CATEGORICAL_PHRASE_FIELDS` + `CATEGORICAL_PHRASES` (enums). This is the only code change, and it is schema-driven, not data-fit. Unit-test with `tests/unit/test_extraction_signal_detectors.py` and `tests/unit/test_extraction_pass_signal_config.py`.
+3. **Configure each field-group pass** in the manifest's `retrieval:` block: `selection_mode: absolute_union`, `cosine_tau: 0.55`. Leave **identity passes** without a `retrieval:` block — they run full-doc and are not routable.
+4. **Verify the config is schema-derived as intended:**
+   ```bash
+   python3 -c "from app.services.extraction_pass_signal_config import derive_pass_signal_config as d; import json; print(json.dumps({k:(sorted(v.dimensions),sorted(v.categorical_fields),v.has_image_field) for k,v in d('<your_bundle>').items()}, indent=2))"
+   ```
+   Confirm each pass's dimensions/categorical/image match your intent (e.g. a propulsion pass shows `[["mass","time"], [], false]`).
+5. **Deploy:** manifest edit, then `docker compose -p eip-mmdpp up -d --force-recreate api worker worker-graph` (bind-mounted code reloads on restart), and set `VECTOR_ROUTER_MODE=narrow_only`.
+6. **Validate (optional, recommended) against ground truth — a check, not training.** If you have lineage-grounded labels, compare per-pass recall/precision (bake-off harness). Expect off-domain passes to yield 0 (empty_selection→ZERO_YIELD) — that is correct, not a failure.
 
-Ingest the representative corpus with `VECTOR_ROUTER_MODE=shadow`. In shadow the selector
-runs and records `score_components_all` (the per-chunk feature vectors) into
-`ingest.pipeline_pass_outputs.diagnostics_json->'router'`, but **does not affect
-extraction** — zero risk. One run per document; record the run IDs.
+### Notes
 
-```bash
-# create a source bound to the new bundle, upload docs, let them reach a terminal state
-curl -s -X POST localhost:8000/v1/sources -d '{"name":"my_corpus_eval","description":"calibration"}'
-# (bind the source's default_ontology_bundle_key to your new bundle, then upload each doc)
-```
-
-Confirm each field-group pass captured features:
-`diagnostics_json->'router'->'score_components_all'` should be a non-empty array.
-
-### Step 4 — Export the labeled dataset
-
-```bash
-python3 -m scripts.export_bakeoff_dataset --runs <run1,run2,...> --out-dir reports/dataset_mycorpus
-```
-
-This writes `bakeoff_dataset.csv` (one row per (pass, chunk) candidate), with the feature
-columns, the gate columns, and the label column **`used`** (the lineage-grounded target:
-a chunk is a positive if a committed field value was grounded to it). It also prints the
-positive count — if it's very low, collect more / more-diverse docs (the ranker needs
-positives spread across documents to learn and to score LODO folds).
-
-### Step 5 — Verify the recall floor (gate coverage) — MANDATORY
-
-```bash
-python3 -m scripts.check_gate_coverage reports/dataset_mycorpus/bakeoff_dataset.csv --bundle <your_bundle>
-```
-
-This must exit 0: **every `used==1` row is covered by `unit_gate ∪ table_gate`.** A miss
-means the gate lexicon is incomplete for your corpus (a positive chunk's unit isn't
-recognized) → fix `SUFFIX_UNITS` / the field's declared units, re-ingest the affected
-docs, re-export, re-check. Do not proceed until coverage is 100% — this is the recall
-guarantee; calibration refuses to emit without it.
-
-### Step 6 — Evaluate the frontier (decide if it's worth deploying)
-
-```bash
-python3 -m scripts.eval_guarded_ranker --csv reports/dataset_mycorpus/bakeoff_dataset.csv --out reports/dataset_mycorpus/eval.json
-```
-
-Read: **LODO AUROC (both conventions)** — a healthy ranker is ≥ ~0.8 pooled-OOF; the
-**guarded frontier** (recall, kept_frac at each `q`) — gates-alone kept_frac tells you the
-guaranteed savings at recall 1.0; and the **final_score top-k baseline** for comparison.
-If AUROC is near 0.5, the ranker has no usable signal on this corpus (often
-positive-starvation, not a real failure) — you can still deploy the **gates alone**
-(recall 1.0 + whatever the gates prune) and skip the learned ranker.
-
-### Step 7 — Calibrate (fit deployable numbers)
-
-```bash
-python3 -m scripts.fit_guarded_ranker --csv reports/dataset_mycorpus/bakeoff_dataset.csv --bundle <your_bundle>
-```
-
-This fits the sign-constrained L2 logistic regression (C selected via nested GroupKFold),
-drops wrong-signed features, chooses the smallest `quantile_q` whose LODO recall is 1.0 on
-every fold, applies a finite-sample margin, and **refuses to emit unless gate coverage
-passes**. It writes `reports/dataset_mycorpus/guarded_ranker_fit.json` (weights, q,
-per-fold recall, both LODO AUROCs) and prints a ready-to-paste manifest YAML snippet:
-
-```yaml
-selection_mode: guarded_quantile
-quantile_q: 0.5
-k_min: 3
-k_max: 0
-ranker_weights:
-  unit_token_count: 1.242183
-  digit_density: 0.304987
-  mean_top3_field_cosine: 0.272968
-  max_field_cosine: 0.219610
-  rerank_norm: 0.055489
-```
-
-### Step 8 — Write the calibrated config into the bundle
-
-Paste the snippet into each field-group pass's `retrieval:` block (alongside the
-`unit_gate`/`table_gate` keys from Step 2). The `ranker_weights` keys must be exactly the
-feature/component names the scorer emits (the script guarantees this; unknown keys are
-rejected at manifest load). Verify all bundles still parse:
-
-```bash
-python3 -c "from app.services.ontology_bundles import load_bundle_manifest as L; L('<your_bundle>')"
-```
-
-### Step 9 — Validate in shadow (selection diagnostics fire)
-
-Re-ingest one or two docs still in `VECTOR_ROUTER_MODE=shadow`. Confirm the guarded
-selection diagnostics appear (and are non-null) on the field-group passes:
-`diagnostics_json->'router'` should now carry `selection_mode=guarded_quantile`,
-`gate_unit_keeps`, `gate_table_keeps`, `ranker_keeps`, `selection_threshold`,
-`selection_k`. Extraction is still unaffected in shadow — this only proves the selector
-computes correctly.
-
-### Step 10 — Flip live + final end-to-end test
-
-```bash
-# .env (and .env.example): the selector now narrows extraction scope
-VECTOR_ROUTER_MODE=narrow_only
-WORKER_FORWARD_SELECTED_CHUNKS=false   # keep false: self_refs still narrow scope, but
-                                       # docling-graph re-chunks/sanitizes the scoped doc
-                                       # (recall-recovering). true bypasses that and has
-                                       # measured LOWER recall on table-heavy docs.
-```
-
-Recreate the workers + api (`docker compose -p eip-mmdpp up -d --force-recreate api worker
-worker-graph`), then re-ingest one representative doc end-to-end and confirm: run reaches
-`COMPLETE`, the router diagnostics show `mode=selected_refs` with `selected_token_estimate
-< full_doc_token_estimate` (narrowing actually fired), and entity yield holds versus the
-pre-flip baseline (recall didn't regress). Then commit the bundle + env changes.
-
-### Operational notes
-
-- **Keep `topk` as the code default.** New/uncalibrated bundles must inherit `topk` —
-  never ship `guarded_quantile` on a pass that lacks gates or fit weights (no floor → can
-  drop positives). `narrow_only` likewise stays a per-deployment opt-in, not the code
-  default.
-- **Recalibrate when the corpus shifts.** New document types or new field schemas change
-  the feature distribution; re-run Steps 3–8. The gates keep recall safe in the meantime.
-- **`q` is a savings/safety dial.** Lower `q` = more ranker margin (safer on unseen doc
-  types), higher `q` = more pruning. With full gate coverage, recall stays 1.0 either way
-  on the labeled data.
-- **Positive starvation ≠ ranker failure.** If new doc types yield no labeled positives
-  (e.g. prose with no groundable spec-fields, or scanned/no-text-layer docs), the ranker
-  can't be evaluated on them — fall back to gates-only there.
+- **No calibration loop.** Unlike the legacy guarded-ranker (which fit `ranker_weights`/`quantile_q` per corpus — the `scripts/` calibration tools `export_bakeoff_dataset` / `check_gate_coverage` / `eval_guarded_ranker` / `fit_guarded_ranker` still exist for that deprecated `guarded_quantile` path), absolute_union has zero learned parameters. Re-targeting a new corpus needs only schema design + lexicon extension.
+- **Empty is expected.** A pass with no matching content on a doc returns 0 chunks → ZERO_YIELD/COMPLETE. Design one pass per attribute-group; not every pass fires on every doc.
+- **Units are the highest-leverage choice.** A pass whose numeric fields all share a dimension common across the corpus over-selects (everything has that unit); a pass with a distinctive dimension self-selects cleanly. Choose field units that discriminate the pass's content.
 
 ## Creating Custom Queries
 
