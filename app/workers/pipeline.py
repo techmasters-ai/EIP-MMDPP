@@ -815,6 +815,7 @@ def _execute_pass_attempt(
     # building or sending the request.
     if chunk_scope is not None and chunk_scope.get("mode") == "empty_selection":
         import importlib as _importlib
+        from pydantic import ValidationError as _ValidationError
         from app.services.extraction_merge import (
             ExtractionMetadata as _ExtractionMetadata,
             PassResult as _PassResult,
@@ -830,10 +831,22 @@ def _execute_pass_attempt(
             _tmod = _importlib.import_module(_full_module)
             _tcls = getattr(_tmod, pass_def.template_class)
             _template_instance = _tcls.model_validate({})
-        except Exception as _exc:
-            # Fallback: use a MagicMock-free sentinel — an empty SimpleNamespace
-            # is safe because _build_pre_merge_walk_summary / classify_yield /
-            # _count_pass_output all guard with hasattr() checks.
+        except (ImportError, AttributeError, _ValidationError) as _exc:
+            # Bundle/template misconfig (bad module, wrong template_class, or an
+            # empty-validation failure). The pass still has nothing to extract, so
+            # fall back to an empty SimpleNamespace sentinel — safe because
+            # _build_pre_merge_walk_summary / classify_yield / _count_pass_output
+            # all guard with isinstance(BaseModel)/hasattr checks. Log it: per the
+            # soft-fail-visibility rule this misconfig must surface, and since
+            # model_validate({}) succeeds for every shipped routable pass, this
+            # path only fires on a genuinely broken bundle. Any OTHER exception
+            # is an unexpected bug and is intentionally NOT caught here.
+            logger.warning(
+                "EXTRACT_PASS_EMPTY_SELECTION template resolution failed for "
+                "bundle=%s pass=%s (%s) — using empty sentinel; pass still "
+                "finalizes as COMPLETE/EMPTY.",
+                manifest.bundle_key, pass_def.name, _exc,
+            )
             import types as _types
             _template_instance = _types.SimpleNamespace()
         _empty_pass_result = _PassResult(
