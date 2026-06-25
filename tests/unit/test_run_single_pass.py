@@ -1027,9 +1027,11 @@ class TestCallExtractPass:
         assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
 
     def test_nonzero_yield_not_clean_empty(self):
-        """Retry preserved (actually not-applicable path): nonzero node_count
-        means the pass produced something — cannot be a clean empty regardless
-        of pipeline_error presence.
+        """Not-a-clean-empty path: node_count >= 2 means the pass produced the
+        Pass-wrapper ROOT node PLUS at least one real record child — real
+        output — so it cannot be a clean empty regardless of pipeline_error
+        presence. (node_count == 1 is the lone empty wrapper, which IS a clean
+        empty; only node_count >= 2 counts as produced output.)
         """
         from app.workers.pipeline import _is_clean_empty_pipeline_error
 
@@ -1043,7 +1045,56 @@ class TestCallExtractPass:
             },
             "library_log": "",
         }
-        metadata = {"node_count": 1, "edge_count": 0}
+        metadata = {"node_count": 2, "edge_count": 0}  # wrapper + 1 real record
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_empty_wrapper_node_with_clean_reasons_is_clean_empty(self):
+        """Live Handwritten case: an empty extraction emits ONLY the Pass-wrapper
+        ROOT node (node_count=1, edge_count=0). The quality gate surfaced
+        clean-empty reasons (missing_root_instance, empty_output), no batch
+        errored, no hard-failure signature. The lone wrapper must NOT be treated
+        as 'produced something' — it is a legitimate ZERO_YIELD → return True.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: error=Failed to extract data from DoclingDocument"
+                ),
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                "empty_output | path_counts={}"
+            ),
+        }
+        metadata = {"node_count": 1, "edge_count": 0}  # lone empty wrapper
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_relationship_pass_with_edges_not_clean_empty(self):
+        """A relationship pass (e.g. system_links) can emit the lone wrapper
+        node (node_count=1) yet still produce real relationships
+        (edge_count=2). edge_count > 0 = produced real output → not a clean
+        empty, even with clean-empty quality-gate reasons present.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: error=Failed to extract data from DoclingDocument"
+                ),
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                "empty_output | path_counts={}"
+            ),
+        }
+        metadata = {"node_count": 1, "edge_count": 2}  # wrapper + 2 edges
         assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
 
 

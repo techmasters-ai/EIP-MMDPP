@@ -4590,8 +4590,12 @@ def _is_clean_empty_pipeline_error(diagnostics: dict, metadata: dict) -> bool:
     """
     node_count = (metadata or {}).get("node_count", 0) or 0
     edge_count = (metadata or {}).get("edge_count", 0) or 0
-    if node_count or edge_count:
-        return False  # produced something — not an empty extraction
+    # node_count == 1 is the empty Pass-wrapper ROOT node (no record children);
+    # real records make node_count >= 2 (wrapper + N). edge_count > 0 means the
+    # pass produced relationships (e.g. system_links: node_count=1 + edge_count=2).
+    # Either of those = produced real output → not an empty extraction.
+    if node_count > 1 or edge_count > 0:
+        return False  # produced real records/edges — not an empty extraction
     if diagnostics.get("batch_errors"):
         return False  # a batch genuinely failed → retryable
     log = diagnostics.get("library_log")
