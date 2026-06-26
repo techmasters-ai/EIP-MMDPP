@@ -544,9 +544,8 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
         for i, grp in enumerate(new_groups):
             if not isinstance(grp, dict):
                 continue
+            grp_self_ref = grp.get("self_ref")
             children = grp.get("children") or []
-            if not children:
-                continue
             # Strip children whose parent was rewritten to #/body. Retained
             # list_items kept in this group (parent unchanged) STAY in children.
             filtered = [
@@ -557,9 +556,20 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
                     in reparent_to_body_set
                 )
             ]
-            if len(filtered) != len(children):
+            needs_children_update = len(filtered) != len(children)
+            # When a retained ListGroup is placed into body.children (C.7r path),
+            # its parent must be rewritten to #/body. For a NESTED list group whose
+            # original parent is another group (e.g. #/groups/11), the hierarchy
+            # validator rejects: "has child #/groups/12 with parent #/groups/11".
+            # Invariant: every node referenced in body.children must declare #/body
+            # as its parent. This includes groups moved up from nested positions.
+            needs_parent_update = bool(grp_self_ref and grp_self_ref in retained_list_groups)
+            if needs_children_update or needs_parent_update:
                 new_grp = dict(grp)
-                new_grp["children"] = filtered
+                if needs_children_update:
+                    new_grp["children"] = filtered
+                if needs_parent_update:
+                    new_grp = _rewrite_parent_to_body(new_grp)
                 new_groups[i] = new_grp
                 mutated_any = True
         if mutated_any:

@@ -1208,6 +1208,130 @@ def test_scoped_doc_list_item_not_in_list_group_still_reparents_to_body():
     )
 
 
+# ---------------------------------------------------------------------------
+# C.7r NESTED-GROUP BUG — body.children references a ListGroup whose parent
+# is another group (not #/body). DoclingDocument's hierarchy validator rejects:
+#   Value error, Document hierarchy is inconsistent.
+#   #/body has child #/groups/1 with parent #/groups/0
+#
+# Live failure: Engagement doc — 4 missile field passes (missile_airframe /
+# kinematics / propulsion / speed_timing) FAILED at docling-graph "Input
+# Normalization" stage (DoclingDocument load) → 0 entities.
+# ---------------------------------------------------------------------------
+
+
+def test_nested_list_group_reparented_to_body():
+    """NESTED list group moved to body.children must have parent rewritten to #/body.
+
+    When a retained list_item's parent ListGroup is itself nested (its own parent
+    is another group, not #/body), the C.7r path adds that group to body.children
+    but does NOT update the group's parent field (pre-fix). DoclingDocument's
+    hierarchy validator then rejects the doc:
+        Value error, Document hierarchy is inconsistent.
+        #/body has child #/groups/1 with parent #/groups/0
+
+    Fix: every group placed in body.children via the C.7r path must have its
+    parent rewritten to #/body.
+
+    Topology:
+        body -> groups/0 (section group, parent=#/body)
+        groups/0 -> groups/1 (list, parent=#/groups/0)   <- nested!
+        groups/1 -> texts/0 (list_item)
+    """
+    try:
+        from docling_core.types.doc import DoclingDocument
+        _validate_docling = True
+    except ImportError:
+        _validate_docling = False
+
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/1"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "Nested Item A",
+                "text": "Nested Item A",
+                "enumerated": False,
+                "marker": "-",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/groups/1"}],
+                "content_layer": "body",
+                "name": "section",
+                "label": "unspecified",
+            },
+            {
+                "self_ref": "#/groups/1",
+                "parent": {"cref": "#/groups/0"},  # NESTED: parent is a group, not #/body
+                "children": [{"cref": "#/texts/0"}],
+                "content_layer": "body",
+                "name": "list-0",
+                "label": "list",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+    result = apply_chunk_scope(doc, chunk_scope)
+
+    # C.7r: the nested list group must appear in body.children (not the list_item).
+    body_refs = [
+        c.get("cref") or c.get("$ref") or c.get("$cref")
+        for c in result["body"]["children"]
+    ]
+    assert "#/groups/1" in body_refs, "Retained nested ListGroup must appear in body.children"
+    assert "#/texts/0" not in body_refs, "list_item must NOT appear directly in body.children"
+
+    # THE FIX: groups[1].parent must be rewritten to #/body (was #/groups/0 pre-fix).
+    grp1 = result["groups"][1]
+    parent = grp1.get("parent") or {}
+    parent_ref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
+    assert parent_ref == "#/body", (
+        f"Nested list group placed in body.children must have parent rewritten to #/body; "
+        f"got {parent_ref!r} — pre-fix this would be '#/groups/0', causing DoclingDocument "
+        f"hierarchy validation failure"
+    )
+
+    # Structural invariant: every group in body.children has parent == #/body.
+    for child_dict in result["body"]["children"]:
+        child_ref = child_dict.get("cref") or child_dict.get("$ref") or child_dict.get("$cref")
+        if not child_ref or not child_ref.startswith("#/groups/"):
+            continue
+        idx = int(child_ref.rsplit("/", 1)[-1])
+        grp = result["groups"][idx]
+        grp_parent = grp.get("parent") or {}
+        grp_parent_ref = grp_parent.get("cref") or grp_parent.get("$ref") or grp_parent.get("$cref")
+        assert grp_parent_ref == "#/body", (
+            f"body.children group {child_ref!r} must have parent==#/body; got {grp_parent_ref!r}"
+        )
+
+    # Input must not be mutated.
+    orig_parent = doc["groups"][1].get("parent") or {}
+    assert (orig_parent.get("cref") or orig_parent.get("$ref")) == "#/groups/0", (
+        "Input doc_json must not be mutated by apply_chunk_scope"
+    )
+
+    # Passes DoclingDocument validation — the exact production failure.
+    if _validate_docling:
+        DoclingDocument(**result)
+
+
 def test_apply_chunk_scope_uses_text_by_ref_for_selected_text_items():
     """Selected TextItems should carry the exact post-filter chunk text."""
     doc = _make_doc(
