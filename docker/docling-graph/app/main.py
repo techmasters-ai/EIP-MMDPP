@@ -2074,7 +2074,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     logger.info(
                         "field-provenance cell_refs enrichment: %d/%d rows "
                         "received cell_refs (pass=%s).",
-                        _enriched_count, len(field_provenance_rows), pass_name,
+                        _enriched_count, len(field_provenance_rows), body.pass_name,
                     )
             except Exception as _exc:
                 # Enrichment is best-effort — never fail the response over it.
