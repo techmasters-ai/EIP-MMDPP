@@ -246,6 +246,41 @@ class TestDeriveStructureLinks:
         assert "ic_rid_map" in source
         assert "tc_rid_map" in source
 
+    def test_document_props_include_source_name(self):
+        """The root Document upsert threads the human-readable collection name
+        (doc.source.name) onto the Document vertex as source_name."""
+        import inspect
+        from app.workers.pipeline import derive_structure_links
+
+        source = inspect.getsource(derive_structure_links)
+        assert "source_name" in source
+        # Loaded off the doc.source relationship, with a None-safe fallback.
+        assert "doc.source" in source
+
+    def test_creates_collection_and_belongs_to_edge(self):
+        """After the root Document upsert, derive_structure_links wires the
+        first-class Collection vertex + Document -BELONGS_TO-> Collection edge."""
+        import inspect
+        from app.workers.pipeline import derive_structure_links
+
+        source = inspect.getsource(derive_structure_links)
+        assert "upsert_collection_and_link_sync" in source
+
+
+class TestEnsureStructuralDocumentVertex:
+    """The earlier structural-Document touch (derive_ontology_graph_merge ->
+    _ensure_structural_document_vertex) must ALSO create the Collection so the
+    graph_only path is covered, and must stay idempotent (merges on document_id)."""
+
+    def test_threads_source_name_and_collection(self):
+        import inspect
+        from app.workers.pipeline import _ensure_structural_document_vertex
+
+        source = inspect.getsource(_ensure_structural_document_vertex)
+        assert "source_name" in source
+        assert "doc.source" in source
+        assert "upsert_collection_and_link_sync" in source
+
 
 # ---------------------------------------------------------------------------
 # GraphStore Protocol surface — the plural batch helper and the chunk-rid

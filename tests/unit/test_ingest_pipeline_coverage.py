@@ -257,11 +257,14 @@ class TestUpdateDocumentStatus:
 
 class TestStartIngestPipeline:
 
-    @patch("app.workers.pipeline._chord_error_handler")
-    @patch("app.workers.pipeline.chain")
+    @patch("app.workers.pipeline._seed_first_stage")
     @patch("app.workers.pipeline._create_pipeline_run")
     @patch("app.workers.pipeline._get_db")
-    def test_creates_run_and_dispatches(self, mock_get_db, mock_create_run, mock_chain, mock_errback):
+    def test_creates_run_and_dispatches(self, mock_get_db, mock_create_run, mock_seed):
+        """Post 2026-05-10 ledger-seed refactor: start_ingest_pipeline creates a
+        PipelineRun, seeds the first PENDING ledger row (dispatcher-poller
+        publishes prepare_document within 5s), commits, and returns
+        celery_task_id="" — there is no chain().apply_async() task id."""
         from unittest.mock import patch as _patch
         from app.workers.pipeline import start_ingest_pipeline
         from app.workers.dispatch_types import IngestDispatchResult
@@ -278,21 +281,18 @@ class TestStartIngestPipeline:
         mock_db.get.return_value = None  # no Document row
         mock_create_run.return_value = RUN_ID
 
-        mock_result = MagicMock()
-        mock_result.id = "celery-task-id-abc"
-        mock_chain.return_value.apply_async.return_value = mock_result
-
-        mock_errback.s.return_value = MagicMock()
-
         with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
             result = start_ingest_pipeline(DOC_ID)
         assert isinstance(result, IngestDispatchResult)
-        assert result.celery_task_id == "celery-task-id-abc"
+        assert result.celery_task_id == ""
         # _create_pipeline_run now receives keyword bundle args
         mock_create_run.assert_called_once()
         assert mock_create_run.call_args.args[0] is mock_db
         assert mock_create_run.call_args.args[1] == DOC_ID
-        mock_chain.return_value.apply_async.assert_called_once()
+        # First ledger row seeded for the dispatcher-poller.
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs.get("pipeline_run_id") == RUN_ID
+        assert mock_seed.call_args.kwargs.get("stage_name") == "prepare_document"
         mock_db.commit.assert_called()
 
     @patch("app.workers.pipeline._get_db")
@@ -788,9 +788,17 @@ class TestDerivePictureDescriptions:
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
 
-        mock_db.execute.return_value.first.return_value = (
-            {"document_summary": "A technical document"},
-        )
+        # The @guard_stage_run(lifecycle=True) wrapper runs a CLAIM query
+        # (UPDATE ... RETURNING id, attempt, dispatch_attempt) via .first()
+        # BEFORE the body. Its result must expose an integer .dispatch_attempt.
+        # The body's own SELECT document_metadata ... .first() returns the
+        # summary tuple. side_effect feeds them in call order: claim, summary.
+        from types import SimpleNamespace
+        _claim_row = SimpleNamespace(id=1, attempt=1, dispatch_attempt=0)
+        mock_db.execute.return_value.first.side_effect = [
+            _claim_row,
+            ({"document_summary": "A technical document"},),
+        ]
         mock_db.execute.return_value.scalars.return_value.all.return_value = []
         mock_db.get.return_value = None
 
@@ -836,7 +844,14 @@ class TestDerivePictureDescriptions:
         mock_settings.minio_bucket_derived = "derived"
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
-        mock_db.execute.return_value.first.return_value = ({"document_summary": "test"},)
+        # guard_stage_run(lifecycle=True) CLAIM query runs first (needs an
+        # integer .dispatch_attempt), then the body's summary SELECT.
+        from types import SimpleNamespace
+        _claim_row = SimpleNamespace(id=1, attempt=1, dispatch_attempt=0)
+        mock_db.execute.return_value.first.side_effect = [
+            _claim_row,
+            ({"document_summary": "test"},),
+        ]
         mock_db.get.return_value = None
 
         docling_json = {"pictures": []}
@@ -1152,6 +1167,15 @@ class TestDeriveDocumentMetadataFailFast:
 
             mock_db = MagicMock()
             mock_get_db.return_value = mock_db
+            # @guard_stage_run(lifecycle=True) CLAIMs before the body and, on
+            # the failure path, computes ctx.dispatch_attempt + 1 <= max. Give
+            # the CLAIM row an integer .dispatch_attempt so the wrapper reaches
+            # the real failure path and re-raises the body's "Ollama down"
+            # instead of a "'<=' not supported between MagicMock and int" mask.
+            from types import SimpleNamespace
+            mock_db.execute.return_value.first.return_value = SimpleNamespace(
+                id=1, attempt=1, dispatch_attempt=0,
+            )
 
             with patch("app.services.document_analysis.extract_document_metadata", side_effect=Exception("Ollama down")):
                 from app.workers.pipeline import derive_document_metadata

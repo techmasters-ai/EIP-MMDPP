@@ -829,3 +829,102 @@ def test_system_links_resolves_valid_ref_ids():
         and e.to_identity == missile_identity
         for e in merged.edges
     )
+
+
+def test_system_links_ref_ids_survive_identity_canonicalization():
+    """system_links ref IDs are assigned before merge-time alias rewrite.
+
+    When table-overlay canonicalization rewrites an upstream endpoint
+    identity (e.g. Fan Song -> Fan Song E), the ref ID must still resolve
+    to the final merged entity identity instead of rejecting with
+    FROM_ENDPOINT_NOT_FOUND.
+    """
+    from app.services.table_overlay import TableOverlay
+
+    local_ontology = {
+        "entity_types": [
+            {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global", "properties": ["system_name"]},
+            {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global", "properties": ["system_name"]},
+        ],
+        "validation_matrix": [
+            {"source": "RADAR_SYSTEM", "relationship": "ASSOCIATED_WITH",
+             "target": "MISSILE_SYSTEM"},
+        ],
+    }
+
+    old_radar_identity = LogicalIdentity(
+        entity_type="RADAR_SYSTEM",
+        identity_field_names=("system_name",),
+        identity_tuple=("Fan Song",),
+        scope="global",
+        document_id=None,
+    )
+    final_radar_identity = LogicalIdentity(
+        entity_type="RADAR_SYSTEM",
+        identity_field_names=("system_name",),
+        identity_tuple=("Fan Song E",),
+        scope="global",
+        document_id=None,
+    )
+    missile_identity = LogicalIdentity(
+        entity_type="MISSILE_SYSTEM",
+        identity_field_names=("system_name",),
+        identity_tuple=("SA-2",),
+        scope="global",
+        document_id=None,
+    )
+
+    radar_pass_result = _make_pass_result(
+        pass_name="radar_domain",
+        entities=[("RADAR_SYSTEM", {"system_name": "Fan Song"}, {})],
+        relationships=[],
+    )
+    radar_pass_result.table_overlay = TableOverlay(
+        alias_map_by_entity_type={
+            "RADAR_SYSTEM": {
+                "Fan Song": "Fan Song E",
+                "Fan Song E": "Fan Song E",
+            },
+        },
+    )
+    missile_pass_result = _make_pass_result(
+        pass_name="missile_domain",
+        entities=[("MISSILE_SYSTEM", {"system_name": "SA-2"}, {})],
+        relationships=[],
+    )
+    links_pass_result = _make_pass_result(
+        pass_name="system_links",
+        entities=[],
+        relationships=[{
+            "rel_type": "ASSOCIATED_WITH",
+            "from_ref_id": "E040",
+            "to_ref_id": "E051",
+            "confidence": 0.9,
+        }],
+    )
+    links_pass_result.upstream_refs = {
+        "E040": old_radar_identity,
+        "E051": missile_identity,
+    }
+
+    merged = merge_and_resolve(
+        pass_results={
+            "radar_domain": radar_pass_result,
+            "missile_domain": missile_pass_result,
+            "system_links": links_pass_result,
+        },
+        manifest=_fake_manifest(["radar_domain", "missile_domain", "system_links"]),
+        ontology=local_ontology,
+        document_id="doc-1",
+        pipeline_run_id="run-1",
+    )
+
+    assert len(merged.rejected_edges) == 0
+    assert any(
+        e.rel_type == "ASSOCIATED_WITH"
+        and e.from_identity == final_radar_identity
+        and e.to_identity == missile_identity
+        for e in merged.edges
+    )

@@ -1,0 +1,384 @@
+"""Shared Pydantic field validators for the air_defense_v3 extraction
+schemas. Handle messy LLM output (empty strings, embedded numbers,
+text confidence levels) that would otherwise fail Pydantic coercion.
+
+Spec §3.2. Used by every extraction schema module under
+ontology_bundles/air_defense_v3/extraction_schemas/."""
+from __future__ import annotations
+
+import logging
+import re
+from enum import Enum
+from typing import Any, Callable, get_args
+
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+_INT_RE = re.compile(r"-?\d+")
+_FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_WS_RE = re.compile(r"\s+")
+_NULL_TEXT_SENTINELS = frozenset({
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "unknown",
+    "unspecified",
+    "not stated",
+    "not specified",
+    "not provided",
+})
+
+
+def _log_unrecoverable(fn_name: str, value: Any) -> None:
+    """Warn that ``value`` could not be coerced by ``fn_name`` → None.
+
+    Kept as a single choke-point so the wording stays stable for the
+    A-2 contract test (``"unrecoverable" in message``).
+    """
+    logger.warning(
+        "%s: unrecoverable input %r (type=%s) -> None",
+        fn_name,
+        value,
+        type(value).__name__,
+    )
+
+
+def coerce_optional_int(value: Any) -> int | None:
+    """Return an int, or None. Accepts None, int, numeric strings,
+    and strings with an embedded int ('page 5 of 10' -> 5). Empty/
+    whitespace strings and unparseable values become None.
+
+    Logs a WARNING when the input is non-None, non-empty, but
+    unrecoverable (A-2). Empty strings and None are silent (those
+    are normal "field absent" signals, not bad LLM output).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        _log_unrecoverable("coerce_optional_int", value)
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            pass
+        match = _INT_RE.search(stripped)
+        if match:
+            try:
+                return int(match.group(0))
+            except ValueError:
+                _log_unrecoverable("coerce_optional_int", value)
+                return None
+        _log_unrecoverable("coerce_optional_int", value)
+        return None
+    _log_unrecoverable("coerce_optional_int", value)
+    return None
+
+
+def coerce_optional_float(value: Any) -> float | None:
+    """Return a float, or None. Accepts None, int, float, and parseable
+    decimal strings. Unparseable values become None.
+
+    Logs a WARNING when the input is non-None, non-empty, but
+    unrecoverable (A-2). None and empty strings are silent.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        _log_unrecoverable("coerce_optional_float", value)
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            match = _FLOAT_RE.search(stripped)
+            if match:
+                try:
+                    return float(match.group(0))
+                except ValueError:
+                    _log_unrecoverable("coerce_optional_float", value)
+                    return None
+            _log_unrecoverable("coerce_optional_float", value)
+            return None
+    _log_unrecoverable("coerce_optional_float", value)
+    return None
+
+
+def coerce_optional_text(value: Any) -> str | None:
+    """Return a stripped string, or None. Used for SpecificationEntity
+    fields (parameter, value, unit) where the LLM frequently emits the
+    numeric part of a specification as a raw int/float instead of a
+    string, which Pydantic would otherwise reject as ``Input should be
+    a valid string``.
+
+    Rules:
+    - None / empty / whitespace-only string -> None.
+    - str -> stripped str (empty-after-strip collapses to None).
+    - int / float -> ``str(value)`` so 150 and '150' agree on identity.
+    - bool -> None: True/False for a SPECIFICATION.value is almost
+      always an LLM mistake; surfacing it as 'True' would pollute the
+      graph and destabilize SPECIFICATION identity (``[parameter, value]``).
+    - dict / list / any other type -> None: there is no stable stringify
+      rule (``str({'a': 1}) == "{'a': 1}"`` depends on dict iteration
+      order), so coerce to None rather than fragment the graph.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        stripped = _WS_RE.sub(" ", value).strip()
+        if stripped.casefold().rstrip(".") in _NULL_TEXT_SENTINELS:
+            return None
+        return stripped if stripped else None
+    return None
+
+
+def canonicalize_identity_text(value: Any) -> str | None:
+    """Return a normalized identity string, or None when unusable."""
+    if not isinstance(value, str):
+        return None
+    stripped = _WS_RE.sub(" ", value).strip()
+    if not stripped:
+        return None
+    if stripped.casefold().rstrip(".") in _NULL_TEXT_SENTINELS:
+        return None
+    return stripped
+
+
+def sanitize_entity_list(
+    cls: type,
+    values: Any,
+    *,
+    list_field: str,
+    identity_field: str,
+    optional_text_fields: set[str],
+    forbidden_identities: set[str],
+) -> Any:
+    """Normalize pass-root entity items before Pydantic validates them."""
+    if not isinstance(values, dict):
+        return values
+    raw = values.get(list_field)
+    if not isinstance(raw, list) or not raw:
+        return values
+
+    forbidden = {name.upper() for name in forbidden_identities}
+    cleaned_items: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            logger.warning(
+                "sanitize_entity_list(%s): dropped non-dict item from %s",
+                cls.__name__,
+                list_field,
+            )
+            continue
+        cleaned = dict(item)
+        for field_name in optional_text_fields:
+            if field_name in cleaned:
+                cleaned[field_name] = coerce_optional_text(cleaned.get(field_name))
+
+        identity = canonicalize_identity_text(cleaned.get(identity_field))
+        if identity is None:
+            logger.warning(
+                "sanitize_entity_list(%s): dropped item with invalid %s in %s: %r",
+                cls.__name__,
+                identity_field,
+                list_field,
+                cleaned.get(identity_field),
+            )
+            continue
+        if identity.upper() in forbidden:
+            logger.warning(
+                "sanitize_entity_list(%s): dropped forbidden %s=%r from %s",
+                cls.__name__,
+                identity_field,
+                identity,
+                list_field,
+            )
+            continue
+
+        cleaned[identity_field] = identity
+        cleaned_items.append(cleaned)
+
+    values[list_field] = cleaned_items
+    return values
+
+
+# Text-confidence mappings used when the LLM returns "high"/"medium"/"low"
+# instead of a numeric value. These are arbitrary bucket midpoints chosen
+# to roughly agree with the extraction calibration in spec §6.6.
+_TEXT_CONFIDENCE = {
+    "high": 0.9,
+    "medium": 0.6,
+    "med": 0.6,
+    "low": 0.3,
+}
+
+
+def coerce_optional_confidence(value: Any) -> float | None:
+    """Return a confidence float in [0.0, 1.0], or None.
+
+    - None -> None.
+    - float/int in [0.0, 1.0] -> pass through as float.
+    - int/float > 1 -> divided by 100 (percent).
+    - 'high' / 'medium' / 'low' (case-insensitive) -> bucket midpoints.
+    - Unparseable strings -> None.
+
+    IMPORTANT: explicit 0.0 MUST be returned as 0.0, not coerced to a
+    default. Do not use 'x or default' anywhere in this function — that
+    is the bug this validator exists to protect against.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        _log_unrecoverable("coerce_optional_confidence", value)
+        return None
+    if isinstance(value, (int, float)):
+        f = float(value)
+        if f > 1.0:
+            return f / 100.0
+        return f
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if not stripped:
+            return None
+        if stripped in _TEXT_CONFIDENCE:
+            return _TEXT_CONFIDENCE[stripped]
+        try:
+            f = float(stripped)
+        except ValueError:
+            _log_unrecoverable("coerce_optional_confidence", value)
+            return None
+        if f > 1.0:
+            return f / 100.0
+        return f
+    _log_unrecoverable("coerce_optional_confidence", value)
+    return None
+
+
+def _normalize_enum(enum_cls: type[Enum], v: Any) -> str | None:
+    """Normalize a value to one of ``enum_cls``'s string values, or None.
+
+    Docs-signature form of the enum normalization helper — takes the Enum
+    class directly. Intended for use with
+    ``field_validator("field", mode="before")(partial(_normalize_enum, MyEnum))``
+    or wrapped in a closure. Keeps ``normalize_enum(set[str])`` around for
+    back-compat with existing call sites.
+
+    Normalization rules match the set-based ``normalize_enum``:
+    - None -> None
+    - Enum member (of ``enum_cls`` or any) -> its ``value`` attribute
+    - Non-string, non-Enum -> None
+    - Empty / whitespace-only string -> None
+    - Exact match against any member's ``value`` -> that value
+    - Case-insensitive + space-to-underscore match -> the canonical value
+    - No match -> None
+    """
+    if v is None:
+        return None
+    if isinstance(v, Enum):
+        return v.value
+    if not isinstance(v, str):
+        return None
+    stripped = v.strip()
+    if not stripped:
+        return None
+    canonical = {m.value.upper(): m.value for m in enum_cls}
+    normalized = stripped.upper().replace(" ", "_")
+    return canonical.get(normalized)
+
+
+def _find_basemodel(ann: Any) -> type[BaseModel] | None:
+    """Return the innermost BaseModel subclass in a type annotation, or None."""
+    if ann is None:
+        return None
+    if isinstance(ann, type) and issubclass(ann, BaseModel):
+        return ann
+    for a in get_args(ann):
+        r = _find_basemodel(a)
+        if r is not None:
+            return r
+    return None
+
+
+def dedupe_entities_by_identity(cls: type, values: Any) -> Any:
+    """Merge-preserving dedup validator for pass-root entity lists.
+
+    For each list field whose inner class carries non-empty
+    ``graph_id_fields``, collapse duplicates by identity tuple and union
+    non-null non-identity scalar fields (first-non-null wins). Intended
+    as a pass-root ``@model_validator(mode="before")`` across every
+    extraction schema module; consolidated here to keep the behavior
+    identical (plan task C-3 / C-4).
+    """
+    if not isinstance(values, dict):
+        return values
+    for fname, finfo in cls.model_fields.items():
+        raw = values.get(fname)
+        if not isinstance(raw, list) or not raw:
+            continue
+        inner_cls = _find_basemodel(getattr(finfo, "annotation", None))
+        if inner_cls is None:
+            continue
+        id_fields = list((inner_cls.model_config or {}).get("graph_id_fields", []) or [])
+        if not id_fields:
+            continue
+        accum: dict[tuple, dict] = {}
+        order: list[tuple] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = tuple(item.get(k) for k in id_fields)
+            if key not in accum:
+                accum[key] = dict(item)
+                order.append(key)
+            else:
+                merged = accum[key]
+                for k, v in item.items():
+                    if k in id_fields or v is None:
+                        continue
+                    if k not in merged or merged[k] is None:
+                        merged[k] = v
+        if len(accum) != len(raw):
+            values[fname] = [accum[k] for k in order]
+    return values
+
+
+def normalize_enum(allowed: set[str]) -> Callable[[Any], str | None]:
+    """Build a validator that normalizes an input to one of `allowed` or None.
+
+    Normalization:
+    - None -> None
+    - Non-string -> None
+    - Exact match -> the allowed value itself
+    - Case-insensitive match -> the allowed value in its canonical form
+    - Spaces replaced with underscores before matching
+    - No match -> None
+
+    Used by extraction schemas to let the LLM return 'radar' or 'fan
+    song' and still get 'RADAR' or 'FAN_SONG' in the final output."""
+    canonical = {a.upper(): a for a in allowed}
+
+    def validator(value: Any) -> str | None:
+        if value is None or not isinstance(value, str):
+            return None
+        normalized = value.strip().upper().replace(" ", "_")
+        return canonical.get(normalized)
+
+    return validator

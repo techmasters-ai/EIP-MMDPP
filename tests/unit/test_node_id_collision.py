@@ -8,6 +8,12 @@ Fix: use rsplit("_", 1)[0].
 import pytest
 from pydantic import BaseModel
 
+# The `docling_graph` package is only installed inside the docling-graph
+# service image (it ships there, not in the monorepo's host/CI env). These
+# tests patch and exercise docling_graph.core.converters.node_id_registry, so
+# they are in-container/CI-only. Skip (not fail) when the package is absent.
+pytest.importorskip("docling_graph")
+
 
 class TABLE_REF(BaseModel):
     """Model with underscore in class name (ArcadeDB reserved word mapping)."""

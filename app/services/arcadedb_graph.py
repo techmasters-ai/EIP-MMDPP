@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 _READY_MAX_RETRIES = 5
 _READY_BACKOFF_BASE = 0.5  # seconds
 
+# Durability re-query retry (Task 3). The node-durability assertion reads back
+# just-upserted RIDs over a SEPARATE HTTP session; ArcadeDB's
+# asyncOperationsQueueSize=2048 (docker-compose.yml) lets that read race ahead
+# of the async flush, so a short count can be transient. Mirror the
+# batch_create_entity_chunk_edges_sync read-after-write retry: a few attempts
+# with linear backoff before treating a short count as a real durability fail.
+_DURABILITY_MAX_ATTEMPTS = 3
+_DURABILITY_BACKOFF_BASE = 0.2  # seconds
+
 # Local mirror — kept consistent with app.services.query_profiles via
 # the Task 15 sync contract test. section_properties profiles dispatch
 # off this set when traversing related systems.
@@ -57,6 +66,32 @@ class UpsertMissingRIDError(RuntimeError):
     """
 
 
+class UpsertNotDurableError(RuntimeError):
+    """Raised when ``upsert_nodes_batch_sync`` returns ``@rid`` values for
+    every record yet a post-upsert re-query shows fewer rows are actually
+    committed/queryable than were written.
+
+    This converts the SILENT zero-commit documented in the Task 0 lineage
+    diagnostic (reports/collection/lineage_diagnostic_findings.md) into a
+    loud failure. In that incident the SA-2 merge upserted 22 entities,
+    ``upsert_nodes_batch_sync`` returned 22 RIDs (so the RID-presence sanity
+    check — ``UpsertMissingRIDError`` — passed), the merge phase was marked
+    ``result='succeeded'``, and yet 0 of the 22 entities were queryable in
+    ArcadeDB afterward. RID presence is therefore NECESSARY BUT NOT
+    SUFFICIENT: a returned RID does not guarantee a durably committed,
+    re-queryable row. The durability re-query that raises this error is the
+    safety net that guarantees a zero/partial-commit can never again report
+    success — it raises here so the caller's existing rollback/FAILED path
+    (``derive_ontology_graph_merge``) fires instead of marking the merge
+    succeeded.
+
+    Distinct from ``UpsertMissingRIDError`` (blank @rid in the response) and
+    the entry-validation ``ValueError`` (malformed identity). Those fire
+    BEFORE this check; this one fires only when RIDs look valid but the rows
+    don't survive a read-back.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -74,6 +109,18 @@ def _count(result: list[dict[str, Any]]) -> int:
     if result and isinstance(result[0], dict):
         return int(result[0].get("count", 0))
     return 0
+
+
+def _truncate_rid_list(rids: list[str], sample: int = 10) -> str:
+    """Render a RID list for error messages, capped to a small sample.
+
+    A large upsert batch otherwise dumps multi-KB of RIDs into the exception
+    text. Show the first ``sample`` and a ``+N more`` tail.
+    """
+    if len(rids) <= sample:
+        return str(rids)
+    head = rids[:sample]
+    return f"{head} ...+{len(rids) - sample} more"
 
 
 def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
@@ -104,6 +151,7 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
         "@type", "@cat", "@class", "$distance", "distance", "$score",
         "text_embedding", "image_embedding", "report_embedding",
+        "embedding",  # VR C.1: ExtractionChunk.embedding (1024-d float array) — strip from properties dict per the existing pattern; avoid 4KB-per-result bandwidth on chunk-scope retrievals.
     )}
     return GraphEntityResult(
         node_id=str(row.get("@rid", row.get("node_id", ""))),
@@ -191,6 +239,48 @@ def _build_upsert_node_script(
     return script, params
 
 
+def _is_all_int_list(value: Any) -> bool:
+    """True iff ``value`` is a non-empty list of plain ints (no bools).
+
+    bool is a subclass of int in Python but represents a different SQL type,
+    so it is explicitly excluded. An empty list is False — it never triggers
+    the nesting bug and is fine to bind normally.
+    """
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in value)
+    )
+
+
+def _sql_list_set_fragment(
+    field: str,
+    value: Any,
+    params: dict[str, Any],
+    pk: str,
+) -> str:
+    """Return a ``field = ...`` SET fragment for a list-valued edge property.
+
+    All-int lists (e.g. ``source_pages``, ``page_numbers``) are emitted as an
+    INLINE SQL int-list literal — ``field = [1, 2, 3]`` — and NOT bound. This
+    is the ArcadeDB-nesting workaround: deserializing an all-numeric JSON array
+    yields a Java primitive ``long[]``; binding that to a schema-declared LIST
+    column coerces it into a NESTED one-element list (``[[1,2,3]]``), which
+    silently breaks ``WHERE field CONTAINS n`` membership filters. The values
+    are pipeline-derived ints, so ``str(int(x))`` is injection-safe.
+
+    All other values (string lists, scalars, empty lists) are bound to ``pk``
+    as a normal ``field = :pk`` param — strings deserialize to ``List<String>``
+    and stay flat, so they MUST NOT be inlined.
+
+    Mutates ``params`` only on the binding path.
+    """
+    if _is_all_int_list(value):
+        return f"{field} = [{', '.join(str(int(x)) for x in value)}]"
+    params[pk] = value
+    return f"{field} = :{pk}"
+
+
 def _build_upsert_relationship_script(
     records: list[RelationshipRecord],
     provenance: ProvenanceMetadata | None,
@@ -207,6 +297,14 @@ def _build_upsert_relationship_script(
     if provenance:
         doc_id_param_key = "doc_id"
         params[doc_id_param_key] = provenance.document_id
+
+    # Lineage: tag every domain edge with the PipelineRun that produced it.
+    # Mirror the document_id handling — bind the param only when provenance
+    # carries a pipeline_run_id, so we never emit a spurious NULL binding.
+    run_id_param_key = None
+    if provenance and provenance.pipeline_run_id:
+        run_id_param_key = "run_id"
+        params[run_id_param_key] = provenance.pipeline_run_id
 
     for i, record in enumerate(records):
         from_where_parts: list[str] = []
@@ -226,9 +324,11 @@ def _build_upsert_relationship_script(
 
         extra_parts: list[str] = []
         for k, v in record.properties.items():
-            pk = f"p_{k}_{i}"
-            params[pk] = v
-            extra_parts.append(f"{k} = :{pk}")
+            # All-int list props (source_pages) are inlined as SQL literals to
+            # dodge the ArcadeDB bound-numeric-array nesting bug; everything
+            # else (incl. string lists like source_chunk_ids / source_self_refs)
+            # stays a bound param. See _sql_list_set_fragment.
+            extra_parts.append(_sql_list_set_fragment(k, v, params, f"p_{k}_{i}"))
         if record.provenance is not None:
             prov_key = f"provenance_{i}"
             params[prov_key] = json.dumps(record.provenance)
@@ -257,20 +357,42 @@ def _build_upsert_relationship_script(
         from_clause = " AND ".join(from_where_parts)
         to_clause = " AND ".join(to_where_parts)
 
+        # pipeline_run_id SET fragment, shared by both branches. Empty when
+        # provenance carries no run id (matches the document_id null-handling
+        # style — no clause rather than a NULL binding).
+        run_id_set = f", pipeline_run_id = :{run_id_param_key}" if run_id_param_key else ""
+
         if doc_id_param_key:
-            # Union doc_id only when the edge exists AND doc_id is not
-            # already in the list, preventing duplicate entries on
-            # repeat ingest of the same doc.
+            # Idempotently union doc_id into document_ids while ALWAYS
+            # re-applying the lineage/property SETs.
+            #
+            # The previous form gated the whole UPDATE on
+            # ``AND NOT (document_ids CONTAINS :doc_id)`` so that on a
+            # re-ingest of the same doc the predicate was FALSE → the
+            # UPDATE matched zero rows → pipeline_run_id (run_id_set),
+            # source_chunk_ids and other props (extra) were silently
+            # dropped on pre-existing edges (only freshly-CREATEd edges
+            # got lineage). The membership gate was correct when the
+            # UPDATE only appended document_ids; later commits piled
+            # must-always-apply SETs into the same gated statement.
+            #
+            # Fix (Option A): drop the WHERE gate so the lineage SETs run
+            # on every re-upsert, and move idempotency for the doc-id
+            # append into the SET via a CASE expression — append only when
+            # the id is not already present, so document_ids never gains a
+            # duplicate. CASE-in-SET is documented ArcadeDB SQL (manual
+            # "CASE Expression", p. 174) and verified against the live DB.
             update_sql = (
                 f"  UPDATE {rtype} "
-                f"SET document_ids = document_ids || [:{doc_id_param_key}], "
-                f"updated_at = sysdate(){extra} "
-                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid "
-                f"AND NOT (document_ids CONTAINS :{doc_id_param_key})"
+                f"SET document_ids = (CASE WHEN document_ids CONTAINS "
+                f":{doc_id_param_key} THEN document_ids "
+                f"ELSE document_ids || [:{doc_id_param_key}] END), "
+                f"updated_at = sysdate(){run_id_set}{extra} "
+                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid"
             )
         else:
             update_sql = (
-                f"  UPDATE {rtype} SET updated_at = sysdate(){extra} "
+                f"  UPDATE {rtype} SET updated_at = sysdate(){run_id_set}{extra} "
                 f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid"
             )
 
@@ -284,7 +406,7 @@ def _build_upsert_relationship_script(
             f"FROM $src_{i}[0] TO $dst_{i}[0] "
             f"SET extraction_confidence = :{conf_key}, "
             f"document_ids = {doc_ids_expr}, "
-            f"created_at = sysdate(), updated_at = sysdate(){extra} "
+            f"created_at = sysdate(), updated_at = sysdate(){run_id_set}{extra} "
             f"RETURN @rid;\n"
             f"}} ELSE {{\n"
             f"{update_sql};\n"
@@ -428,6 +550,30 @@ def _build_structural_edge_sql(
         f"SET created_at = sysdate(){extra_set}"
     )
     return sql, props or None
+
+
+def _build_collection_upsert_sql(
+    source_id: str, name: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Build the find-or-create UPSERT for a Collection vertex keyed on source_id.
+
+    Mirrors ``upsert_document_node``'s ``UPDATE ... UPSERT RETURN AFTER @rid
+    WHERE ...`` idiom: idempotent on the UNIQUE ``Collection(source_id)`` index,
+    so two documents sharing a source_id converge on ONE Collection vertex
+    (never a blind INSERT). ``name`` is set only when provided (legacy/unknown
+    source name → source_id-only Collection, no crash).
+    """
+    params: dict[str, Any] = {"source_id": source_id}
+    name_set = ""
+    if name is not None:
+        params["name"] = name
+        name_set = "name = :name, "
+    sql = (
+        f"UPDATE Collection SET source_id = :source_id, {name_set}"
+        f"updated_at = sysdate() "
+        f"UPSERT RETURN AFTER @rid WHERE source_id = :source_id"
+    )
+    return sql, params
 
 
 def _build_resolve_root_entity_sql(
@@ -754,21 +900,26 @@ class ArcadeDBGraphStore:
     ) -> None:
         # HAS_PROVENANCE links entities to their source Document.
         # Distinct from EXTRACTED_FROM which links entities to specific chunks.
+        params = {
+            "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
+        }
+        # page_numbers is an int-list: inline as a SQL literal to avoid the
+        # bound-numeric-array nesting bug. _sql_list_set_fragment binds (and
+        # adds page_numbers to params) only when it isn't an all-int list.
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
-            "page_numbers = :page_numbers, "
+            f"{page_set}, "
             "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
             "created_at = sysdate()"
         )
-        params = {
-            "document_id": provenance.document_id,
-            "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
-            "upload_datetime": provenance.upload_datetime,
-            "document_datetime": provenance.document_datetime,
-        }
         await self._client.command(self._database, "sql", sql, params)
 
     async def upsert_nodes_batch(
@@ -801,17 +952,21 @@ class ArcadeDBGraphStore:
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
             "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
             "upload_datetime": provenance.upload_datetime,
             "document_datetime": provenance.document_datetime,
         }
+        # page_numbers is constant across all edges in the batch: build its SET
+        # fragment once (inline int-list literal, see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET document_id = :document_id, "
                 f"pipeline_run_id = :pipeline_run_id, "
-                f"page_numbers = :page_numbers, "
+                f"{page_set}, "
                 f"upload_datetime = :upload_datetime, "
                 f"document_datetime = :document_datetime, "
                 f"created_at = sysdate()"
@@ -972,6 +1127,39 @@ class ArcadeDBGraphStore:
         sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
         result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
+
+    async def upsert_collection_and_link(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Async twin of ``upsert_collection_and_link_sync`` (see it for the
+        idempotency contract). Find-or-create the Collection keyed on source_id,
+        then create Document -BELONGS_TO-> Collection only if absent. Missing
+        source_id → no-op, returns "".
+        """
+        if not source_id or not document_rid:
+            return ""
+        sql, params = _build_collection_upsert_sql(source_id, name)
+        result = await self._client.command(self._database, "sql", sql, params)
+        collection_rid = _rid(result)
+        if not collection_rid:
+            return ""
+        existing = await self._client.query(
+            self._database,
+            "sql",
+            f"SELECT @rid AS rid FROM (SELECT expand(outE('BELONGS_TO')) "
+            f"FROM {document_rid}) WHERE @in = {collection_rid} LIMIT 1",
+        )
+        if not existing:
+            await self._client.command(
+                self._database,
+                "sql",
+                f"CREATE EDGE BELONGS_TO FROM {document_rid} TO {collection_rid} "
+                f"SET created_at = sysdate()",
+            )
+        return collection_rid
 
     # ==================================================================
     # Query operations
@@ -1562,6 +1750,7 @@ class ArcadeDBGraphStore:
         top_k: int = 10,
         score_threshold: float | None = None,
         document_ids: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[GraphEntityResult]:
         """ANN search over node embeddings via vectorNeighbors.
 
@@ -1581,17 +1770,62 @@ class ArcadeDBGraphStore:
             Optional list of document UUIDs to restrict results to. Pushed into
             the ArcadeDB WHERE clause so the vector index budget isn't wasted on
             documents that will be filtered out.
+        filters:
+            Optional dict of additional vertex property filters (VR C.1). Each
+            key must be a property declared in the schema for this vertex type;
+            unknown keys raise ValueError to catch typos early. Compiled to
+            parameterized WHERE clauses (``{k} = :{k}`` pattern) and ANDed with
+            the document_ids clause when both are provided.
+            ``None`` or ``{}`` → unfiltered (no extra WHERE clause emitted).
         """
+        # --- Validate filters keys against the declared schema -----------------
+        # Import lazily to avoid circular dependency at module load time.
+        from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
+        if filters:
+            declared_props: set[str] = set()
+            if vertex_type in _STRUCTURAL_VERTEX_TYPES:
+                declared_props = {name for name, _ in _STRUCTURAL_VERTEX_TYPES[vertex_type]}
+            # For ontology entity types (not in _STRUCTURAL_VERTEX_TYPES), we
+            # skip validation because their property set is dynamic. Unknown
+            # structural-type keys are caught; dynamic types pass through.
+            if declared_props:
+                unknown = set(filters.keys()) - declared_props
+                if unknown:
+                    raise ValueError(
+                        f"vector_search filters contains unknown properties for vertex type "
+                        f"{vertex_type!r}: {sorted(unknown)}. "
+                        f"Known properties: {sorted(declared_props)}"
+                    )
+
+        # --- Build WHERE clause -------------------------------------------------
         index_name = f"{vertex_type}[{embedding_property}]"
         from app.config import get_settings as _gs
         ef = _gs().arcadedb_vector_ef_search
         ef_arg = f", {ef}" if ef > 0 else ""
 
-        # Push document_ids filter into the outer WHERE clause (native filtering)
-        where_clause = ""
+        params: dict[str, Any] = {
+            "query_vector": query_vector,
+            "top_k": top_k,
+        }
+
+        where_parts: list[str] = []
+
+        # Existing document_ids clause (string-interpolated, preserving the
+        # existing pattern — values are UUIDs, safe against SQL injection).
         if document_ids:
             doc_list = ", ".join(f"'{d}'" for d in document_ids)
-            where_clause = f" WHERE document_id IN [{doc_list}]"
+            where_parts.append(f"document_id IN [{doc_list}]")
+
+        # New filters clause — parameterized to avoid SQL injection.
+        if filters:
+            for k, v in filters.items():
+                param_key = f"filter_{k}"
+                where_parts.append(f"{k} = :{param_key}")
+                params[param_key] = v
+
+        where_clause = ""
+        if where_parts:
+            where_clause = " WHERE " + " AND ".join(where_parts)
 
         # ArcadeDB quirk: when vectorNeighbors is expanded inside a subquery,
         # `$distance` is NOT projected in the outer SELECT (only available while
@@ -1607,10 +1841,6 @@ class ArcadeDBGraphStore:
             f"{where_clause} "
             f"ORDER BY $distance ASC"
         )
-        params: dict[str, Any] = {
-            "query_vector": query_vector,
-            "top_k": top_k,
-        }
         rows = await self._client.query(self._database, "sql", sql, params)
         results = [_to_entity(r) for r in rows]
 
@@ -1997,6 +2227,7 @@ class ArcadeDBGraphStore:
         # Core vertex types
         vertex_types = [
             "Document", "TextChunk", "ImageChunk", "Alias", "BaseEntity",
+            "Collection",
         ]
         for vtype in vertex_types:
             try:
@@ -2008,7 +2239,7 @@ class ArcadeDBGraphStore:
 
         # Core edge types
         edge_types = [
-            "EXTRACTED_FROM", "HAS_ALIAS", "HAS_CHUNK",
+            "EXTRACTED_FROM", "HAS_ALIAS", "HAS_CHUNK", "BELONGS_TO",
         ]
         for etype in edge_types:
             try:
@@ -2028,6 +2259,7 @@ class ArcadeDBGraphStore:
             "CREATE INDEX IF NOT EXISTS ON TextChunk (document_id) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON ImageChunk (chunk_id) UNIQUE_HASH_INDEX",
             "CREATE INDEX IF NOT EXISTS ON ImageChunk (document_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Collection (source_id) UNIQUE_HASH_INDEX",
         ]
         for sql in indexes:
             try:
@@ -2108,21 +2340,25 @@ class ArcadeDBGraphStore:
     def _create_provenance_edge_sync(
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
+        params = {
+            "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
+        }
+        # page_numbers is an int-list: inline as a SQL literal to avoid the
+        # bound-numeric-array nesting bug (see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
-            "page_numbers = :page_numbers, "
+            f"{page_set}, "
             "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
             "created_at = sysdate()"
         )
-        params = {
-            "document_id": provenance.document_id,
-            "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
-            "upload_datetime": provenance.upload_datetime,
-            "document_datetime": provenance.document_datetime,
-        }
         self._client.command_sync(self._database, "sql", sql, params)
 
     def upsert_nodes_batch_sync(
@@ -2198,9 +2434,130 @@ class ArcadeDBGraphStore:
                 f"Missing: {missing_detail}"
             )
 
+        # --- Durability assertion: every returned RID must be queryable ---
+        # Task 3 (lineage_diagnostic_findings.md). RID presence above is
+        # necessary but NOT sufficient: the SA-2 silent zero-commit returned
+        # valid RIDs while persisting 0 rows. Re-read the just-written RIDs
+        # with a per-vertex-type existence query and assert the committed
+        # count matches what we wrote. If the read-back is short, the write
+        # did not durably commit — raise so the caller's rollback/FAILED path
+        # fires instead of marking the merge succeeded. ``records`` is passed
+        # so each RID can be grouped by its vertex type (rids[i] ↔ records[i],
+        # _extract_rids pads positionally).
+        self._assert_nodes_durable_sync(rids, records)
+
         if provenance:
             self._create_provenance_edges_batch_sync(rids, provenance)
         return rids
+
+    def _assert_nodes_durable_sync(
+        self,
+        rids: list[str],
+        records: list[NodeRecord],
+    ) -> None:
+        """Re-query just-upserted RIDs and assert all are committed/queryable.
+
+        ``rids`` are the (non-blank, already RID-checked) RIDs returned by the
+        upsert sqlscript; ``records`` is the parallel input list — ``rids[i]``
+        corresponds to ``records[i]`` because ``_extract_rids`` pads
+        positionally. We re-read each RID with a **type-scoped existence
+        query** and raise :class:`UpsertNotDurableError` if fewer rows are
+        actually present than we wrote.
+
+        Why type-scoped and not ``SELECT count(*) FROM [<rid>, ...]``:
+        proven against live ArcadeDB 26.5.1, ``count(*) FROM [#37:0,
+        #37:999999]`` returns **2** — it counts LIST ENTRIES, not existing
+        rows, so a non-durable RID never produces a short count and the
+        assertion was a no-op against the exact silent zero-commit it was
+        built to catch. ``SELECT count(*) FROM <Type> WHERE @rid IN [...]``
+        correctly returns only the rows that exist (verified: real+fake → 1).
+
+        Because a batch can span multiple vertex types (RADAR_SYSTEM,
+        MISSILE_SYSTEM, ...), a single ``FROM <Type>`` would under-count the
+        rest → false-fail. We group RIDs by their vertex type (routed through
+        ``_safe_type_name`` so reserved words like ``TABLE`` → ``TABLE_REF``
+        resolve to the class actually upserted) and issue one query per type,
+        summing the existing rows. Bounded by #types (~9), not per-entity.
+
+        Each per-type read is wrapped in the same read-after-write retry the
+        ``batch_create_entity_chunk_edges_sync`` edge loop uses: ArcadeDB's
+        ``asyncOperationsQueueSize=2048`` (docker-compose.yml) lets a separate
+        HTTP read race ahead of the async flush of a just-written row, so a
+        short count can be transient. We retry a few times with backoff before
+        treating a short count as a real durability failure — without this the
+        check could spuriously roll back a *good* merge under load.
+        """
+        if not rids:
+            return
+        # RIDs come straight from ArcadeDB's own response (e.g. "#10:0"); they
+        # are not user input, so embedding them in the @rid IN list is safe.
+        # Validate the shape defensively before interpolation. Keep the parallel
+        # record so we can route each RID to its vertex type.
+        type_to_rids: dict[str, list[str]] = {}
+        safe_rids: list[str] = []
+        for rid, rec in zip(rids, records):
+            if not (isinstance(rid, str) and rid.startswith("#")):
+                continue
+            safe_rids.append(rid)
+            vtype = _safe_type_name(rec.entity_type)
+            type_to_rids.setdefault(vtype, []).append(rid)
+        if not safe_rids:
+            return
+
+        expected = set(safe_rids)
+        committed_rids: set[str] = set()
+        for vtype, rids_for_type in type_to_rids.items():
+            committed_rids.update(
+                self._query_committed_rids_with_retry(vtype, rids_for_type)
+            )
+
+        missing = [r for r in safe_rids if r not in committed_rids]
+        if missing:
+            raise UpsertNotDurableError(
+                f"upsert_nodes_batch_sync: durability re-query found "
+                f"{len(committed_rids)}/{len(safe_rids)} upserted node(s) "
+                f"actually committed/queryable in ArcadeDB. "
+                f"Missing (not durable): {_truncate_rid_list(missing)}. "
+                f"Returned RIDs were {_truncate_rid_list(safe_rids)}. A "
+                f"returned @rid did NOT result in a durable row — refusing to "
+                f"report success on a silent zero/partial commit (see "
+                f"lineage_diagnostic_findings.md, Task 3)."
+            )
+
+    def _query_committed_rids_with_retry(
+        self,
+        vtype: str,
+        rids_for_type: list[str],
+    ) -> set[str]:
+        """Return the subset of ``rids_for_type`` that exist as ``vtype`` rows.
+
+        Issues ``SELECT @rid FROM <vtype> WHERE @rid IN [...]`` and returns the
+        @rids that came back. Retries on a SHORT result (fewer rows than asked
+        for) to ride out the async-flush read-after-write lag documented for
+        ``batch_create_entity_chunk_edges_sync`` — the same separate-HTTP
+        read-of-just-written-RIDs pattern. Returns whatever was found on the
+        last attempt; the caller decides whether the total is short.
+        """
+        rid_list = ", ".join(rids_for_type)
+        sql = f"SELECT @rid AS rid FROM {vtype} WHERE @rid IN [{rid_list}]"
+        found: set[str] = set()
+        for attempt in range(_DURABILITY_MAX_ATTEMPTS):
+            rows = self._client.query_sync(self._database, "sql", sql)
+            found = {
+                str(row.get("rid") or row.get("@rid"))
+                for row in rows
+                if isinstance(row, dict) and (row.get("rid") or row.get("@rid"))
+            }
+            if len(found) >= len(rids_for_type):
+                break
+            if attempt + 1 < _DURABILITY_MAX_ATTEMPTS:
+                logger.warning(
+                    "_assert_nodes_durable_sync: re-query found %d/%d %s "
+                    "rows on attempt %d — retrying (async-flush lag?)",
+                    len(found), len(rids_for_type), vtype, attempt + 1,
+                )
+                time.sleep(_DURABILITY_BACKOFF_BASE * (attempt + 1))
+        return found
 
     def _create_provenance_edges_batch_sync(
         self,
@@ -2215,17 +2572,21 @@ class ArcadeDBGraphStore:
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
             "pipeline_run_id": provenance.pipeline_run_id,
-            "page_numbers": provenance.page_numbers,
             "upload_datetime": provenance.upload_datetime,
             "document_datetime": provenance.document_datetime,
         }
+        # page_numbers is constant across all edges in the batch: build its SET
+        # fragment once (inline int-list literal, see _sql_list_set_fragment).
+        page_set = _sql_list_set_fragment(
+            "page_numbers", provenance.page_numbers, params, "page_numbers",
+        )
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET document_id = :document_id, "
                 f"pipeline_run_id = :pipeline_run_id, "
-                f"page_numbers = :page_numbers, "
+                f"{page_set}, "
                 f"upload_datetime = :upload_datetime, "
                 f"document_datetime = :document_datetime, "
                 f"created_at = sysdate()"
@@ -2299,6 +2660,58 @@ class ArcadeDBGraphStore:
         sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
+
+    def upsert_collection_and_link_sync(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Find-or-create the Collection for *source_id*, then link the Document.
+
+        Called immediately AFTER the root Document vertex is upserted (the worker
+        path is sync). Two-step, fully idempotent:
+
+          1. ``UPDATE Collection ... UPSERT WHERE source_id`` — keyed on the
+             UNIQUE ``Collection(source_id)`` index, so every document in the
+             same collection converges on ONE Collection vertex (re-ingest is a
+             no-op update, never a duplicate).
+          2. ``CREATE EDGE BELONGS_TO`` Document -> Collection, guarded by a
+             prior existence query (mirrors the relationship find-or-create), so
+             a re-ingest / graph_only re-run does NOT stack duplicate edges.
+
+        None-guard: a missing/blank ``source_id`` (legacy or unknown source)
+        skips Collection creation entirely and returns "" — never raises.
+        Returns the Collection @rid (or "").
+        """
+        if not source_id:
+            return ""
+        if not document_rid:
+            return ""
+
+        # 1. find-or-create the Collection vertex (idempotent on source_id).
+        sql, params = _build_collection_upsert_sql(source_id, name)
+        result = self._client.command_sync(self._database, "sql", sql, params)
+        collection_rid = _rid(result)
+        if not collection_rid:
+            return ""
+
+        # 2. create Document -BELONGS_TO-> Collection ONLY if absent (no dup on
+        #    re-ingest). Existence pre-check by both endpoint RIDs.
+        existing = self._client.query_sync(
+            self._database,
+            "sql",
+            f"SELECT @rid AS rid FROM (SELECT expand(outE('BELONGS_TO')) "
+            f"FROM {document_rid}) WHERE @in = {collection_rid} LIMIT 1",
+        )
+        if not existing:
+            self._client.command_sync(
+                self._database,
+                "sql",
+                f"CREATE EDGE BELONGS_TO FROM {document_rid} TO {collection_rid} "
+                f"SET created_at = sysdate()",
+            )
+        return collection_rid
 
     def set_vertex_embedding_sync(
         self,
@@ -2714,6 +3127,88 @@ class ArcadeDBGraphStore:
             "for document %s (preserved chunks, Document vertex, global "
             "entities, cross-doc HAS_PROVENANCE)",
             executed, document_id,
+        )
+        return executed
+
+    def retract_document_domain_edges_sync(
+        self,
+        document_id: str,
+        domain_edge_types: list[str],
+    ) -> int:
+        """Retract this document's prior DOMAIN relationship edges.
+
+        Called by the merge phase BEFORE re-committing the run's domain edges so
+        the doc's domain-edge population after any run == exactly what THIS run
+        extracted (find-or-create only re-touches re-emitted edges; un-re-emitted
+        prior edges otherwise keep STALE lineage that breaks the doc-scoped
+        fail-closed lineage gate). ``domain_edge_types`` is the gate-aligned set
+        of domain relationship classes (see
+        pipeline._domain_relationship_edge_types) — NEVER structural edge classes
+        (HAS_*, NEAR_TEXT, CONTAINS, MENTIONED_IN, EXTRACTED_FROM, CONTAINS_TEXT)
+        and NEVER HAS_PROVENANCE (those carry no per-document domain-edge lineage
+        and have separate retraction semantics in delete_extraction_layer_graph_sync).
+
+        For EACH domain edge class, issues the same two-statement document-scoping
+        idiom delete_extraction_layer_graph_sync uses for domain edges:
+          1. UPDATE — remove this doc_id from the edge's ``document_ids`` LIST
+             (shared edges referenced by OTHER docs only shrink; a single-owner
+             edge's list empties).
+          2. DELETE — prune edges whose ``document_ids`` is now empty
+             (``size() = 0``) — i.e. single-owner edges of THIS doc. Shared edges
+             (list still non-empty) are kept.
+
+        Each statement is independently wrapped in try/except + logger.debug: a
+        missing edge class on a fresh DB is a no-op, not a crash. Returns the count
+        of statements that executed successfully (logging parity with
+        delete_extraction_layer_graph_sync).
+        """
+        if not domain_edge_types:
+            return 0
+
+        executed = 0
+        params = {"doc_id": document_id}
+
+        for edge_class in domain_edge_types:
+            # 1. Shrink: remove this doc from the edge's document_ids list.
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"UPDATE {edge_class} "
+                    f"SET document_ids = document_ids.remove(:doc_id) "
+                    f"WHERE document_ids CONTAINS :doc_id",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "retract_document_domain_edges_sync: %s shrink skipped "
+                    "(class may not exist yet): %s",
+                    edge_class, exc,
+                )
+            # 2. Prune: delete edges now owned by no document (single-owner of
+            #    this doc). Shared edges (list still non-empty) are preserved.
+            #    (params carries the same doc_id for call-site symmetry; the
+            #    prune predicate is doc-agnostic — it deletes any now-empty edge.)
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"DELETE FROM {edge_class} "
+                    f"WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "retract_document_domain_edges_sync: %s prune skipped "
+                    "(class may not exist yet): %s",
+                    edge_class, exc,
+                )
+
+        logger.info(
+            "retract_document_domain_edges_sync: %d SQL statements executed "
+            "across %d domain edge classes for document %s (re-emitted edges "
+            "are recommitted with fresh lineage immediately after)",
+            executed, len(domain_edge_types), document_id,
         )
         return executed
 

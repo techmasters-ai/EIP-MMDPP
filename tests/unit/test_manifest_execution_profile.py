@@ -1,0 +1,256 @@
+"""C2 — ExecutionProfile schema validation tests.
+
+Verifies the optional ``execution:`` block on PassManifest:
+- accepted in various shapes (partial, full, null, omitted)
+- rejected for bad types
+- back-compat with manifests that have no execution block
+- real air_defense_v3 manifests load after Iter 1 annotations
+
+Run standalone:
+    python3 -m pytest tests/unit/test_manifest_execution_profile.py -v
+"""
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+
+_MISSING = object()
+
+
+def _raw_pass(
+    name: str = "radar_identity",
+    input_mode: str = "document_only",
+    *,
+    phase: str = "identity",
+    execution=_MISSING,
+) -> dict:
+    d = {
+        "name": name,
+        "required": False,
+        "kind": "entities",
+        "input_mode": input_mode,
+        "module": "extraction_schemas.placeholder",
+        "template_class": "PlaceholderPass",
+        "phase": phase,
+    }
+    if execution is not _MISSING:
+        d["execution"] = execution
+    return d
+
+
+# ---------------------------------------------------------------------------
+# 1. execution block omitted → PassManifest.execution is None
+# ---------------------------------------------------------------------------
+
+class TestExecutionOmitted:
+
+    def test_omitted_execution_is_none(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass())
+        assert p.execution is None
+
+    def test_omitted_execution_back_compat_with_existing_passes(self):
+        """All existing passes (no execution key) parse cleanly."""
+        from app.services.ontology_bundles import PassManifest
+        for name in ("radar_power_rf", "missile_kinematics", "system_links"):
+            p = PassManifest.model_validate(
+                _raw_pass(name, phase="field_group")
+            )
+            assert p.execution is None
+
+
+# ---------------------------------------------------------------------------
+# 2. execution: null → None
+# ---------------------------------------------------------------------------
+
+class TestExecutionNull:
+
+    def test_explicit_null_is_none(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass(execution=None))
+        assert p.execution is None
+
+
+# ---------------------------------------------------------------------------
+# 3. Partial execution block — only llm_batch_token_size
+# ---------------------------------------------------------------------------
+
+class TestPartialExecutionBlock:
+
+    def test_only_llm_batch_token_size(self):
+        from app.services.ontology_bundles import PassManifest, ExecutionProfile
+        p = PassManifest.model_validate(_raw_pass(execution={"llm_batch_token_size": 2048}))
+        assert p.execution is not None
+        assert p.execution.llm_batch_token_size == 2048
+        assert p.execution.temperature is None
+        assert p.execution.max_tokens is None
+        assert p.execution.chunk_max_tokens is None
+
+    def test_only_temperature(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass(execution={"temperature": 0.3}))
+        assert p.execution is not None
+        assert p.execution.temperature == pytest.approx(0.3)
+        assert p.execution.llm_batch_token_size is None
+
+    def test_only_max_tokens(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass(execution={"max_tokens": 8192}))
+        assert p.execution is not None
+        assert p.execution.max_tokens == 8192
+
+    def test_only_chunk_max_tokens(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass(execution={"chunk_max_tokens": 256}))
+        assert p.execution is not None
+        assert p.execution.chunk_max_tokens == 256
+
+
+# ---------------------------------------------------------------------------
+# 4. Full execution block — all four fields
+# ---------------------------------------------------------------------------
+
+class TestFullExecutionBlock:
+
+    def test_all_four_fields(self):
+        from app.services.ontology_bundles import PassManifest
+        p = PassManifest.model_validate(_raw_pass(execution={
+            "chunk_max_tokens": 256,
+            "llm_batch_token_size": 2048,
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        }))
+        assert p.execution is not None
+        assert p.execution.chunk_max_tokens == 256
+        assert p.execution.llm_batch_token_size == 2048
+        assert p.execution.temperature == pytest.approx(0.2)
+        assert p.execution.max_tokens == 8192
+
+
+# ---------------------------------------------------------------------------
+# 5. Bad types are rejected
+# ---------------------------------------------------------------------------
+
+class TestExecutionBadTypes:
+
+    def test_string_for_llm_batch_token_size_raises(self):
+        from app.services.ontology_bundles import PassManifest
+        with pytest.raises(ValidationError):
+            PassManifest.model_validate(_raw_pass(execution={"llm_batch_token_size": "two-thousand"}))
+
+    def test_string_for_temperature_raises(self):
+        from app.services.ontology_bundles import PassManifest
+        with pytest.raises(ValidationError):
+            PassManifest.model_validate(_raw_pass(execution={"temperature": "warm"}))
+
+    def test_list_for_execution_raises(self):
+        from app.services.ontology_bundles import PassManifest
+        with pytest.raises(ValidationError):
+            PassManifest.model_validate(_raw_pass(execution=["llm_batch_token_size", 2048]))
+
+
+# ---------------------------------------------------------------------------
+# 6. Real manifests load after Iter 1 annotations
+# ---------------------------------------------------------------------------
+
+class TestRealManifestsWithExecutionAnnotations:
+
+    def test_air_defense_v3_subset_loads_cleanly(self):
+        """air_defense_v3_baseline_subset has identity passes annotated with execution."""
+        from app.services.ontology_bundles import load_bundle_manifest
+        m = load_bundle_manifest("air_defense_v3_baseline_subset")
+        for p in m.passes:
+            # Every pass loads; execution is None or valid ExecutionProfile
+            if p.execution is not None:
+                from app.services.ontology_bundles import ExecutionProfile
+                assert isinstance(p.execution, ExecutionProfile)
+
+    def test_air_defense_v3_loads_cleanly(self):
+        """Full bundle with identity-pass execution annotations loads cleanly."""
+        from app.services.ontology_bundles import load_bundle_manifest
+        m = load_bundle_manifest("air_defense_v3")
+        for p in m.passes:
+            if p.execution is not None:
+                from app.services.ontology_bundles import ExecutionProfile
+                assert isinstance(p.execution, ExecutionProfile)
+
+    def test_no_pass_has_execution_overrides(self):
+        """Regression guard: C2 was retired after user's prior experiments
+        confirmed env defaults (DOCLING_GRAPH_CHUNK_MAX_TOKENS=512,
+        DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE=512, system_links-specific 4096
+        overrides via dedicated env vars) yield optimal extraction quality.
+        The ExecutionProfile infrastructure remains available for future
+        per-pass knob experiments targeting areas prior experiments did NOT
+        cover (e.g. per-pass temperature, max_tokens, or a non-batch-size
+        knob), but no current annotations exist on either bundle."""
+        from app.services.ontology_bundles import load_bundle_manifest
+        for bundle_key in ("air_defense_v3", "air_defense_v3_baseline_subset"):
+            m = load_bundle_manifest(bundle_key)
+            with_overrides = [p.name for p in m.passes if p.execution is not None]
+            assert with_overrides == [], (
+                f"Bundle {bundle_key!r}: unexpected execution overrides on passes "
+                f"{with_overrides}. C2 was retired; env defaults should be in effect."
+            )
+
+
+# ---------------------------------------------------------------------------
+# 7. Fix 2 — Range validation on ExecutionProfile fields
+# ---------------------------------------------------------------------------
+
+class TestExecutionProfileRangeValidation:
+    """ExecutionProfile must reject out-of-range values and misspelled keys."""
+
+    def test_llm_batch_token_size_zero_raises(self):
+        """llm_batch_token_size: 0 → ValidationError (must be > 0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(llm_batch_token_size=0)
+
+    def test_llm_batch_token_size_negative_raises(self):
+        """llm_batch_token_size: -100 → ValidationError."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(llm_batch_token_size=-100)
+
+    def test_chunk_max_tokens_zero_raises(self):
+        """chunk_max_tokens: 0 → ValidationError (must be > 0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(chunk_max_tokens=0)
+
+    def test_temperature_negative_raises(self):
+        """temperature: -0.1 → ValidationError (must be >= 0.0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(temperature=-0.1)
+
+    def test_temperature_above_two_raises(self):
+        """temperature: 2.1 → ValidationError (must be <= 2.0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(temperature=2.1)
+
+    def test_temperature_zero_is_valid(self):
+        """temperature: 0.0 is valid (deterministic)."""
+        from app.services.ontology_bundles import ExecutionProfile
+        ep = ExecutionProfile(temperature=0.0)
+        assert ep.temperature == pytest.approx(0.0)
+
+    def test_temperature_two_is_valid(self):
+        """temperature: 2.0 is valid (high-creativity ceiling)."""
+        from app.services.ontology_bundles import ExecutionProfile
+        ep = ExecutionProfile(temperature=2.0)
+        assert ep.temperature == pytest.approx(2.0)
+
+    def test_misspelled_key_raises_with_extra_forbid(self):
+        """llm_batch_size_token (missing second 'token') → ValidationError due to extra='forbid'."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(**{"llm_batch_size_token": 2048})

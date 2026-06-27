@@ -1,31 +1,111 @@
---- a/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:09:55.970817886 -0500
-+++ b/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:10:17.414767637 -0500
-@@ -516,6 +516,24 @@
+--- a/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-06-14 08:43:07.604783788 -0500
++++ b/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-06-14 08:43:07.609783787 -0500
+@@ -45,6 +45,55 @@
+     return int(val)
+ 
+ 
++def _drain_futures_with_progress_watchdog(
++    futures_map,
++    no_progress_seconds,
++    *,
++    wait=None,
++):
++    """No-progress (inter-arrival) watchdog over a map of {future: original_idx}.
++
++    PATCH 2026-06-13 (R1): replaces the previous total-elapsed BATCH_HARD ceiling.
++    The old code wrapped the loop in ``as_completed(futures, timeout=T)`` +
++    ``future.result(timeout=T)``. ``as_completed``'s timeout is the TOTAL wall
++    budget for iterating over ALL futures, not per-batch, so a large doc whose
++    legitimate aggregate batch time exceeds ``T`` (e.g. 174 batches / 2 workers)
++    had its healthy queued futures cancelled and mis-degraded to the slow
++    sequential split-retry.
++
++    This watchdog measures the INTER-ARRIVAL gap instead: it only trips when NO
++    future completes within a single ``no_progress_seconds`` slice. A slow but
++    progressing pass (each batch finishing within the window of the previous
++    completion) never trips, independent of N; a genuinely deadlocked pool
++    (every worker stuck, zero completions) trips within one window.
++
++    Yields ``(future, original_idx, result)`` for each completed future (result
++    is ``future.result()`` with NO timeout — the per-LLM-call stream wall-timeout
++    already bounds a single call; this detector handles the deadlock class).
++    Returns the set of still-pending futures that were hung when a stall tripped
++    (empty set if every future drained). The caller cancels the returned hung
++    futures and routes them to failed_batches with a BATCH_NO_PROGRESS message.
++    """
++    import concurrent.futures as _cf
++
++    if wait is None:
++        wait = _cf.wait
++    pending = set(futures_map.keys())
++    while pending:
++        done, not_done = wait(
++            pending,
++            timeout=no_progress_seconds,
++            return_when=_cf.FIRST_COMPLETED,
++        )
++        if not done:
++            # A full no-progress slice elapsed with zero completions -> stall.
++            return set(not_done)
++        for _future in done:
++            yield _future, futures_map[_future], _future.result()
++        pending = not_done
++    return set()
++
++
+ @dataclass
+ class DeltaOrchestratorConfig:
+     """Config for delta extraction orchestration."""
+@@ -516,6 +565,48 @@
          split_failures = 0
  
          if self._config.parallel_workers > 1 and len(batch_plan) > 1:
-+            # PATCH 2026-04-30: eliminate silent deadlock when an
-+            # httpx.post() hangs inside _run_one_batch with no exception
-+            # raised. Without timeouts on as_completed() AND
-+            # future.result(), a hung future causes the for-loop to block
-+            # forever AND ThreadPoolExecutor.__exit__ -> shutdown(wait=True)
-+            # to block forever, freezing the entire pass with zero log
-+            # output. The per-batch ceiling here MUST be >= the OllamaPool
-+            # client's read-timeout (1800s/30min) so legitimate slow LLM
-+            # generations get to surface naturally as ReadTimeout (which
-+            # _run_one_batch handles via its existing failed_batches path)
-+            # before this watchdog fires. Default 3600s (1h); overridable
-+            # via DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS env var.
-+            import os as _os_for_timeout
-+            _per_batch_timeout = float(
-+                _os_for_timeout.environ.get("DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS", "3600")
-+            )
-+            from concurrent.futures import TimeoutError as _FuturesTimeoutError
++            # PATCH 2026-06-13 (R1): no-progress (inter-arrival) watchdog.
++            # Eliminates the silent-deadlock class (an httpx.post() hanging
++            # inside _run_one_batch with no exception, which would block the
++            # as_completed for-loop forever AND ThreadPoolExecutor.__exit__ ->
++            # shutdown(wait=True) forever, freezing the pass with no log output)
++            # WITHOUT mis-degrading large docs. The budget is now PER-INTER-
++            # ARRIVAL: we abort only when NO batch completes within one window,
++            # not when the doc's TOTAL batch time exceeds a ceiling. The window
++            # MUST be >= the OllamaPool stream wall-timeout (1800s) so a single
++            # legitimately slow LLM generation surfaces naturally (as ReadTimeout
++            # handled by _run_one_batch's failed_batches path) before the
++            # watchdog fires. Default 2400s; overridable via
++            # DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS (meaning is now the
++            # no-progress window, not a per-batch / total ceiling).
++            _no_progress_seconds = float(os.environ.get("DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS", "2400"))
++            # PATCH 2026-06-14 (R2): feed the passive per-pass progress registry
++            # from the drain loop so GET /progress can report batch-level
++            # liveness. Import is guarded: the registry + thread-local live in
++            # app.* (copied to /app/app and importable at runtime via the
++            # editable install), but standalone library unit tests can't import
++            # app -> fall back to no-op stubs so the drain never depends on it.
++            # All registry calls go through _pr_safe (best-effort, swallows any
++            # exception) so a registry fault can never break extraction.
++            try:
++                from app._progress_registry import (
++                    start as _pr_start, advance as _pr_advance,
++                    touch as _pr_touch, clear as _pr_clear,
++                )
++                from app.main import _pass_progress_overrides as _pr_ovr
++                _pr_run = getattr(_pr_ovr, "run_id", None)
++                _pr_pass = getattr(_pr_ovr, "pass_name", None)
++            except Exception:  # standalone lib test / app not importable
++                _pr_start = _pr_advance = _pr_touch = _pr_clear = None
++                _pr_run = _pr_pass = None
++
++            def _pr_safe(_fn, *_a):
++                if _fn is not None and _pr_run and _pr_pass:
++                    try:
++                        _fn(_pr_run, _pr_pass, *_a)
++                    except Exception:
++                        pass
 +
              with ThreadPoolExecutor(max_workers=self._config.parallel_workers) as pool:
                  futures = {
                      pool.submit(
-@@ -529,15 +547,53 @@
+@@ -529,15 +620,67 @@
                      ): i
                      for i, batch in enumerate(batch_plan)
                  }
@@ -38,50 +118,64 @@
 -                        effective_batch_plan.append(batch_plan[original_batch_idx])
 -                    elif errors:
 -                        failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
-+                _hung_batch_idxs: list[int] = []
++                _pr_safe(_pr_start, len(futures))
++                _drainer = _drain_futures_with_progress_watchdog(
++                    futures, _no_progress_seconds
++                )
++                _hung_futures: set = set()
 +                try:
-+                    for future in as_completed(futures, timeout=_per_batch_timeout):
-+                        original_batch_idx = futures[future]
-+                        batch_idx, graph_dict, errors, elapsed = future.result(
-+                            timeout=_per_batch_timeout
-+                        )
-+                        batch_timings.append(
-+                            {"batch_index": batch_idx, "elapsed_seconds": elapsed}
-+                        )
++                    while True:
++                        try:
++                            future, original_batch_idx, result = next(_drainer)
++                        except StopIteration as _stop:
++                            # Generator return value = set of still-pending
++                            # futures that were hung when a no-progress stall
++                            # tripped (empty if every future drained).
++                            _hung_futures = _stop.value or set()
++                            break
++                        # One batch completed -> advance the registry counter.
++                        _pr_safe(_pr_advance)
++                        batch_idx, graph_dict, errors, elapsed = result
++                        batch_timings.append({"batch_index": batch_idx, "elapsed_seconds": elapsed})
 +                        if graph_dict is not None:
 +                            successful_results.append(graph_dict)
 +                            effective_batch_plan.append(batch_plan[original_batch_idx])
 +                        elif errors:
-+                            failed_batches.append(
-+                                (batch_idx, batch_plan[original_batch_idx], errors)
++                            failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
++                finally:
++                    # Record the phase transition (batches -> merging) for
++                    # very-large-doc robustness, then clear. clear() ALWAYS
++                    # runs (normal drain, stall, or a drain exception) so a pass
++                    # never leaves a stale registry entry; touch+clear here
++                    # means the next pass's start() also overwrites the key.
++                    _pr_safe(_pr_touch, "merging")
++                    _pr_safe(_pr_clear)
++                if _hung_futures:
++                    # No batch completed within the no-progress window: surface
++                    # the stall loudly, cancel the hung futures (so
++                    # shutdown(wait=True) doesn't itself block on them) and route
++                    # them to failed_batches so split-retry / quality_gate react.
++                    _hung_batch_idxs: list[int] = []
++                    for _f in _hung_futures:
++                        _i = futures[_f]
++                        _hung_batch_idxs.append(_i)
++                        _f.cancel()
++                        failed_batches.append(
++                            (
++                                _i,
++                                batch_plan[_i],
++                                [
++                                    f"BATCH_NO_PROGRESS: no batch completed within "
++                                    f"{_no_progress_seconds:.0f}s (orchestrator.py "
++                                    f"no-progress watchdog); possible httpx hang "
++                                    f"inside _run_one_batch (silent-deadlock class).",
++                                ],
 +                            )
-+                except _FuturesTimeoutError as _to_exc:
-+                    # Surface the deadlock loudly. Identify which futures
-+                    # never completed and add them to failed_batches so
-+                    # split-retry / quality_gate can react. Cancel the
-+                    # hung futures so shutdown(wait=True) doesn't itself
-+                    # block on the same hangs.
-+                    for _f, _i in futures.items():
-+                        if not _f.done():
-+                            _hung_batch_idxs.append(_i)
-+                            _f.cancel()
-+                            failed_batches.append(
-+                                (
-+                                    _i,
-+                                    batch_plan[_i],
-+                                    [
-+                                        f"BATCH_HARD_TIMEOUT after "
-+                                        f"{_per_batch_timeout:.0f}s - future never "
-+                                        f"completed; possible httpx hang inside "
-+                                        f"_run_one_batch (orchestrator.py "
-+                                        f"silent-deadlock class).",
-+                                    ],
-+                                )
-+                            )
++                        )
 +                    print(
-+                        f"Warning: BATCH_HARD_TIMEOUT - {len(_hung_batch_idxs)} of "
-+                        f"{len(futures)} futures did not complete within "
-+                        f"{_per_batch_timeout:.0f}s; hung batch_idxs="
++                        f"Warning: BATCH_HARD_TIMEOUT - no batch completed within "
++                        f"{_no_progress_seconds:.0f}s; {len(_hung_batch_idxs)} of "
++                        f"{len(futures)} futures still pending; hung batch_idxs="
 +                        f"{sorted(_hung_batch_idxs)}",
 +                        flush=True,
 +                    )

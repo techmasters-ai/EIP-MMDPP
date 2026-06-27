@@ -142,6 +142,24 @@ import docling_graph.core.extractors.contracts.delta.orchestrator as _dg_delta_o
 
 _pass_orchestrator_overrides = _threading_for_dg_orch_patch.local()
 
+# R2: thread-local bridge between the /extract-pass handler and the
+# (separately-patched) batch loop, so a progress registry can key by
+# (run_id, pass_name).  Set before run_pipeline() and reset in the finally so
+# it never leaks across passes on the same worker thread.  Readers use a
+# default-safe getattr, e.g.:
+#   run_id = getattr(_pass_progress_overrides, "run_id", None)
+_pass_progress_overrides = _threading_for_dg_orch_patch.local()
+
+# Task F3 (§9 subset-schema extraction): thread-local bridge between the
+# /extract-pass handler and LlmBackend.extract_from_markdown.  Set before
+# run_pipeline() and reset in the finally block so it never leaks across passes
+# on the same worker thread.  LlmBackend reads it via:
+#   from docling_graph.core.extractors.backends.llm_backend import _llm_backend_overrides
+#   field_subset = getattr(_llm_backend_overrides, "field_subset", None)
+from docling_graph.core.extractors.backends.llm_backend import (
+    _llm_backend_overrides as _pass_llm_schema_overrides,
+)
+
 _orig_dg_delta_orchestrator_init = _dg_delta_orchestrator.DeltaOrchestrator.__init__
 
 
@@ -169,6 +187,7 @@ from app.evidence_gate import (
 )
 from app.provenance import (
     build_auto_field_evidence,
+    build_entity_provenance_from_delta_graph,
     build_provenance_from_context,
     build_relationship_provenance_from_delta_trace,
     synthesize_provenance_from_pass_output,
@@ -256,6 +275,26 @@ async def lifespan(app: FastAPI):
     validate_token_invariants()
 
     app.state.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    # C1 (walltime-reduction Phase 1): emit a startup line summarizing the
+    # effective LLM in-flight budget so an operator can see at a glance
+    # whether the three concurrency knobs agree with the Ollama slot count.
+    # Warn-only — enforcement lives in ollama_clients.py via BoundedSemaphore.
+    try:
+        from app._concurrency_budget import emit_concurrency_budget_warning
+        _dg_settings_for_budget = DoclingGraphSettings()
+        emit_concurrency_budget_warning(
+            max_concurrent_extractions=MAX_CONCURRENT,
+            parallel_workers=_dg_settings_for_budget.docling_graph_parallel_workers,
+            llm_max_in_flight=_dg_settings_for_budget.docling_graph_llm_max_in_flight,
+        )
+    except Exception as _budget_exc:
+        # Defensive: a startup observation must never block the service.
+        logger.warning(
+            "concurrency-budget warning emit failed: %s (continuing).",
+            _budget_exc,
+        )
+
     yield
     logger.info("Shutting down")
 
@@ -565,6 +604,11 @@ def run_extraction_pass(
     llm_batch_token_size: int | None = None,
     model: str | None = None,
     think: bool | str | None = None,
+    chunk_max_tokens: int | None = None,
+    max_tokens: int | None = None,
+    pre_built_chunks: list[dict[str, Any]] | None = None,
+    field_subset: list[str] | None = None,
+    pipeline_run_id: str | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -580,10 +624,22 @@ def run_extraction_pass(
     upstream_entities is non-empty, the preamble is appended to the document's
     texts array and prepended to body.children so that export_to_markdown()
     includes it at the top of the document body for all three extraction contracts.
+
+    C0 telemetry (walltime-reduction Phase 0): three per-phase milliseconds —
+    ``sanitize_ms``, ``table_normalization_ms``, ``run_pipeline_ms`` — are
+    captured into the returned ``context._delta_trace`` so the worker can
+    persist them in pipeline_pass_outputs.diagnostics.
     """
     import shutil
     import tempfile
+    import time
     from docling_graph import run_pipeline
+    from app._telemetry import PhaseTimer
+
+    # C0 phase-timing sink. Merged into context._delta_trace after run_pipeline
+    # returns (or stub-context is built). Keys: sanitize_ms,
+    # table_normalization_ms, run_pipeline_ms.
+    _phase_timings: dict = {}
 
     # --- Empty-source short-circuit --------------------------------------
     # If the DoclingDocument has no body content AND no registered items
@@ -609,18 +665,36 @@ def run_extraction_pass(
     # count is recorded in diagnostics so an operator can verify the
     # heuristic isn't too aggressive (surfaced in the notebook outcome
     # tracker's `sanit` column).
+    #
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b: when the caller
+    # supplied ``pre_built_chunks``, the worker has ALREADY filtered the
+    # doc (Layer-1 worker filter) and merged-chunked it (HybridChunker
+    # against bge-m3). Running sanitize on top would alter the doc in
+    # ways the chunked path can't account for — and the chunks themselves
+    # never touch ``docling_document_json`` from here on, so any sanitize
+    # change is wasted work. Skip both transforms when ``pre_built_chunks``
+    # rides the call.
     sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
     _settings_for_sanitize = DoclingGraphSettings()
-    if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
-        docling_document_json = _sanitize_docling_document(
-            docling_document_json, sanitize_stats
-        )
-        if sanitize_stats["texts_dropped"] > 0:
+    _chunked_mode = bool(pre_built_chunks)
+    with PhaseTimer(_phase_timings, "sanitize_ms"):
+        if _chunked_mode:
             logger.info(
-                "GRAPH_EXTRACTION_SANITIZED pass=%s texts_in=%d texts_dropped=%d "
-                "(filtered web-cruft texts before chunking; image captions preserved)",
-                pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
+                "GRAPH_EXTRACTION_CHUNKED_MODE pass=%s chunks=%d "
+                "(skip sanitize + DocumentChunker; worker-supplied chunks "
+                "are LLM batches)",
+                pass_name, len(pre_built_chunks),
             )
+        elif getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
+            docling_document_json = _sanitize_docling_document(
+                docling_document_json, sanitize_stats
+            )
+            if sanitize_stats["texts_dropped"] > 0:
+                logger.info(
+                    "GRAPH_EXTRACTION_SANITIZED pass=%s texts_in=%d texts_dropped=%d "
+                    "(filtered web-cruft texts before chunking; image captions preserved)",
+                    pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
+                )
 
     # Section-aware table-fact synthesis (table_facts.py + alias_map.py) was
     # built and validated in the 2026-05-06 plan, then reverted here after
@@ -654,7 +728,14 @@ def run_extraction_pass(
     # 26 relationships vs v6/v7/v8a-prime (norm ON for system_links) yielding 8-17.
     # cross_entity_hints promotion + alias plumbing run independently and add edges
     # on TOP of the LLM's emissions regardless of this gate.
-    _norm_skipped_for_pass = pass_name == "system_links"
+    # C0 telemetry: time the full table-normalization block (all 4 branches:
+    # both-flags / norm-only-and-not-skipped / experimental / both-off). Long
+    # block — inline perf_counter avoids re-indenting 140+ lines.
+    _norm_t0 = time.perf_counter()
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b: chunked-mode also
+    # bypasses table normalization — the worker-supplied chunks ARE the
+    # LLM batches, no further doc rewriting matters downstream.
+    _norm_skipped_for_pass = pass_name == "system_links" or _chunked_mode
     if _norm_on and _norm_skipped_for_pass:
         logger.info(
             "table_normalization: skipping for pass=%s (relationship-only "
@@ -801,6 +882,7 @@ def run_extraction_pass(
                 "with today's raw-blob behavior.", _exc,
             )
     # else: both flags off — today's production behavior, nothing inserted.
+    _phase_timings["table_normalization_ms"] = (time.perf_counter() - _norm_t0) * 1000.0
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -827,6 +909,7 @@ def run_extraction_pass(
         ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
         ctx._chunk_to_self_refs = None  # no doc, nothing to map
         ctx._chunk_to_evidence_units = {}  # no doc, nothing to map
+        ctx._chunk_to_page_numbers = {}  # no doc, nothing to map
         ctx._delta_trace = {
             "empty_source": True,
             "reason": "docling_document_has_no_extractable_content",
@@ -894,6 +977,12 @@ def run_extraction_pass(
             llm_batch_token_size_override=llm_batch_token_size,
             model_override=model,
             think_override=think,
+            chunk_max_tokens_override=chunk_max_tokens,
+            max_tokens_override=max_tokens,
+            # Plan 2026-05-27-merged-chunk-routing.md Task 0b: chunked-mode
+            # routing. None on the legacy path; populated when the worker
+            # supplied pre-built merged chunks.
+            pre_built_chunks=pre_built_chunks,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -925,6 +1014,9 @@ def run_extraction_pass(
         sys.stdout = _Tee(original_stdout, library_log_buf)
         sys.stderr = _Tee(original_stderr, library_log_buf)
         pipeline_error: Exception | None = None
+        # C0 telemetry: capture LLM-side run_pipeline wall regardless of which
+        # branch (success / library-raised-stub) the try/except resolves to.
+        _pipeline_t0 = time.perf_counter()
         # Per-pass override for the library's DOCUMENT-CONTEXT char cap.
         # When a preamble was injected (document_plus_entity_refs passes),
         # tell the DeltaOrchestrator (patched at module import) to size its
@@ -938,7 +1030,24 @@ def run_extraction_pass(
             _pass_orchestrator_overrides.global_context_max_chars = (
                 len(preamble) + 1024
             )
+        # Task F3 (§9): wire the field_subset advisory into LlmBackend via the
+        # thread-local.  LlmBackend.extract_from_markdown reads this and builds
+        # a restricted prompt schema when non-None.  field_subset=None (default)
+        # is the opt-out path — byte-identical full-schema behavior.
         try:
+            if field_subset is not None:
+                _pass_llm_schema_overrides.field_subset = field_subset
+                logger.info(
+                    "GRAPH_EXTRACTION_FIELD_SUBSET pass=%s fields=%d subset=%s",
+                    pass_name,
+                    len(field_subset),
+                    field_subset[:10],  # log first 10 to keep lines short
+                )
+            # R2: publish (run_id, pass_name) on the thread-local so the
+            # (separately-patched) batch loop can correlate progress events.
+            # Reset in the finally below so it never leaks across passes.
+            _pass_progress_overrides.run_id = pipeline_run_id
+            _pass_progress_overrides.pass_name = pass_name
             context = run_pipeline(config)
         except Exception as exc:
             # Library raised PipelineError (or anything else). Build a stub
@@ -975,11 +1084,18 @@ def run_extraction_pass(
 
             context = _PipelineFailureContext()
         finally:
+            _phase_timings["run_pipeline_ms"] = (time.perf_counter() - _pipeline_t0) * 1000.0
             sys.stdout = original_stdout
             sys.stderr = original_stderr
             # Reset the per-pass orchestrator override so the next call
             # on this worker thread doesn't inherit our cap.
             _pass_orchestrator_overrides.global_context_max_chars = None
+            # Task F3: reset field_subset thread-local to prevent cross-pass
+            # leakage on the same worker thread.
+            _pass_llm_schema_overrides.field_subset = None
+            # R2: reset progress thread-local to prevent cross-pass leakage.
+            _pass_progress_overrides.run_id = None
+            _pass_progress_overrides.pass_name = None
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
@@ -1009,20 +1125,31 @@ def run_extraction_pass(
 
         chunk_to_self_refs: dict[int, list[str]] = {}
         chunk_to_evidence_units: dict[int, list[dict]] = {}
+        # Parallel page map: chunk_index → [page_no, ...]. Built from the SAME
+        # last_chunk_metadata rows as chunk_to_self_refs so element_uid and
+        # page always resolve from one source (no drift). Threaded into the
+        # provenance synthesizer so synthesized rows carry a real page.
+        chunk_to_page_numbers: dict[int, list[int]] = {}
         for cmeta in chunk_metadata:
             cid = cmeta.get("chunk_id")
             if cid is None:
                 continue
             refs = cmeta.get("self_refs") or []
             units = cmeta.get("evidence_units") or []
+            pages = cmeta.get("page_numbers") or []
             chunk_to_self_refs[int(cid)] = [r for r in refs if isinstance(r, str)]
             chunk_to_evidence_units[int(cid)] = list(units)
+            chunk_to_page_numbers[int(cid)] = [p for p in pages if isinstance(p, int)]
 
         # FALLBACK: trace events (debug-only, but cross-check / diagnostic).
         if not chunk_to_self_refs:
             trace_data = getattr(context, "trace_data", None)
             trace_events = getattr(trace_data, "events", None) or []
-            chunk_to_self_refs, chunk_to_evidence_units = _chunk_maps_from_trace(trace_events)
+            (
+                chunk_to_self_refs,
+                chunk_to_evidence_units,
+                chunk_to_page_numbers,
+            ) = _chunk_maps_from_trace(trace_events)
             if chunk_to_self_refs:
                 logger.info(
                     "provenance source: trace fallback (debug mode). "
@@ -1038,6 +1165,7 @@ def run_extraction_pass(
         try:
             context._chunk_to_self_refs = chunk_to_self_refs
             context._chunk_to_evidence_units = chunk_to_evidence_units
+            context._chunk_to_page_numbers = chunk_to_page_numbers
         except AttributeError:
             pass
 
@@ -1170,6 +1298,11 @@ def run_extraction_pass(
                     getattr(context, "_document_id_for_logging", "?"),
                 )
 
+        # C0 telemetry: merge sanitize_ms / table_normalization_ms /
+        # run_pipeline_ms into the trace so they ride back to the worker via
+        # response.diagnostics. trace["chunk_count"] / trace["batch_count"]
+        # are already written by the docling-graph library's delta_trace.json.
+        trace.update(_phase_timings)
         try:
             context._delta_trace = trace
         except AttributeError:
@@ -1194,15 +1327,18 @@ def _trace_event_payload(evt):
     return None, None
 
 
-def _chunk_maps_from_trace(trace_events) -> tuple[dict[int, list[str]], dict[int, list[dict]]]:
-    """Build (chunk_to_self_refs, chunk_to_evidence_units) from chunk_created
-    trace events in a single pass.
+def _chunk_maps_from_trace(
+    trace_events,
+) -> tuple[dict[int, list[str]], dict[int, list[dict]], dict[int, list[int]]]:
+    """Build (chunk_to_self_refs, chunk_to_evidence_units, chunk_to_page_numbers)
+    from chunk_created trace events in a single pass.
 
     Authoritative provenance source — uses the EXACT chunks the LLM saw.
-    Replaces re-chunking. Both maps share the same iteration / filtering
+    Replaces re-chunking. All three maps share the same iteration / filtering
     so they cannot drift out of sync."""
     refs_map: dict[int, list[str]] = {}
     units_map: dict[int, list[dict]] = {}
+    pages_map: dict[int, list[int]] = {}
     for evt in trace_events or []:
         name, payload = _trace_event_payload(evt)
         if name != "chunk_created" or not isinstance(payload, dict):
@@ -1217,7 +1353,10 @@ def _chunk_maps_from_trace(trace_events) -> tuple[dict[int, list[str]], dict[int
         units = payload.get("evidence_units")
         if isinstance(units, list):
             units_map[cid_int] = list(units)
-    return refs_map, units_map
+        pages = payload.get("page_numbers")
+        if isinstance(pages, list):
+            pages_map[cid_int] = [p for p in pages if isinstance(p, int)]
+    return refs_map, units_map, pages_map
 
 
 def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
@@ -1282,12 +1421,53 @@ async def health(request: Request):
     )
 
 
+def _progress_payload(pipeline_run_id: str | None = None) -> dict:
+    """R2: pure helper — returns the /progress response dict.
+
+    Factored out so tests can import and exercise the filter logic without
+    needing the full FastAPI app or any extraction-library deps.
+    """
+    from app import _progress_registry as _pr  # noqa: PLC0415 — local import avoids import-order issues
+    passes = _pr.snapshot()
+    if pipeline_run_id is not None:
+        passes = [p for p in passes if p["run_id"] == pipeline_run_id]
+    return {"passes": passes}
+
+
+@app.get("/progress", tags=["diagnostics"])
+def progress(pipeline_run_id: str | None = None):
+    """R2: read-only snapshot of in-flight per-pass batch progress."""
+    return _progress_payload(pipeline_run_id=pipeline_run_id)
+
+
 @app.post("/extract-pass", response_model=ExtractPassResponse)
 async def extract_pass(request: Request, body: ExtractPassRequest):
     """Fixed-template extraction for ONE pass from a bundle. Spec §5.9."""
     semaphore = request.app.state.extraction_semaphore
     if semaphore is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b (M1): an empty
+    # selected_chunks list is ambiguous — bool([]) is False, so the
+    # chunked-mode branch in run_extraction_pass would silently fall back to
+    # the legacy sanitize + DocumentChunker path. Callers that intend to
+    # bypass chunking must omit the field entirely (None) or supply >=1
+    # chunk; reject [] up-front so the mismatch surfaces loudly.
+    if body.selected_chunks is not None and len(body.selected_chunks) == 0:
+        raise HTTPException(status_code=422, detail=(
+            "selected_chunks must be either omitted (None) or contain at least one chunk. "
+            "An empty list is not allowed because it could silently revert chunked-mode "
+            "callers to the legacy sanitize+chunker path."
+        ))
+
+    # C0 telemetry (walltime-reduction Phase 0): per-phase wall captured into
+    # this sink and merged into response.diagnostics. The 3 keys recorded
+    # here — table_overlay_ms, postprocess_ms, field_provenance_ms — live in
+    # the endpoint scope; the 3 inside-run_extraction_pass keys arrive via
+    # context._delta_trace.
+    import time
+    from app._telemetry import PhaseTimer
+    _endpoint_timings: dict = {}
 
     # 1. Resolve bundle + pass
     try:
@@ -1350,7 +1530,8 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         _dg_settings = DoclingGraphSettings()
         logger.info(
             "extract-pass: CONFIG pass=%s model=%s force_json_mode=%s "
-            "temperature=%s max_tokens=%s truncation_retry_max_tokens=%s "
+            "temperature=%s max_tokens=%s chunk_max_tokens=%s "
+            "truncation_retry_max_tokens=%s "
             "max_output_tokens=%s context_limit=%s batch_token_size=%s "
             "parallel_workers=%s gleaning_enabled=%s "
             "gleaning_max_passes=%s sanitize_input=%s "
@@ -1363,7 +1544,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 if body.temperature is not None
                 else _dg_settings.docling_graph_llm_temperature
             ),
-            _dg_settings.docling_graph_llm_max_tokens,
+            (
+                body.max_tokens
+                if body.max_tokens is not None
+                else _dg_settings.docling_graph_llm_max_tokens
+            ),
+            (
+                body.chunk_max_tokens
+                if body.chunk_max_tokens is not None
+                else _dg_settings.docling_graph_chunk_max_tokens
+            ),
             _dg_settings.docling_graph_llm_truncation_retry_max_tokens,
             _dg_settings.docling_graph_llm_max_output_tokens,
             _dg_settings.docling_graph_llm_context_limit,
@@ -1399,6 +1589,10 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     # post-sanitize doc seen by the LLM. Catch-and-continue: a parser
     # failure leaves table_overlay_obj=None and records repr(exc) into
     # diagnostics — the LLM extraction still runs.
+    # C0 telemetry: time the full table-overlay parse including disabled
+    # short-circuit (so the metric is meaningful regardless of kill-switch
+    # state).
+    _overlay_t0 = time.perf_counter()
     table_overlay_obj = None
     overlay_stats: dict[str, Any] = {
         "kill_switch_active_parser": not _table_overlay_enabled_parser(),
@@ -1471,10 +1665,21 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             )
             table_overlay_obj = None
             overlay_stats["extract_failure"] = repr(exc)
+    _endpoint_timings["table_overlay_ms"] = (time.perf_counter() - _overlay_t0) * 1000.0
 
     try:
         async with semaphore:
             try:
+                # Plan 2026-05-27-merged-chunk-routing.md Task 0b: thread the
+                # worker-supplied merged chunks through to ``run_extraction_pass``
+                # as a plain list-of-dict (kept JSON-friendly so the inner
+                # function can pass it to ``build_pipeline_config`` without
+                # re-importing the schema class).
+                _selected_chunks_payload = (
+                    [c.model_dump() for c in body.selected_chunks]
+                    if body.selected_chunks
+                    else None
+                )
                 context = await asyncio.to_thread(
                     run_extraction_pass,
                     body.docling_document_json,
@@ -1485,6 +1690,11 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.llm_batch_token_size,
                     body.model,
                     body.think,
+                    body.chunk_max_tokens,
+                    body.max_tokens,
+                    _selected_chunks_payload,
+                    body.field_subset,
+                    pipeline_run_id=body.pipeline_run_id,
                 )
             except Exception as exc:
                 logger.exception(
@@ -1523,22 +1733,69 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         raw_edge_count_for_log = raw_pass_counts["edge_count"]
         raw_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
 
-        # Phase 8 Task 51: per-entity-instance provenance payload. Nodes
-        # whose element_uid cannot be resolved are dropped with WARNING
-        # inside the helper — the response only carries chunk-linkable
-        # rows.
+        # Phase 8 Task 51 / KEYSTONE Task 2: per-entity-instance provenance
+        # payload. Three sources, tried in order of precision:
+        #
+        #   1. build_entity_provenance_from_delta_graph (KEYSTONE) — reads the
+        #      delta-IR normalizer's per-node POSITIONAL stamp on
+        #      context._delta_merged_graph (self_refs / chunk_indexes /
+        #      page_numbers / cited_refs / property_evidence). This is the only
+        #      PRECISE source: the Pydantic→graph converter STRIPS provenance
+        #      off context.knowledge_graph, so build_provenance_from_context
+        #      returns [] in production.
+        #   2. build_provenance_from_context — walks context.knowledge_graph
+        #      (works only when the library preserved node provenance).
+        #   3. synthesize_provenance_from_pass_output — COARSE chunk-0 fallback.
+        #
+        # The delta builder also emits PRECISE per-field provenance rows
+        # (carried positional self_refs); when it produces field rows the
+        # text-match build_auto_field_evidence below is suppressed so no
+        # document gets two competing field-provenance sources.
+        provenance_rows = []
+        delta_field_provenance_rows: list[ExtractionFieldProvenance] = []
+        provenance_source = "none"
         try:
-            provenance_rows = build_provenance_from_context(
-                context, ExtractionProvenance,
-                chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
-                chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
+            provenance_rows, delta_field_provenance_rows = (
+                build_entity_provenance_from_delta_graph(
+                    context,
+                    template_cls,
+                    ExtractionProvenance,
+                    ExtractionFieldProvenance,
+                    chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                    # LOAD-BEARING: the builder populates each field row's
+                    # supporting_snippet from these evidence units; an empty
+                    # snippet is DROPPED by the worker's _parse_pass_response,
+                    # so without this the precise delta field rows never
+                    # survive to become per-field lineage.
+                    chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
+                )
             )
         except Exception as exc:
             logger.warning(
-                "extract-pass: provenance builder failed for document_id=%s bundle=%s pass=%s: %s",
+                "extract-pass: delta-graph entity provenance builder failed for "
+                "document_id=%s bundle=%s pass=%s: %s",
                 body.document_id, body.bundle_key, body.pass_name, exc,
             )
             provenance_rows = []
+            delta_field_provenance_rows = []
+        if provenance_rows:
+            provenance_source = "delta_merged_graph"
+
+        if not provenance_rows:
+            try:
+                provenance_rows = build_provenance_from_context(
+                    context, ExtractionProvenance,
+                    chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                    chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "extract-pass: provenance builder failed for document_id=%s bundle=%s pass=%s: %s",
+                    body.document_id, body.bundle_key, body.pass_name, exc,
+                )
+                provenance_rows = []
+            if provenance_rows:
+                provenance_source = "knowledge_graph"
 
         # Fallback: when the library's salvage path (missing_root_instance
         # / empty_output → legacy prompt-schema retry → direct mode) drops
@@ -1551,14 +1808,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 template_cls,
                 chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
                 provenance_cls=ExtractionProvenance,
+                chunk_to_page_numbers=getattr(context, "_chunk_to_page_numbers", None),
             )
             if provenance_rows:
-                logger.info(
-                    "extract-pass: synthesized %d provenance rows from "
-                    "pass_output for document_id=%s bundle=%s pass=%s "
-                    "(library knowledge_graph path yielded none)",
-                    len(provenance_rows), body.document_id, body.bundle_key, body.pass_name,
-                )
+                provenance_source = "synthesized_pass_output"
+
+        logger.info(
+            "extract-pass: %d entity provenance rows via %s (+%d delta field rows) "
+            "for document_id=%s bundle=%s pass=%s",
+            len(provenance_rows), provenance_source, len(delta_field_provenance_rows),
+            body.document_id, body.bundle_key, body.pass_name,
+        )
 
         evidence_text = _collect_batch_evidence_text(body.docling_document_json)
         filtered_pass_output, service_filter_stats, allowed_identities = _filter_pass_output_by_batch_text(
@@ -1594,16 +1854,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             _normalized_tables_for_postprocess = list(_nt(body.docling_document_json))
         except Exception:
             _normalized_tables_for_postprocess = None
-        pass_output, postprocess_stats = _apply_bundle_postprocessing(
-            body.bundle_key,
-            body.pass_name,
-            pass_output,
-            evidence_text,
-            body.upstream_entities,
-            _ceh,
-            alias_map_by_entity_type=_alias_map_by_entity_type,
-            normalized_tables=_normalized_tables_for_postprocess,
-        )
+        with PhaseTimer(_endpoint_timings, "postprocess_ms"):
+            pass_output, postprocess_stats = _apply_bundle_postprocessing(
+                body.bundle_key,
+                body.pass_name,
+                pass_output,
+                evidence_text,
+                body.upstream_entities,
+                _ceh,
+                alias_map_by_entity_type=_alias_map_by_entity_type,
+                normalized_tables=_normalized_tables_for_postprocess,
+            )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
         dropped_by_field = (service_filter_stats or {}).get("dropped_entities_by_field", {})
@@ -1656,14 +1917,27 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 ),
             )
 
-        # Phase 3 (post-LLM-quote refactor): deterministic per-field
+        # KEYSTONE Task 2 field reconciliation: when the delta-graph entity
+        # builder produced PRECISE per-field provenance rows (carried
+        # positional self_refs from the IR normalizer's property_evidence
+        # stamp), those are authoritative. The deterministic text-match
+        # build_auto_field_evidence path below fires ONLY as a FALLBACK when
+        # the delta builder produced no field rows — so no document gets two
+        # competing field-provenance sources.
+        #
+        # Phase 3 (post-LLM-quote refactor) fallback: deterministic per-field
         # provenance. For each non-None populated field on each primary
         # entity, substring-match the value against the DoclingDocument's
         # text elements and attach matching chunks as evidence. No LLM
         # involvement — robust against extraction salvage / model
         # compliance issues. Falls back to batch-level attribution
         # when no chunk literally contains the value's string form.
-        field_provenance_rows: list[ExtractionFieldProvenance] = []
+        # C0 telemetry: time the full field-provenance block including
+        # auto-evidence build + channel-A cell_refs enrichment.
+        _fp_t0 = time.perf_counter()
+        field_provenance_rows: list[ExtractionFieldProvenance] = list(
+            delta_field_provenance_rows
+        )
         primary_types = pass_def.get("primary_entity_types", []) or []
         primary_type = primary_types[0] if primary_types else None
         list_field_name: str | None = None
@@ -1745,9 +2019,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         if self_ref and txt:
                             input_chunks_for_resolver.append((str(self_ref), str(txt)))
 
-                # Run field-evidence builder if EITHER source has content
-                # (fixes table-only docs that previously fell through the gate).
-                if all_evidence_units or input_chunks_for_resolver:
+                # FALLBACK ONLY (KEYSTONE Task 2 reconciliation): the
+                # deterministic text-match builder fires only when the
+                # delta-graph builder produced NO precise field rows. When
+                # delta_field_provenance_rows is non-empty those authoritative
+                # positional rows (already seeded into field_provenance_rows)
+                # stand — never overwritten by the coarser text-match source.
+                # Run if EITHER input source has content (covers table-only
+                # docs that previously fell through the gate).
+                if not delta_field_provenance_rows and (
+                    all_evidence_units or input_chunks_for_resolver
+                ):
                     field_provenance_rows = build_auto_field_evidence(
                         primary_entities=primary_entities,
                         instance_ids=instance_ids,
@@ -1792,7 +2074,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     logger.info(
                         "field-provenance cell_refs enrichment: %d/%d rows "
                         "received cell_refs (pass=%s).",
-                        _enriched_count, len(field_provenance_rows), pass_name,
+                        _enriched_count, len(field_provenance_rows), body.pass_name,
                     )
             except Exception as _exc:
                 # Enrichment is best-effort — never fail the response over it.
@@ -1800,6 +2082,8 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     "field-provenance cell_refs enrichment failed: %s — "
                     "continuing with un-enriched rows.", _exc,
                 )
+
+        _endpoint_timings["field_provenance_ms"] = (time.perf_counter() - _fp_t0) * 1000.0
 
         relationship_provenance_rows = build_relationship_provenance_from_delta_trace(
             context, ExtractionRelationshipProvenance,
@@ -1811,6 +2095,20 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 "build_relationship_provenance_from_delta_trace."
             )
 
+        # C0 telemetry: merge endpoint-side timings (table_overlay_ms,
+        # postprocess_ms, field_provenance_ms) into the diagnostics dict so
+        # they ride back to the worker alongside the run_extraction_pass
+        # timings already on context._delta_trace.
+        _final_diag = getattr(context, "_delta_trace", None)
+        if isinstance(_final_diag, dict):
+            _final_diag.update(_endpoint_timings)
+        else:
+            try:
+                context._delta_trace = dict(_endpoint_timings)
+                _final_diag = context._delta_trace
+            except AttributeError:
+                _final_diag = dict(_endpoint_timings)
+
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
             pass_name=body.pass_name,
@@ -1821,7 +2119,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provenance=provenance_rows,
             field_provenance=field_provenance_rows,
             relationship_provenance=relationship_provenance_rows,
-            diagnostics=getattr(context, "_delta_trace", None),
+            diagnostics=_final_diag,
             table_overlay=table_overlay_obj,
         )
     finally:

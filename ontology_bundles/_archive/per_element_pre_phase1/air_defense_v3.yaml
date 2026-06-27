@@ -1,0 +1,211 @@
+bundle_key: air_defense_v3
+manifest_schema_version: "1.0.0"
+ontology_name: "EIP Military Equipment Ontology"
+ontology_version: "3.0.0"
+extraction_profile_version: "1.0.0"
+
+passes:
+  - name: radar_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_identity
+    template_class: RadarIdentityPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_power_rf
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_power_rf
+    template_class: RadarPowerRfPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: radar_antenna
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_antenna
+    template_class: RadarAntennaPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: radar_timing
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_timing
+    template_class: RadarTimingPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: radar_modulation
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_modulation
+    template_class: RadarModulationPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: missile_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_identity
+    template_class: MissileIdentityPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_kinematics
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_kinematics
+    template_class: MissileKinematicsPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: missile_guidance
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_guidance
+    template_class: MissileGuidancePass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: missile_airframe
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_airframe
+    template_class: MissileAirframePass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: missile_speed_timing
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_speed_timing
+    template_class: MissileSpeedTimingPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: missile_propulsion
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_propulsion
+    template_class: MissilePropulsionPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 30
+      fallback_to_full: true
+
+  - name: system_links
+    phase: relationship
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.system_links
+    template_class: SystemLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES, VARIANT_OF]
+    depends_on:
+      - radar_identity
+      - radar_power_rf
+      - radar_antenna
+      - radar_timing
+      - radar_modulation
+      - missile_identity
+      - missile_kinematics
+      - missile_guidance
+      - missile_airframe
+      - missile_speed_timing
+      - missile_propulsion
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When none of the upstream domain passes produce any linkable system
+      entities, there is nothing for system_links to link. Skipping is
+      preferable to dispatching an LLM call that can only fail.

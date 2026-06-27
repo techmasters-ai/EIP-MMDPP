@@ -1,10 +1,16 @@
-"""Verify trimmed chain shapes after Task 7 (per-pass-celery-fanin).
+"""Verify the ingest entry-point dispatch contract.
 
-After the outer-chain trim:
-- start_ingest_pipeline: 13 → 9 stages (ends at derive_ontology_graph)
-- reingest_graph_only: 4 → 2 stages (ends at derive_ontology_graph)
+Originally this asserted the trimmed outer Celery *chain* shapes (Task 7
+per-pass-celery-fanin: start_ingest_pipeline = 9 stages, reingest_graph_only
+= 2 stages). The 2026-05-10 ledger-seed refactor removed the outer chain
+entirely: both entry points now seed a single PENDING `stage_runs` ledger row
+via `_seed_first_stage` and return `celery_task_id=""`. An external
+dispatcher-poller publishes the seeded stage's Celery task within ~5s, and
+each stage's lifecycle wrapper commits the next stage's PENDING row in the
+same transaction as its own COMPLETE — so there is no chain to assert.
 
-Downstream stages are dispatched by derive_ontology_graph_merge post fan-in.
+These tests now pin the surviving contract: which first stage each entry point
+seeds, that no Celery chain is constructed, and the empty task id.
 
 Run with:
 
@@ -66,66 +72,38 @@ def _fake_request():
 
 
 class TestStartIngestPipelineChainShape:
-    """Verify start_ingest_pipeline outer chain is exactly 9 stages after Task 7 trim."""
+    """start_ingest_pipeline seeds prepare_document and builds NO Celery chain."""
 
     def test_start_ingest_pipeline_chain_ends_at_derive_ontology_graph(self):
-        """Chain must be exactly 9 stages ending at derive_ontology_graph.
+        """Ledger-seed contract: start_ingest_pipeline seeds the first stage
+        (prepare_document) for the dispatcher-poller and constructs no chain.
 
-        NO collect_derivations, derive_structure_links, derive_canonicalization,
-        or finalize_document in the outer chain — those are dispatched by
-        derive_ontology_graph_merge after the per-pass fan-in.
+        The downstream stages (detect_and_translate ... derive_ontology_graph
+        and beyond) are advanced by each stage's lifecycle wrapper / the merge
+        fan-in — none of them are wired here.
         """
         mock_chain = MagicMock()
-        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-xyz")
 
         with patch("app.workers.pipeline._get_db", return_value=_fake_db_full()), \
              patch("app.workers.pipeline.chain", mock_chain), \
+             patch("app.workers.pipeline._seed_first_stage") as mock_seed, \
              patch("app.services.ontology_bundles.load_bundle_manifest", return_value=_fake_manifest()):
 
             from app.workers.pipeline import start_ingest_pipeline
-            start_ingest_pipeline(_DOC_ID)
+            result = start_ingest_pipeline(_DOC_ID)
 
-        mock_chain.assert_called_once()
-        chain_args = mock_chain.call_args[0]  # positional args = the task signatures
+        # No outer Celery chain is constructed any more.
+        mock_chain.assert_not_called()
 
-        # Must be exactly 9 stages
-        assert len(chain_args) == 9, (
-            f"Expected 9 stages in start_ingest_pipeline chain, got {len(chain_args)}. "
-            f"Task names: {[getattr(a, 'task', repr(a)) for a in chain_args]}"
+        # Exactly one ledger row seeded, and it's prepare_document.
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs.get("stage_name") == "prepare_document"
+        assert (
+            mock_seed.call_args.kwargs.get("task_name")
+            == "app.workers.pipeline.prepare_document"
         )
-
-        # Verify task name presence via .task attribute on each Signature
-        task_names = [getattr(sig, "task", "") for sig in chain_args]
-
-        # Assert the full ordered sequence — a stage-reorder regression will fail here
-        expected_sequence = [
-            "prepare_document",
-            "detect_and_translate",
-            "derive_document_metadata",
-            "purge_document_derivations",
-            "derive_picture_descriptions",
-            "derive_text_chunks_and_embeddings",
-            "derive_image_embeddings",
-            "derive_document_anchors",
-            "derive_ontology_graph",
-        ]
-        actual_sequence = [name.rsplit(".", 1)[-1] for name in task_names]
-        assert actual_sequence == expected_sequence, (
-            f"Chain order mismatch: expected {expected_sequence}, got {actual_sequence}"
-        )
-
-        # Excluded stages must be absent
-        excluded = [
-            "collect_derivations",
-            "derive_structure_links",
-            "derive_canonicalization",
-            "finalize_document",
-        ]
-        for exc_name in excluded:
-            assert not any(exc_name in n for n in task_names), (
-                f"Stage '{exc_name}' must NOT appear in outer chain. "
-                f"Captured task names: {task_names}"
-            )
+        # Empty task id signals "ledger-seeded; poller will publish".
+        assert result.celery_task_id == ""
 
 
 # ---------------------------------------------------------------------------
@@ -134,51 +112,36 @@ class TestStartIngestPipelineChainShape:
 
 
 class TestReingestGraphOnlyChainShape:
-    """Verify reingest_graph_only outer chain is exactly 2 stages after Task 7 trim."""
+    """reingest_graph_only seeds derive_document_anchors and builds NO chain."""
 
     def test_reingest_graph_only_chain_ends_at_derive_ontology_graph(self):
-        """Chain must be exactly 2 stages: derive_document_anchors, derive_ontology_graph.
-
-        NO derive_structure_links or finalize_document in the outer chain —
-        those are dispatched by derive_ontology_graph_merge in graph_only mode.
+        """Ledger-seed contract (graph_only): reingest_graph_only seeds the
+        first stage (derive_document_anchors) for the dispatcher-poller and
+        constructs no celery_chain. derive_ontology_graph is advanced by the
+        anchors stage's lifecycle wrapper; downstream stages by the merge.
         """
         mock_celery_chain = MagicMock()
-        mock_celery_chain.return_value.apply_async.return_value = MagicMock(id="task-graph")
 
         with patch("app.workers.pipeline._get_db", return_value=_fake_db_graph()), \
              patch("app.workers.pipeline.celery_chain", mock_celery_chain), \
+             patch("app.workers.pipeline._seed_first_stage") as mock_seed, \
              patch("app.services.ontology_bundles.load_bundle_manifest", return_value=_fake_manifest()):
 
             from app.workers.pipeline import reingest_graph_only
             result = reingest_graph_only(_DOC_ID, _fake_request())
 
-        mock_celery_chain.assert_called_once()
-        chain_args = mock_celery_chain.call_args[0]
+        # No outer Celery chain is constructed any more.
+        mock_celery_chain.assert_not_called()
 
-        # Must be exactly 2 stages
-        assert len(chain_args) == 2, (
-            f"Expected 2 stages in reingest_graph_only chain, got {len(chain_args)}. "
-            f"Task names: {[getattr(a, 'task', repr(a)) for a in chain_args]}"
+        # Exactly one ledger row seeded, and it's derive_document_anchors.
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs.get("stage_name") == "derive_document_anchors"
+        assert (
+            mock_seed.call_args.kwargs.get("task_name")
+            == "app.workers.pipeline.derive_document_anchors"
         )
-
-        task_names = [getattr(sig, "task", "") for sig in chain_args]
-
-        # Assert the full ordered sequence — a stage-reorder regression will fail here
-        expected_sequence = ["derive_document_anchors", "derive_ontology_graph"]
-        actual_sequence = [name.rsplit(".", 1)[-1] for name in task_names]
-        assert actual_sequence == expected_sequence, (
-            f"Chain order mismatch: expected {expected_sequence}, got {actual_sequence}"
-        )
-
-        # Excluded stages must be absent
-        excluded = ["derive_structure_links", "finalize_document"]
-        for exc_name in excluded:
-            assert not any(exc_name in n for n in task_names), (
-                f"Stage '{exc_name}' must NOT appear in outer chain. "
-                f"Captured task names: {task_names}"
-            )
-
         assert result["pipeline_run_id"]  # non-empty
+        assert result["celery_task_id"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -187,85 +150,52 @@ class TestReingestGraphOnlyChainShape:
 
 
 class TestChainStageSignatures:
-    """Verify every .si() call in both chains passes exactly 2 positional args."""
+    """Both entry points seed exactly one ledger row (no chain, no .si() fan-out)."""
 
     def test_all_chain_stages_use_doc_id_run_id_signature(self):
-        """Every stage in both chains must be called with .si(doc_id, run_id).
+        """Originally verified every chain stage was called as .si(doc_id, run_id).
 
-        Patches each pipeline task's .si() to record (task_name, args), then
-        runs both start_ingest_pipeline and reingest_graph_only, asserting
-        every captured .si() call has exactly 2 positional arguments.
+        After the ledger-seed refactor there are no .si() chain signatures at the
+        entry points: start_ingest_pipeline and reingest_graph_only each seed a
+        single PENDING ledger row. This test now asserts each entry point makes
+        exactly one _seed_first_stage call (for its respective first stage) and
+        constructs no Celery chain.
         """
-        si_calls: list[tuple[str, tuple]] = []  # [(task_name, args), ...]
+        seed_calls: list[tuple] = []
 
-        def make_si_tracker(task_name: str):
-            def tracked_si(*args, **kwargs):
-                si_calls.append((task_name, args))
-                sig = MagicMock()
-                sig.task = task_name
-                return sig
-            return tracked_si
-
-        # Tasks appearing in the full chain
-        full_chain_tasks = [
-            "prepare_document",
-            "detect_and_translate",
-            "derive_document_metadata",
-            "purge_document_derivations",
-            "derive_picture_descriptions",
-            "derive_text_chunks_and_embeddings",
-            "derive_image_embeddings",
-            "derive_document_anchors",
-            "derive_ontology_graph",
-        ]
-        # Tasks appearing in the graph_only chain (subset)
-        graph_only_tasks = ["derive_document_anchors", "derive_ontology_graph"]
-
-        # Build patch list — deduplicate (derive_document_anchors + derive_ontology_graph
-        # appear in both chains but each patch.start() replaces the same attribute once)
-        all_task_names = list(dict.fromkeys(full_chain_tasks + graph_only_tasks))
+        def record_seed(db, **kwargs):
+            seed_calls.append(kwargs)
 
         mock_chain_full = MagicMock()
-        mock_chain_full.return_value.apply_async.return_value = MagicMock(id="t1")
-
         mock_chain_graph = MagicMock()
-        mock_chain_graph.return_value.apply_async.return_value = MagicMock(id="t2")
 
-        task_patches = [
-            patch(f"app.workers.pipeline.{name}.si", side_effect=make_si_tracker(name))
-            for name in all_task_names
-        ]
         infra_patches = [
             patch("app.workers.pipeline._get_db", side_effect=[_fake_db_full(), _fake_db_graph()]),
             patch("app.workers.pipeline.chain", mock_chain_full),
             patch("app.workers.pipeline.celery_chain", mock_chain_graph),
+            patch("app.workers.pipeline._seed_first_stage", side_effect=record_seed),
             patch(
                 "app.services.ontology_bundles.load_bundle_manifest",
                 return_value=_fake_manifest(),
             ),
         ]
 
-        all_patches = infra_patches + task_patches
-        for p in all_patches:
+        for p in infra_patches:
             p.start()
         try:
             from app.workers.pipeline import start_ingest_pipeline, reingest_graph_only
             start_ingest_pipeline(_DOC_ID)
             reingest_graph_only(_DOC_ID, _fake_request())
         finally:
-            for p in all_patches:
+            for p in infra_patches:
                 p.stop()
 
-        assert len(si_calls) > 0, (
-            "No .si() calls captured — task patching likely failed"
-        )
+        # No Celery chain constructed at either entry point.
+        mock_chain_full.assert_not_called()
+        mock_chain_graph.assert_not_called()
 
-        bad_calls = [
-            (name, args)
-            for name, args in si_calls
-            if len(args) != 2
-        ]
-        assert not bad_calls, (
-            f"These .si() calls do NOT pass exactly 2 positional args (doc_id, run_id): "
-            f"{bad_calls}"
+        # One seed per entry point, naming the correct first stage.
+        seeded_stages = [kw.get("stage_name") for kw in seed_calls]
+        assert seeded_stages == ["prepare_document", "derive_document_anchors"], (
+            f"Expected one seed per entry point; got {seeded_stages}"
         )

@@ -3,7 +3,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -323,6 +323,22 @@ class Settings(BaseSettings):
     # Reconciler beat period in seconds. The Task-9 celery beat schedules the
     # reconciler to run at this interval.
     reconciler_period_seconds: int = 60
+    # R2: enable the progress poller beat task (GET docling-graph /progress ->
+    # stage_runs.metrics['progress']). Default off (passive heartbeat plumbing).
+    dg_progress_poller_enabled: bool = False
+    # R2: progress poller beat interval (seconds).
+    extraction_progress_poll_seconds: int = 30
+    # R2: progress-aware reconciler — when True, a dispatched pass whose
+    # progress (stage_runs.metrics['progress'].updated_at) advanced within
+    # reconciler_no_progress_threshold_s is NOT reclaimed regardless of age.
+    # Default False = today's absolute-threshold-only behavior (byte-identical).
+    reconciler_progress_aware: bool = False
+    # R2: a dispatched pass with no progress advance within this many seconds
+    # is eligible for reclaim (when reconciler_progress_aware=True).
+    reconciler_no_progress_threshold_s: int = 7200
+    # R2: absolute stale-dispatched threshold (seconds), decoupled from
+    # 2*pass_soft_time_limit. The catch-all backstop even when progress-aware off.
+    reconciler_stale_dispatched_s: int = 86400
     # Quality-gate floor shared with the docling-graph service. Mirrors
     # DoclingGraphSettings.docling_graph_quality_min_instances so compose
     # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var
@@ -554,6 +570,88 @@ class Settings(BaseSettings):
     # Retrieval diversity (content-level dedup)
     retrieval_diversity_oversample_factor: int = 8
     retrieval_diversity_max_candidates: int = 800
+
+    # VR (Vector Router) mode — controls per-pass chunk-scope narrowing.
+    # disabled:     router never invoked; legacy full-doc dispatch.
+    # shadow:       router invoked + diagnostics persisted; worker ALWAYS
+    #               dispatches RUN_FULL (no narrowing). Safe rollout default.
+    # narrow_only:  worker narrows on mode=selected_refs; fails open to
+    #               RUN_FULL on mode=would_skip (fail_open_reason captured).
+    # (skip_enforce is DEFERRED — not exposed here)
+    vector_router_mode: Literal["disabled", "shadow", "narrow_only"] = "shadow"
+
+    # Internal API base URL used by worker to call the /v1/extraction/chunk-scope
+    # endpoint.  In docker-compose the API container is "api"; tests can override
+    # this to "http://localhost:8000" or a mock URL.
+    internal_api_base_url: str = "http://api:8000"
+
+    # Timeout in seconds for the /v1/extraction/chunk-scope HTTP call.
+    # The endpoint embeds a query and runs rerank; 10s is generous for a
+    # single pass. Operators in high-latency environments can tune upward.
+    vector_router_chunk_scope_timeout_s: float = 10.0
+
+    # Retrieval mode for the VR chunk-scope endpoint:
+    # hnsw:   ArcadeDB HNSW overfetch + post-filter by pipeline_run_id (legacy).
+    #         Subject to documented post-filter starvation when the global
+    #         index contains chunks from many runs.
+    # direct: SQL pull of all chunks for the run + numpy cosine. Exact,
+    #         deterministic, no starvation. ~50,000× faster at retrieval
+    #         stage; end-to-end depends on reranker candidate count.
+    # Default flipped to 'direct' 2026-05-26 (commit after f25e096) after Path
+    # B implementation + Codex review + live smoke. Revert to 'hnsw' by
+    # reverting just this commit if the C.7g A/B exposes regressions.
+    vector_router_retrieval_mode: Literal["hnsw", "direct"] = "direct"
+
+    # Granularity of ExtractionChunk index rows (merged-chunk routing Phase 1).
+    # per_element: one row per docling element (legacy, current default).
+    # merged:      one row per HybridChunker output chunk; enables Phase 2
+    #              chunk-level dispatch to docling-graph (Task 10 A/B).
+    extraction_index_mode: Literal["per_element", "merged"] = Field(
+        default="per_element",
+        description=(
+            "Granularity of ExtractionChunk index rows. 'per_element' indexes "
+            "one row per docling element (legacy). 'merged' indexes one row "
+            "per HybridChunker output chunk (Phase 1 of merged-chunk routing)."
+        ),
+    )
+
+    # Phase 2 kill-switch for the merged-mode selected-chunk handoff.
+    # When True (default), narrow_only + merged mode forwards the router's
+    # verbatim merged chunks to docling-graph, which then BYPASSES its own
+    # pass-aware sanitize + table-normalization + re-chunking (chunked mode,
+    # docling-graph main.py:658/717). When False, selected_chunks are NOT
+    # forwarded: the worker falls back to the scoped-document path
+    # (apply_chunk_scope over self_refs) so docling-graph runs its per-pass
+    # preprocessing. Set False to recover pass-aware table handling on
+    # table-heavy docs (e.g. SA-2) while keeping merged indexing + routing.
+    worker_forward_selected_chunks: bool = Field(
+        default=True,
+        description=(
+            "Forward the router's merged selected_chunks to docling-graph in "
+            "narrow_only+merged mode. False falls back to the scoped-document "
+            "path (docling-graph re-runs pass-aware sanitize + table-norm + "
+            "chunking). Kill-switch for the Phase 2 wire."
+        ),
+    )
+
+    # Recall-safety gate for narrow_only (2026-06-21): minimum full-document
+    # token estimate below which the worker REFUSES to narrow and falls open to
+    # full-doc extraction. Rationale: narrowing only earns wall-time on large
+    # documents; a small document is cheap to extract whole, so narrowing it is
+    # all recall-risk for negligible savings. Observed: NMUSAF (3,459 tokens, a
+    # mostly-image museum page) lost 33% recall when narrowed (24->16 entities)
+    # because its sparse text spread entities across chunks the narrowed set
+    # dropped, while SA-2/SR-71 (7,118 tokens) held recall. Set 0 to disable the
+    # gate (narrow regardless of size). Tune upward to be more conservative.
+    narrow_min_doc_tokens: int = Field(
+        default=6000,
+        description=(
+            "In narrow_only mode, fall open to full-doc extraction when the "
+            "full-document token estimate is below this value. Guards against "
+            "recall loss from narrowing small/sparse-text docs where narrowing "
+            "saves negligible wall-time. 0 disables the gate."
+        ),
+    )
 
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)

@@ -1,0 +1,91 @@
+bundle_key: air_defense_v3_baseline_subset
+manifest_schema_version: "1.0.0"
+ontology_name: "EIP Military Equipment Ontology"
+ontology_version: "3.0.0"
+extraction_profile_version: "1.0.0"
+
+# Test-only bundle: matches the bdde417 regression baseline by running ONLY
+# the 5 passes the baseline measured (radar_identity, radar_power_rf,
+# missile_identity, missile_kinematics, system_links). Sibling of
+# air_defense_v3 — all referenced extraction schemas live there and are
+# shared by module import path. Production ingest must use air_defense_v3.
+
+passes:
+  - name: radar_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_identity
+    template_class: RadarIdentityPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_power_rf
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_power_rf
+    template_class: RadarPowerRfPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
+      fallback_to_full: true
+
+  - name: missile_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_identity
+    template_class: MissileIdentityPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_kinematics
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_kinematics
+    template_class: MissileKinematicsPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
+      fallback_to_full: true
+
+  - name: system_links
+    phase: relationship
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.system_links
+    template_class: SystemLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES, VARIANT_OF]
+    depends_on:
+      - radar_identity
+      - radar_power_rf
+      - missile_identity
+      - missile_kinematics
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When none of the upstream domain passes produce any linkable system
+      entities, there is nothing for system_links to link. Skipping is
+      preferable to dispatching an LLM call that can only fail.

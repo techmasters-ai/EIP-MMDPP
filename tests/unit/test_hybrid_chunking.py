@@ -1,0 +1,569 @@
+"""Unit tests for ``app.services.hybrid_chunking``.
+
+Tests per plan ``docs/superpowers/plans/2026-05-27-merged-chunk-routing.md``
+Task 2 Steps 1a-1e:
+
+* 1a determinism — two calls return identical chunk count + identical
+  ``(chunk_index, source_refs)`` tuples
+* 1b provenance — every ``MergedChunk.source_refs`` is non-empty and refs
+  resolve to real ``texts[]/tables[]/pictures[]`` indices
+* 1c heading prefix — ``MergedChunk.text`` contains the parent heading
+  string (HybridChunker's ``contextualize`` prepends title+headings)
+* 1d empty doc — empty ``texts/tables/pictures`` returns ``[]`` (no crash)
+* 1e chunk_index density — ``[c.chunk_index for c in chunks]`` is
+  ``[0, 1, ..., len-1]``
+
+The tests use a synthetic ``DoclingDocument`` constructed via the public
+docling API (``add_title``/``add_heading``/``add_text``) and exported to
+JSON via ``export_to_dict``.  This sidesteps schema-evolution churn in
+the on-disk ``tests/fixtures/docling_anchors/*.json`` snapshots — some of
+which predate the current ``DocItemLabel`` constraints in docling 2.x.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from docling_core.types.doc import DoclingDocument
+
+from app.services.hybrid_chunking import (
+    HybridChunkConfig,
+    MergedChunk,
+    _get_tokenizer,
+    build_hybrid_chunks_for_extraction,
+)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic doc builders
+# ---------------------------------------------------------------------------
+
+
+def _build_dvina_like_doc_json() -> dict:
+    """Construct a Dvina-shaped DoclingDocument as a dict.
+
+    Mirrors the structure of a real military-system technical manual:
+    title + multiple section headers + technical prose paragraphs across
+    several sections.  Yields multiple HybridChunker chunks (one per
+    leaf section's text body, post-merge).
+    """
+    doc = DoclingDocument(name="dvina_like_synthetic")
+    doc.add_title("S-75 Dvina System Manual")
+    doc.add_heading("Chapter 1: Overview", level=1)
+    doc.add_text(
+        label="text",
+        text=(
+            "The S-75 Dvina is a Soviet-era surface-to-air missile system. "
+            "It entered service with the Soviet armed forces in 1957 and "
+            "remained the backbone of the Soviet Air Defence Forces."
+        ),
+    )
+    doc.add_heading("Chapter 2: Kinematics", level=1)
+    doc.add_text(
+        label="text",
+        text=(
+            "Maximum engagement range is approximately 43 kilometres. "
+            "Minimum engagement range is 8 kilometres. The missile reaches "
+            "Mach 3.5 at altitude. Operational weight is 2300 kilograms."
+        ),
+    )
+    doc.add_heading("Section 2.1: Tracking", level=2)
+    doc.add_text(
+        label="text",
+        text=(
+            "Radar tracking accuracy is plus or minus 5 metres at 50 "
+            "kilometre range under standard atmospheric conditions."
+        ),
+    )
+    doc.add_heading("Chapter 3: Components", level=1)
+    doc.add_text(
+        label="text",
+        text=(
+            "The system comprises the Fan Song radar, the SM-90 launcher, "
+            "and the PR-11 transporter/transloader. Each launcher carries "
+            "one V-750 missile."
+        ),
+    )
+    return doc.export_to_dict()
+
+
+def _build_empty_doc_json() -> dict:
+    """A DoclingDocument with no texts/tables/pictures."""
+    doc = DoclingDocument(name="empty_synthetic")
+    return doc.export_to_dict()
+
+
+def _build_dvina_like_doc_with_prov_json() -> dict:
+    """Same shape as ``_build_dvina_like_doc_json`` but every text item carries
+    a real ``ProvenanceItem`` with ``page_no``.
+
+    This exercises ``_resolve_first_page_no`` on the worker side — the
+    no-prov fixture above can't.  Pages are spread across 1..3 so the
+    test can assert a non-trivial mapping (not just a constant).
+    """
+    from docling_core.types.doc.document import BoundingBox, ProvenanceItem
+
+    def _prov(page: int) -> ProvenanceItem:
+        return ProvenanceItem(
+            page_no=page,
+            bbox=BoundingBox(l=0, t=0, r=100, b=100),
+            charspan=(0, 0),
+        )
+
+    doc = DoclingDocument(name="dvina_like_prov_synthetic")
+    doc.add_title("S-75 Dvina System Manual", prov=_prov(1))
+    doc.add_heading("Chapter 1: Overview", level=1, prov=_prov(1))
+    doc.add_text(
+        label="text",
+        text=(
+            "The S-75 Dvina is a Soviet-era surface-to-air missile system. "
+            "It entered service with the Soviet armed forces in 1957 and "
+            "remained the backbone of the Soviet Air Defence Forces."
+        ),
+        prov=_prov(1),
+    )
+    doc.add_heading("Chapter 2: Kinematics", level=1, prov=_prov(2))
+    doc.add_text(
+        label="text",
+        text=(
+            "Maximum engagement range is approximately 43 kilometres. "
+            "Minimum engagement range is 8 kilometres. The missile reaches "
+            "Mach 3.5 at altitude. Operational weight is 2300 kilograms."
+        ),
+        prov=_prov(2),
+    )
+    doc.add_heading("Section 2.1: Tracking", level=2, prov=_prov(2))
+    doc.add_text(
+        label="text",
+        text=(
+            "Radar tracking accuracy is plus or minus 5 metres at 50 "
+            "kilometre range under standard atmospheric conditions."
+        ),
+        prov=_prov(2),
+    )
+    doc.add_heading("Chapter 3: Components", level=1, prov=_prov(3))
+    doc.add_text(
+        label="text",
+        text=(
+            "The system comprises the Fan Song radar, the SM-90 launcher, "
+            "and the PR-11 transporter/transloader. Each launcher carries "
+            "one V-750 missile."
+        ),
+        prov=_prov(3),
+    )
+    return doc.export_to_dict()
+
+
+def _heading_terms_in(chunk_text: str, heading: str) -> bool:
+    """True iff every space-separated term in ``heading`` appears (case-
+    insensitively) in ``chunk_text``.
+
+    Used by the heading-prefix assertion so that docling-side formatting
+    drift (e.g. wrapping a title in ``**bold**``) does NOT break the
+    semantic invariant: the heading words are still present in the
+    contextualized chunk text.
+    """
+    normalized = chunk_text.lower()
+    return all(term.lower() in normalized for term in heading.split() if term)
+
+
+# ---------------------------------------------------------------------------
+# Step 1a — determinism
+# ---------------------------------------------------------------------------
+
+
+def test_chunker_determinism_chunk_count_and_source_refs() -> None:
+    """Two calls on identical input return identical chunk count + identical
+    ``(chunk_index, source_refs)`` tuples.
+
+    HybridChunker walks ``body.children`` deterministically and has no RNG,
+    so output must be byte-identical across calls.
+    """
+    doc_json = _build_dvina_like_doc_json()
+
+    first = build_hybrid_chunks_for_extraction(doc_json)
+    second = build_hybrid_chunks_for_extraction(doc_json)
+
+    assert len(first) == len(second), (
+        f"Chunk count drifted between two calls on identical input: "
+        f"{len(first)} vs {len(second)}"
+    )
+    first_tuples = [(c.chunk_index, tuple(c.source_refs)) for c in first]
+    second_tuples = [(c.chunk_index, tuple(c.source_refs)) for c in second]
+    assert first_tuples == second_tuples, (
+        "Determinism violated: (chunk_index, source_refs) tuples differ "
+        "across two calls on the same doc_json."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 1b — provenance
+# ---------------------------------------------------------------------------
+
+
+_REF_RE = re.compile(r"^#/(texts|tables|pictures)/(\d+)$")
+
+
+def test_source_refs_non_empty_and_resolve_to_valid_indices() -> None:
+    """Every MergedChunk has at least one source_ref, and every ref
+    matches a real ``texts[i]/tables[i]/pictures[i]`` index in doc_json.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+
+    assert chunks, "Synthetic Dvina-like doc must produce >=1 merged chunk"
+
+    n_texts = len(doc_json.get("texts", []))
+    n_tables = len(doc_json.get("tables", []))
+    n_pictures = len(doc_json.get("pictures", []))
+
+    for c in chunks:
+        assert isinstance(c.source_refs, list)
+        assert c.source_refs, (
+            f"chunk_index={c.chunk_index} has empty source_refs — "
+            "every merged chunk must trace back to >=1 element"
+        )
+        for ref in c.source_refs:
+            m = _REF_RE.match(ref)
+            assert m, f"source_ref {ref!r} not in #/(texts|tables|pictures)/N form"
+            kind, idx_str = m.group(1), m.group(2)
+            idx = int(idx_str)
+            cap = {"texts": n_texts, "tables": n_tables, "pictures": n_pictures}[kind]
+            assert 0 <= idx < cap, (
+                f"source_ref {ref!r} index {idx} out of range "
+                f"(doc has {cap} {kind})"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Step 1c — heading prefix
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_text_contains_parent_heading() -> None:
+    """``MergedChunk.text`` (output of ``chunker.contextualize``) prepends
+    the title + nearest heading(s) for chunks that descend from a heading.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+
+    assert chunks, "doc must produce >=1 chunk"
+
+    # The Dvina-like doc has these headings; each text body's chunk must
+    # contain the nearest heading text in its contextualized output.
+    expected_heading_per_text = {
+        "Soviet-era surface-to-air": "Chapter 1: Overview",
+        "Maximum engagement range": "Chapter 2: Kinematics",
+        "Radar tracking accuracy": "Section 2.1: Tracking",
+        "comprises the Fan Song": "Chapter 3: Components",
+    }
+
+    matched: dict[str, str] = {}
+    for c in chunks:
+        for body_fragment, heading in expected_heading_per_text.items():
+            if body_fragment in c.text:
+                matched[body_fragment] = c.text
+                # Use term-set containment (case-insensitive) instead of
+                # verbatim substring — tolerant of docling formatting
+                # variations (markdown bold, NBSP, casing).  The semantic
+                # invariant is "heading words are present", not "heading
+                # appears as an exact substring".
+                assert _heading_terms_in(c.text, heading), (
+                    f"chunk containing {body_fragment!r} is missing heading "
+                    f"terms from {heading!r}; text was:\n{c.text!r}"
+                )
+                # Title terms should also appear (HybridChunker prepends it).
+                assert _heading_terms_in(c.text, "S-75 Dvina System Manual"), (
+                    f"chunk containing {body_fragment!r} is missing title "
+                    f"terms; text was:\n{c.text!r}"
+                )
+
+    assert matched, (
+        "No chunk matched any expected body fragment — HybridChunker output "
+        "diverged from synthetic input"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 1d — empty doc
+# ---------------------------------------------------------------------------
+
+
+def test_empty_doc_returns_empty_list_not_crash() -> None:
+    """A DoclingDocument with no texts/tables/pictures returns ``[]``
+    rather than raising — per plan caller contract.
+    """
+    doc_json = _build_empty_doc_json()
+    out = build_hybrid_chunks_for_extraction(doc_json)
+    assert out == [], (
+        f"Empty doc_json must return [], not crash; got {out!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 1e — chunk_index density
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_index_dense_from_zero() -> None:
+    """``[c.chunk_index for c in chunks]`` is ``[0, 1, ..., len-1]`` —
+    no gaps, no off-by-one.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks
+    assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+
+
+# ---------------------------------------------------------------------------
+# Additional invariants — types + failure semantics
+# ---------------------------------------------------------------------------
+
+
+def test_merged_chunk_dataclass_is_frozen() -> None:
+    """``MergedChunk`` is a frozen dataclass — instances cannot be
+    mutated post-construction.  Guards against accidental in-place edits
+    in callers (e.g. the indexer).
+    """
+    c = MergedChunk(
+        chunk_index=0,
+        text="hello",
+        source_refs=["#/texts/0"],
+        page_no=None,
+        token_count=1,
+    )
+    with pytest.raises(Exception):  # FrozenInstanceError
+        c.text = "mutated"  # type: ignore[misc]
+
+
+def test_hybrid_chunk_config_defaults_match_docling_graph() -> None:
+    """Defaults mirror docling-graph's ``DocumentChunker`` (post-Task 0a):
+
+    - tokenizer_model_name="BAAI/bge-m3"  (Task 0a pinned the override)
+    - max_tokens=512                        (DocumentChunker default)
+    - merge_peers=True                      (DocumentChunker default)
+    """
+    cfg = HybridChunkConfig()
+    assert cfg.tokenizer_model_name == "BAAI/bge-m3"
+    assert cfg.max_tokens == 512
+    assert cfg.merge_peers is True
+
+
+def test_malformed_doc_json_raises_value_error() -> None:
+    """``DoclingDocument.model_validate`` failure must propagate as
+    ``ValueError`` (which pydantic raises as ``ValidationError`` — a
+    subclass of ``ValueError``).  Caller (the C.4 dispatcher's
+    try/except in Task 3) converts to RUN_FULL fallback.
+    """
+    bad = {"this": "is not a docling document"}
+    with pytest.raises(ValueError):
+        build_hybrid_chunks_for_extraction(bad)
+
+
+def test_token_count_is_positive_for_non_empty_text() -> None:
+    """Every emitted ``MergedChunk`` has a positive ``token_count``."""
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks
+    for c in chunks:
+        assert c.token_count > 0, (
+            f"chunk_index={c.chunk_index} has token_count={c.token_count}"
+        )
+
+
+def test_page_no_is_none_for_doc_without_prov() -> None:
+    """Synthetic docs have no ``prov`` entries; ``page_no`` resolves to
+    ``None`` rather than raising.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks
+    assert all(c.page_no is None for c in chunks), (
+        "Doc has no prov entries; every page_no must be None"
+    )
+
+
+# ---------------------------------------------------------------------------
+# M2 — page_no resolves from the first doc_item's prov entry
+# ---------------------------------------------------------------------------
+
+
+def test_page_no_resolved_from_first_prov() -> None:
+    """When the underlying doc items carry ``prov[0].page_no``, every
+    emitted ``MergedChunk.page_no`` must be the string form of an integer
+    page number (matching the column type in ``ExtractionChunk``).
+
+    Without this test, ``_resolve_first_page_no`` is exercised only on
+    the no-prov path (always returns ``None``).  This fixture flushes
+    out regressions in the prov-walk chain
+    (``chunk.meta.doc_items[0].prov[0].page_no``).
+    """
+    doc_json = _build_dvina_like_doc_with_prov_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "prov-bearing doc must produce >=1 chunk"
+
+    # Every chunk's first doc_item carries a prov page_no in 1..3.
+    seen_pages: set[str] = set()
+    for c in chunks:
+        assert c.page_no is not None, (
+            f"chunk_index={c.chunk_index} page_no is None even though every "
+            f"doc item in the fixture carries prov[0].page_no"
+        )
+        assert isinstance(c.page_no, str), (
+            f"chunk_index={c.chunk_index} page_no must be str, got "
+            f"{type(c.page_no).__name__}"
+        )
+        # str of an int between 1 and 3 inclusive
+        assert c.page_no.isdigit(), (
+            f"chunk_index={c.chunk_index} page_no={c.page_no!r} is not a "
+            "decimal-digit string"
+        )
+        assert 1 <= int(c.page_no) <= 3, (
+            f"chunk_index={c.chunk_index} page_no={c.page_no!r} outside the "
+            "fixture's 1..3 page range"
+        )
+        seen_pages.add(c.page_no)
+
+    # We spread items across multiple pages — non-trivial mapping check.
+    assert len(seen_pages) >= 2, (
+        f"Expected chunks spread across >=2 pages from the fixture; got "
+        f"only {sorted(seen_pages)} — possible HybridChunker merge that "
+        "collapsed every cross-page chunk into a single page bucket."
+    )
+
+
+# ---------------------------------------------------------------------------
+# M1 — tokenizer caching: same (model, max_tokens) returns SAME instance
+# ---------------------------------------------------------------------------
+
+
+def test_get_tokenizer_returns_cached_instance_for_same_key() -> None:
+    """``_get_tokenizer(model_name, max_tokens)`` must return the SAME
+    ``HuggingFaceTokenizer`` instance on repeated calls with the same
+    args — identity check, not equality.
+
+    This locks the @lru_cache contract on the private helper so Task 3's
+    once-per-pipeline-run invocation pattern doesn't degrade into a
+    once-per-call ``AutoTokenizer.from_pretrained`` storm.
+    """
+    t1 = _get_tokenizer("BAAI/bge-m3", 512)
+    t2 = _get_tokenizer("BAAI/bge-m3", 512)
+    assert t1 is t2, (
+        "Tokenizer must be cached by (model_name, max_tokens) — got two "
+        "different HuggingFaceTokenizer instances for the same key."
+    )
+
+
+def test_get_tokenizer_distinct_for_different_max_tokens() -> None:
+    """Different ``max_tokens`` keys must yield distinct cached
+    instances — the cache key isn't degenerate to ``model_name`` only.
+    """
+    t1 = _get_tokenizer("BAAI/bge-m3", 512)
+    t2 = _get_tokenizer("BAAI/bge-m3", 256)
+    assert t1 is not t2, (
+        "Tokenizers with different max_tokens must NOT share a cache slot"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Router-scoring change Part 1 — section_path / headings projection
+# ---------------------------------------------------------------------------
+
+
+def test_merged_chunk_carries_section_path_and_headings() -> None:
+    """Every emitted ``MergedChunk`` carries the section hierarchy from
+    ``chunk.meta.headings``: ``headings`` (list[str]) and ``section_path``
+    (the joined string, or None when empty).
+
+    This is the SECTION signal source: the chunker already knows the
+    section heading hierarchy (consumed at pipeline.py via
+    ``_build_section_path_string``); Part 1 projects it onto the value
+    object so the router can match anchors against the section title.
+    """
+    doc_json = _build_dvina_like_doc_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "doc must produce >=1 chunk"
+
+    # The Dvina-like doc's body fragments each descend from a known heading.
+    expected_heading_per_text = {
+        "Soviet-era surface-to-air": "Chapter 1: Overview",
+        "Maximum engagement range": "Chapter 2: Kinematics",
+        "Radar tracking accuracy": "Section 2.1: Tracking",
+        "comprises the Fan Song": "Chapter 3: Components",
+    }
+
+    matched = 0
+    for c in chunks:
+        # Type contract: headings is always a list[str]; section_path is
+        # str|None (None only when headings is empty).
+        assert isinstance(c.headings, list)
+        assert all(isinstance(h, str) for h in c.headings)
+        if c.headings:
+            assert isinstance(c.section_path, str)
+            # section_path must mention every heading term it carries.
+            for h in c.headings:
+                assert all(
+                    term.lower() in c.section_path.lower()
+                    for term in h.split()
+                    if term
+                ), f"section_path {c.section_path!r} missing heading {h!r}"
+        else:
+            assert c.section_path is None
+
+        for body_fragment, heading in expected_heading_per_text.items():
+            if body_fragment in c.text:
+                matched += 1
+                # The chunk's headings must include the nearest section heading.
+                joined = " ".join(c.headings).lower()
+                assert all(
+                    term.lower() in joined
+                    for term in heading.split()
+                    if term
+                ), (
+                    f"chunk containing {body_fragment!r} is missing heading "
+                    f"terms from {heading!r}; headings were {c.headings!r}"
+                )
+
+    assert matched, "No chunk matched any expected body fragment"
+
+
+def test_merged_chunk_section_path_none_when_no_headings() -> None:
+    """A doc whose chunks have no section headings → ``headings == []`` and
+    ``section_path is None`` (empty → None/[], per the plan)."""
+    # A bare paragraph with no preceding heading still chunks, but carries
+    # no heading hierarchy.
+    doc = DoclingDocument(name="headingless_synthetic")
+    doc.add_text(
+        label="text",
+        text=(
+            "A standalone paragraph with no section heading above it. "
+            "It should still produce a chunk, but with no section path."
+        ),
+    )
+    doc_json = doc.export_to_dict()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "headingless doc must still produce >=1 chunk"
+    for c in chunks:
+        assert c.headings == []
+        assert c.section_path is None
+
+
+def test_merged_chunk_section_fields_are_frozen() -> None:
+    """The new fields participate in the frozen-dataclass contract."""
+    c = MergedChunk(
+        chunk_index=0,
+        text="hello",
+        source_refs=["#/texts/0"],
+        page_no=None,
+        token_count=1,
+        section_path="Chapter 1",
+        headings=["Chapter 1"],
+    )
+    assert c.section_path == "Chapter 1"
+    assert c.headings == ["Chapter 1"]
+    with pytest.raises(Exception):  # FrozenInstanceError
+        c.section_path = "mutated"  # type: ignore[misc]

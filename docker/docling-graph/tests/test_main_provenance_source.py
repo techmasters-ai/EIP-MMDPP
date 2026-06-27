@@ -19,7 +19,8 @@ def test_chunk_to_self_refs_from_doc_processor_metadata(dg_app_module):
 def test_chunk_maps_from_trace_events_fallback(dg_app_module):
     """When doc_processor.last_chunk_metadata is empty, main.py falls back
     to chunk_created trace events via _chunk_maps_from_trace (single-pass).
-    Asserts both maps are built correctly in one call."""
+    Asserts all three maps (self_refs / evidence_units / page_numbers) are
+    built correctly in one call."""
     from docling_graph.pipeline.trace import TraceEvent
     trace_events = [
         TraceEvent(
@@ -29,6 +30,7 @@ def test_chunk_maps_from_trace_events_fallback(dg_app_module):
                 "chunk_id": 0,
                 "self_refs": ["#/texts/0", "#/texts/1"],
                 "evidence_units": [{"evidence_id": "#/texts/0", "text": "hi"}],
+                "page_numbers": [3],
             },
         ),
         TraceEvent(
@@ -38,12 +40,14 @@ def test_chunk_maps_from_trace_events_fallback(dg_app_module):
                 "chunk_id": 1,
                 "self_refs": ["#/texts/2"],
                 "evidence_units": [],
+                "page_numbers": [4, 5],
             },
         ),
     ]
-    refs_map, units_map = dg_app_module._chunk_maps_from_trace(trace_events)
+    refs_map, units_map, pages_map = dg_app_module._chunk_maps_from_trace(trace_events)
     assert refs_map == {0: ["#/texts/0", "#/texts/1"], 1: ["#/texts/2"]}
     assert units_map == {0: [{"evidence_id": "#/texts/0", "text": "hi"}], 1: []}
+    assert pages_map == {0: [3], 1: [4, 5]}
 
 
 def test_no_production_path_in_main_calls_bare_hybridchunker():

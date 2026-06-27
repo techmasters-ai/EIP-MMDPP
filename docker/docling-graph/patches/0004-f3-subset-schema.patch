@@ -1,0 +1,127 @@
+diff --git a/docling_graph/core/extractors/backends/llm_backend.py b/docling_graph/core/extractors/backends/llm_backend.py
+index 7d7fdad..6db431f 100644
+--- a/docling_graph/core/extractors/backends/llm_backend.py
++++ b/docling_graph/core/extractors/backends/llm_backend.py
+@@ -12,9 +12,21 @@ import hashlib
+ import json
+ import logging
+ import re
++import threading
+ from functools import lru_cache
+ from typing import Any, Literal, Mapping, Type, cast
+ 
++# Thread-local storage for the per-pass field_subset advisory (Task F3, §9).
++# Set by the app layer (main.py) before run_pipeline(); read in
++# extract_from_markdown (the live markdown path).  threading.local is safe
++# because /extract-pass wraps run_extraction_pass in asyncio.to_thread — the
++# LlmBackend lives on the same worker thread as the setter.
++# NOTE: the chunked/delta path (extract_from_chunk_batches -> _run_delta_orchestrator)
++# does NOT narrow its schema. That path is only reached when pre-built chunks are
++# forwarded (the Phase A wire, currently gated off via worker_forward_selected_chunks)
++# or extraction_contract == "delta"; narrowing it is deferred with Phase A.
++_llm_backend_overrides: threading.local = threading.local()
++
+ from pydantic import BaseModel, ValidationError
+ from rich import print as rich_print
+ 
+@@ -130,6 +142,63 @@ class LlmBackend:
+         schema = template.model_json_schema()
+         return schema if isinstance(schema, dict) else {}
+ 
++    @staticmethod
++    def _build_field_subset_schema(
++        template: Type[BaseModel],
++        field_subset: list[str] | None,
++    ) -> str:
++        """Build a JSON schema string for the LLM prompt, optionally restricted
++        to a subset of fields (Task F3, §9 subset-schema extraction).
++
++        When *field_subset* is None (the default) the full schema is returned
++        byte-identical to ``_get_schema_json(template)``.
++
++        When *field_subset* is a non-empty list, a **new restricted schema dict**
++        is built containing only the fields in *field_subset* PLUS any
++        pydantic-required fields (those the model declares without a default
++        value).  The live template/record class is NEVER mutated — the filter
++        operates on a deep copy of the schema dict.  All ``$defs`` entries are
++        kept intact (unreferenced defs are harmless; removing them would require
++        a full ref-walk).
++
++        The final validation after extraction always uses the FULL template
++        class — only the prompt schema seen by the LLM is narrowed.
++
++        Args:
++            template:     Pydantic model class (not mutated).
++            field_subset: List of field names to include, or None for full schema.
++
++        Returns:
++            JSON string to pass as ``schema_json`` in the LLM prompt.
++        """
++        import copy as _copy
++
++        full_schema = template.model_json_schema()
++
++        if field_subset is None:
++            # Byte-identical to _get_schema_json (same indent, same ordering).
++            return json.dumps(full_schema, indent=2)
++
++        # Pydantic-required fields: those the model declares without a default
++        # (present in the JSON schema's top-level "required" array).
++        pydantic_required: set[str] = set(full_schema.get("required") or [])
++
++        # Keep = explicitly requested ∪ pydantic-required (defensive inclusion).
++        keep: set[str] = set(field_subset) | pydantic_required
++
++        # Deep-copy to avoid ANY mutation of the live class's cached schema.
++        restricted = _copy.deepcopy(full_schema)
++
++        all_props: dict[str, Any] = restricted.get("properties") or {}
++        restricted["properties"] = {k: v for k, v in all_props.items() if k in keep}
++
++        # Narrow the "required" list to only kept fields.
++        if "required" in restricted:
++            restricted["required"] = [r for r in restricted["required"] if r in keep]
++
++        # $defs are retained intact — see docstring.
++        return json.dumps(restricted, indent=2)
++
+     def _log_info(self, message: str, **kwargs: Any) -> None:
+         """Log info message with consistent formatting."""
+         formatted = f"[blue][LlmBackend][/blue] {message}"
+@@ -1360,8 +1429,25 @@ class LlmBackend:
+             self._log_error(f"Markdown is empty for {context}. Cannot proceed.")
+             return None
+ 
+-        # Get cached schema JSON
+-        schema_json = self._get_schema_json(template)
++        # Get schema JSON — use restricted subset when the app layer has set
++        # a field_subset advisory via _llm_backend_overrides (Task F3, §9).
++        # When field_subset is None (default) _build_field_subset_schema
++        # returns the byte-identical full schema, so the None path is free.
++        # The FULL schema_dict is always used for the structured-output
++        # sparse-check and for the final validation call so validation
++        # logic and quality gates are never narrowed.
++        _field_subset: list[str] | None = getattr(
++            _llm_backend_overrides, "field_subset", None
++        )
++        if _field_subset is not None:
++            schema_json = self._build_field_subset_schema(template, _field_subset)
++            self._log_extraction(
++                f"field_subset advisory applied: {len(_field_subset)} fields "
++                f"(full schema has {len(self._get_schema_dict(template).get('properties', {}))} props)",
++                prefix,
++            )
++        else:
++            schema_json = self._get_schema_json(template)
+         schema_dict = self._get_schema_dict(template)
+ 
+         self._log_extraction("Calling LLM...", prefix)
+@@ -1379,7 +1465,7 @@ class LlmBackend:
+         if not parsed_json:
+             return None
+ 
+-        # Validate and return
++        # Validate and return — always uses the FULL template, never narrowed.
+         return self._validate_extraction(parsed_json, template, context)
+ 
+     def generate(

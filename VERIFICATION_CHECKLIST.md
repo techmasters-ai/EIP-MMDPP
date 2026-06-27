@@ -192,7 +192,7 @@ Key behavioral differences from the legacy monolithic path: (1) a single bad pas
 
 - **4a — Skip check** (`_should_skip`). Only fires for `kind=relationships_only` passes with `skip_if_no_upstream_endpoints=True`. Walks `depends_on`, filters `upstream_refs` by `pass_origin`, and checks whether any `(source_type, rel_type, target_type)` triple in `validation_matrix` can be satisfied. If not, writes a StageRun with `execution_status=SKIPPED`, `skip_reason=NO_UPSTREAM_ENDPOINTS` and returns.
 
-- **4b — HTTP call** (`_call_extract_pass`). POSTs `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the docling-graph service's `/extract-pass` endpoint. Transport errors and HTTP 5xx raise `PassRetryable`; HTTP 4xx raises `PassTerminal`.
+- **4b — HTTP call** (`_call_extract_pass`). POSTs `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the docling-graph service's `/extract-pass` endpoint. Transport errors and HTTP 5xx raise `PassRetryable`; HTTP 4xx raises `PassTerminal`. The service returns **200 with a `diagnostics.pipeline_error` stub** (empty `pass_output`) when its library raised internally — normally surfaced as `PassRetryable` so a transient failure (LLM JSON drift, mid-stream blip) gets another attempt. **Exception (off-domain empty):** the upstream library raises `ExtractionError` on *any* empty extraction, so a pass that is simply off-domain for the document (e.g. a missile pass on a radar-only doc) arrives as a `pipeline_error` stub too. `_is_clean_empty_pipeline_error` distinguishes it — quality-gate reasons ⊆ `{empty_output, missing_root_instance}`, **no** `batch_errors`, **no** hard-failure log signature (`No valid JSON…`, `Structured output failed`, `BATCH_HARD_TIMEOUT`, …), and zero node/edge count — and treats it as a legitimate **ZERO_YIELD** (returns the stub → COMPLETE/EMPTY, **no retry**), since a temp≈0 retry would deterministically reproduce the same empty. A loud `EXTRACT_PASS_CLEAN_EMPTY` log keeps it visible. Conservative: any ambiguity falls through to `PassRetryable`.
 
 - **4c — Response parsing** (`_parse_pass_response`). The service response's `pass_output` dict is validated into the pass's Pydantic template class via `model_validate()`. Pydantic validation failures raise `PassTerminal` (not retryable — the LLM output shape won't heal on retry).
 
@@ -271,6 +271,8 @@ Key behavioral differences from the legacy monolithic path: (1) a single bad pas
 |---|---|---|---|
 | Entity merge on `(entity_type, identity_fields)` NOT universal name | Cross-type name collisions merge unrelated entities | Doc with "Patriot" PLATFORM and "Patriot" MISSILE_SYSTEM creates two distinct vertices | 3.0 |
 | Provenance via EXTRACTED_FROM edges (not vertex property) | Shared entities lose track of source documents | Entity mentioned in 3 docs has 3 EXTRACTED_FROM edges; deleting 1 doc leaves 2 | 3.0 |
+| Per-field chunk origin = the chunk that emitted THAT field's value (merge-time `__property_provenance`), NOT the entity's first-seen chunk | A field's value extracted from a spec chunk gets mis-attributed to the (different) chunk where the entity name first appears — e.g. "max range 50 km" pinned to the title chunk instead of the spec chunk | Field whose value lives in a chunk distinct from the entity-name chunk: its `field_evidence` chunk_id resolves to the value-bearing chunk. `docling-graph/app/provenance.py` reads `node["__property_provenance"][field]` (1-chunk batches → exact chunk) | 2.0 |
+| Field row VALUE-GROUNDED to the chunk containing its value (numeric+unit), overriding LLM over-emission | LLM emits a salient value (e.g. mass 2283) while reading a prose chunk that doesn't contain it; lineage then points at prose, not the spec table. Hurts the hard data-lineage requirement | Numeric unit-suffixed field whose value sits in a table chunk: `_field_evidence` chunk_id resolves to that table chunk, not the emission chunk. `provenance.py` `_value_grounded_field_chunks` (2-tier adjacent + same-chunk table match, mirrors `field_value_grounding.py`); falls back to emission chunk for non-text/null fields | 2.0 |
 | Relationship edges carry `document_ids` list | Relationships established by multiple docs lose provenance | Same relationship from 2 docs has `document_ids=[doc1, doc2]` | 3.0 |
 | Entity alias resolution (exact → alias → fuzzy match → new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
 | Classification preserved on conflict | Reingest overwrites human-curated classification | Set classification to SECRET, reingest; verify still SECRET | 2.23 |
@@ -307,6 +309,14 @@ Key behavioral differences from the legacy monolithic path: (1) a single bad pas
 | Content-level deduplication (oversample 8x, filter) | Duplicate text appears multiple times | Top-k results have no duplicate content | 2.20 |
 | Min cosine similarity threshold (default 0.25) | Irrelevant noise in results | All returned results score >= threshold | 1, 2.24 |
 | Military ID bonus (0.03 for AN/, NSN, MIL-STD matches) | Exact military system mentions not prioritized | Query with military ID; receives score bonus | 2.20 |
+| Gate-coverage recall floor (unit ∪ table gates) | A field-group positive chunk is pruned before the LLM | `python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv --bundle air_defense_v3` → exit 0 (every `used==1` row covered by a gate) | 4 (guarded-ranker) |
+| `selection_mode` byte-identical default | Default `topk` path changes selection vs legacy | `selection_mode="topk"` → `select_candidates` returns the exact `c5_scored[:top_k]` slice (object-identical); `tests/unit/test_extraction_candidate_scoring.py::...object_identical_slice` + the endpoint default-profile test | 4 |
+| `unit_gate` default False | A bundle pass silently gains a gate it never set | `tests/unit/test_extraction_unit_gate.py::test_unit_gate_defaults_to_false`; manifest values round-trip via `test_existing_bundles_unit_gate_roundtrip` | 4 |
+| Guarded-ranker calibration reproducible | Deployed `ranker_weights`/`quantile_q` drift from the eval | `python3 -m scripts.fit_guarded_ranker --csv reports/dataset_v2/bakeoff_dataset.csv` (refuses unless gate-coverage passes); LODO reported as BOTH pooled-OOF and mean-per-fold | 4 |
+
+> **Mirror-fixture rule (Task 2):** the docling-graph provenance unit matcher and the worker `field_value_grounding` matcher MUST stay in lockstep — both consume `docker/docling-graph/tests/fixtures/unit_matcher_cases.json`. Any matcher change updates the shared fixture and re-runs both test suites; a change to one side only is a defect.
+>
+> **Two LODO conventions:** every guarded-ranker generalization number reports BOTH pooled out-of-fold AND mean-per-fold AUROC (GroupKFold by `run_id` = leave-one-document-out). Never quote one alone.
 
 ---
 
@@ -550,6 +560,7 @@ Run against all 30 Known Fragile Features listed above.
 | `DEFAULT_ONTOLOGY_BUNDLE_KEY` | `air_defense_v3` | Bundle resolution falls back to system default; wrong value = unknown bundle error |
 | `PASS_MAX_RETRIES` | `3` | Per-pass retry budget; exhausted = IngestFailed for required passes |
 | `STRUCTURED_OUTPUT_THRESHOLD_CHARS` | `8000` | Schema size ceiling for structured LLM output; exceeded = fallback to JSON mode |
+| `WORKER_FORWARD_SELECTED_CHUNKS` | `true` | Phase 2 merged-mode wire. `true` on table-heavy docs forwards verbatim merged chunks → docling-graph enters chunked mode and BYPASSES pass-aware sanitize/table-norm/re-chunk → narrowed-pass recall regresses (SA-2 radar_power_rf 22→10, missile_kinematics 16→10). `false` = scoped-doc path keeps pass-aware preprocessing (pre-wire merged path measured 24/28 at top_k=15 in run 6fc30668; current wire-off path pending re-measure). Reaches the worker only after compose `--force-recreate` (not `restart`). |
 
 ---
 

@@ -1,0 +1,26 @@
+diff --git a/docling_graph/core/extractors/contracts/delta/prompts.py b/docling_graph/core/extractors/contracts/delta/prompts.py
+index b88c8e3..39c9c7c 100644
+--- a/docling_graph/core/extractors/contracts/delta/prompts.py
++++ b/docling_graph/core/extractors/contracts/delta/prompts.py
+@@ -38,7 +38,20 @@ def get_delta_batch_prompt(
+         "6. Evidence: every node must include evidence_ids citing the [EVIDENCE id=\"…\"] markers in the chunk; every property in property_evidence must map to one or more of those IDs. Never invent IDs. Relationships also include evidence_ids."
+     )
+ 
+-    user_prompt = f"[Batch {batch_index + 1}/{total_batches} — for context only; do not put this into any field.]\n\n"
++    # NOTE: this header used to read "for context only; do not put this into
++    # any field." which is contradictory — every batch is actually an
++    # extraction batch (the batcher has no context-only flag). gemma4 reasoning
++    # models entered output-budget death-spirals trying to reconcile that line
++    # with the schema below it (observed: 28-31KB prompts producing
++    # finish_reason=length with len(content)=0 on both 16K and 32K retries).
++    # Replaced with the position marker plus an honest, non-contradictory
++    # directive that preserves the original "don't echo batch metadata into
++    # field values" intent.
++    user_prompt = (
++        f"[Batch {batch_index + 1}/{total_batches}] "
++        f"Extract only facts supported by this batch; "
++        f"do not copy batch metadata (this header, separators) into field values.\n\n"
++    )
+     if already_found:
+         user_prompt += (
+             "=== ALREADY EXTRACTED (from other batches; do not duplicate) ===\n"

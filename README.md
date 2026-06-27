@@ -147,20 +147,81 @@ DOCLING_GRAPH_LLM_PROVIDER=ollama                 # ollama | openai (defaults to
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
-DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout per extraction pass (seconds)
+DOCLING_GRAPH_TIMEOUT=64800                       # R2 backstop: worker→DG HTTP timeout (18h); above the longest legit pass (~11.4h observed) with margin
+DOCLING_GRAPH_LLM_TIMEOUT=64800                  # R2 backstop: per-LLM-call HTTP timeout (18h); 1800s stream-timeout is the real per-call wall
 DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction requests
+DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS=3600    # R1 no-progress (inter-arrival) batch watchdog window (1h); NOT a total-elapsed ceiling
 GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for ArcadeDB import
 GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
 DEFAULT_ONTOLOGY_BUNDLE_KEY=air_defense_v3         # Bundle resolution system default
 PASS_MAX_RETRIES=3                                 # Per-pass retry budget for logic failures (5xx, malformed JSON, validation)
 PASS_MAX_TRANSPORT_RETRIES=3                       # Separate budget for transport failures (disconnect, timeout, DNS); does not burn PASS_MAX_RETRIES
-PASS_SOFT_TIME_LIMIT=3600                          # Per-pass Celery task soft time limit (1h); replaces the legacy 8h graph_soft_time_limit
+PASS_SOFT_TIME_LIMIT=72000                         # R2 backstop: per-pass Celery soft time limit (20h); above the 18h HTTP backstop so HTTP fails the pass cleanly first
 PASS_CONCURRENCY_PER_DOCUMENT=2                    # Max in-flight entity-extraction passes per document
 RECONCILER_PERIOD_SECONDS=60                       # How often reconcile_ontology_graph_runs runs (beat schedule)
 PHASE_CLAIM_STALE_SECONDS=30                       # How long a `claimed` phase entry must be old before reconciler repairs it
+
+# Extraction reliability ladder (R2 progress-aware watchdog — see "Extraction reliability (R1/R2)" below)
+DG_PROGRESS_POLLER_ENABLED=true                   # Beat poller writes docling-graph /progress → stage_runs.metrics.progress
+EXTRACTION_PROGRESS_POLL_SECONDS=30               # Poll interval for the progress poller
+RECONCILER_PROGRESS_AWARE=true                    # A dispatched pass still advancing is NOT reclaimed regardless of age
+RECONCILER_NO_PROGRESS_THRESHOLD_S=7200           # A dispatched pass with no progress advance for this long is reclaimable
+RECONCILER_STALE_DISPATCHED_S=86400               # Absolute stale-dispatched backstop (24h), decoupled from 2×PASS_SOFT_TIME_LIMIT
+INTERNAL_API_BASE_URL=http://api:8000             # worker → /v1/extraction/chunk-scope endpoint base URL
+VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S=1200.0        # Timeout for the chunk-scope HTTP call (R6 fix: 60→1200 so large-doc capture survives)
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
+
+**Extraction reliability (R1/R2).** Two layered guards make the reduced timeout
+ladder above safe for both slow-but-healthy large docs and genuinely stuck passes:
+
+- **R1 — no-progress batch watchdog.** `DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS`
+  (3600s) is an *inter-arrival* window, not a total-elapsed ceiling: the watchdog
+  trips only when NO batch completes within the window, so a large doc that
+  legitimately needs many hours of aggregate batch time never mis-degrades. It sits
+  above the 1800s OllamaPool stream wall-timeout so a single slow generation can't
+  trip it.
+- **R2 — progress heartbeat + progress-aware reconciler.** docling-graph publishes
+  per-pass batch progress (`GET /progress`, port 8002); the beat poller
+  (`DG_PROGRESS_POLLER_ENABLED`) writes it into `stage_runs.metrics.progress`; the
+  reconciler (`RECONCILER_PROGRESS_AWARE`) never reclaims a pass whose progress is
+  still advancing, regardless of absolute age. Only a no-progress pass past
+  `RECONCILER_STALE_DISPATCHED_S` (24h) is reclaimed. This is what makes the reduced
+  18h/20h backstops safe — they are last-resort backstops, not the primary guard.
+
+See `docs/operational/production-reliability-2026-06.md` for the full root-cause
+and deploy detail.
+
+#### Absolute-union chunk selection (extraction chunk-scope)
+
+Each field-group extraction pass selects which document chunks to send to the LLM. The production selector is **absolute_union**: an *absolute, per-chunk* keep test (not a relative top-k or quantile cut), so a pass selects **0 to all** chunks based purely on whether each chunk carries content that pass can use.
+
+A chunk is kept for a pass iff **any** of four content signals fires:
+
+`keep ⇔ measurement(pass) OR categorical(pass) OR image_presence(pass) OR max_field_cosine ≥ cosine_tau`
+
+All four signals are **derived from the bundle's ontology schema** — there is **no per-corpus training or weight fitting** (contrast the legacy `guarded_quantile`, which fit `ranker_weights` per corpus).
+
+| Signal | Derived from | Fires when the chunk… |
+|---|---|---|
+| **measurement** | the pass's numeric field **unit suffixes** (e.g. `range_km`→length, `mass_kg`→mass) | contains a number+unit token in any of the pass's *dimensions*. Dimension-grouped: a length field makes the pass fire on **any** length unit (km, m, mi, feet, …). |
+| **categorical** | the pass's **enum fields** (e.g. `scan_type`, `guidance_type`) | contains an enum value or a mapped prose phrase. |
+| **image_presence** | the pass's **`_photo`/image fields** | has a `#/pictures/` ref in its `source_refs`. |
+| **cosine** | per-field dense retrieval cosine | `max_field_cosine ≥ cosine_tau` — the catch-all for relevant chunks with no explicit signal. |
+
+Because measurement/categorical are **pass-specific**, units distinguish usefulness per pass: a propulsion pass (`*_kg`/`*_sec` fields) fires on mass/time chunks; an antenna pass (`*_deg`/`*_dbi`) fires on angle/gain chunks; neither fires on the other's chunks. This is the core design lever — see "Adapting the Chunk Selector to a New Corpus or Ontology".
+
+**0-to-all + empty-selection contract.** If no chunk fires for a pass, the chunk-scope endpoint returns `mode=empty_selection`; the worker maps it to a zero-chunk scope and the pass finalizes **ZERO_YIELD / COMPLETE** — it does **not** fall open to full-doc and does **not** FAIL. (Off-domain passes — e.g. a radar-modulation pass on a pure missile doc — correctly yield 0.) If every chunk fires, all are selected. There is no `k_min` floor or `k_max` cap.
+
+| Manifest field (per-pass `retrieval:` block) | Default | Meaning |
+|---|---|---|
+| `selection_mode` | `topk` (code default) | `absolute_union` = the signal-union above; `topk` = byte-identical legacy `c5_scored[:top_k]`; `guarded_quantile` = legacy gate∪quantile cut. |
+| `cosine_tau` | `0.55` | absolute_union only — the single tunable knob (raise for precision, lower for recall). |
+
+**Live status (production default).** All four shipped air_defense bundles (`air_defense_v3`, `air_defense_v3_baseline_subset`, `air_defense_v3_narrowing_v1`, `air_defense_v3_merged_v1`) run their field-group passes on `selection_mode: absolute_union`, `cosine_tau: 0.55`, under `VECTOR_ROUTER_MODE=narrow_only` with `WORKER_FORWARD_SELECTED_CHUNKS=false` (the selector's `self_refs` narrow scope; docling-graph still re-chunks/sanitizes the scoped doc — recall-safe). Identity passes are not routable and run full-doc. Selection diagnostics emitted per pass: `selection_mode`, `selection_k`, `measurement_keeps`, `categorical_keeps`, `image_keeps`, `cosine_keeps`.
+
+Validated against bake-off ground truth: absolute_union ≈ **95.7% recall at ≈24% of chunks selected**, vs guarded_quantile ≈ 60.9% at ≈51%. The `topk` and `guarded_quantile` modes remain supported for legacy/uncalibrated passes.
 
 #### Per-role Ollama URLs
 
@@ -223,6 +284,8 @@ TEXT_EMBEDDING_BASE_URLS=["http://bge-host:11434"]
 ```
 
 For diagnostics on docling-graph extraction fan-out, set `DOCLING_GRAPH_DEBUG_ENDPOINTS=true` and query `GET /debug/routing-metrics` on port 8002. Returns per-URL request counts. Default-off to avoid leaking backend URLs on the published port; disable again after diagnosis.
+
+The docling-graph service also exposes a read-only **`GET /progress`** heartbeat on port 8002 (R2 progress-aware watchdog — see "Extraction reliability (R1/R2)" above). It returns in-flight per-pass batch progress, `{"passes": [{run_id, pass_name, done, total, phase, started_at, updated_at, age_s}, ...]}`, optionally filtered by a `pipeline_run_id` query param. The beat poller (`DG_PROGRESS_POLLER_ENABLED`) consumes it and mirrors it into `stage_runs.metrics.progress`; the progress-aware reconciler reads that to avoid reclaiming a still-advancing pass.
 
 Per-request thinking is configured separately per application:
 
@@ -1007,6 +1070,8 @@ class ClinicalEntitiesPass(BaseModel):
 
 **Naming convention:** The top-level pass class field names MUST be the lowercase plural of the entity type name (e.g., `PATIENT` -> `patients`, `LAB_RESULT` -> `lab_results`). The merge layer uses this convention to discover entity lists.
 
+> **Chunk-selector design:** name numeric fields with unit suffixes (`*_km`, `*_kg`, `*_sec`), use enum fields for closed vocabularies, and `*_photo` fields for figures — these drive the `absolute_union` chunk selector's per-pass signals with no training. See "Adapting the Chunk Selector to a New Corpus or Ontology".
+
 #### Step 5: Write shared validators (`validators.py`)
 
 Copy from `ontology_bundles/air_defense_v3/validators.py` as a starting point. Add domain-specific validators if needed (e.g., ICD-10 code normalization).
@@ -1108,6 +1173,54 @@ Documents ingested from each source automatically use the source's default bundl
 4. **Keep schemas under 8000 chars.** The JSON schema is sent to the LLM for structured output. Huge schemas degrade extraction quality. Split into more passes if needed.
 5. **Test with `graph_only` reingest.** After tuning schemas, use `mode: "graph_only"` to re-extract without re-processing the document through Docling.
 6. **Check the coverage checker.** Run `python tools/check_extraction_coverage.py` after every schema change. It catches drift before it reaches production.
+
+## Adapting the Chunk Selector to a New Corpus or Ontology
+
+The **absolute_union** selector needs **no per-corpus training** — no labeled data, no weight fitting, no quantile calibration. Its per-pass discrimination is **derived entirely from your ontology's field schema**. Adapting it to a new domain (medical, legal, finance, …) means **designing the schema so each pass's content signals are meaningful**, not fitting a model.
+
+### Mental model
+
+For each field-group pass the selector keeps a chunk iff `measurement OR categorical OR image OR cosine≥τ` (see "Absolute-union chunk selection"). Three of the four signals come straight from how you NAME and TYPE the pass's fields; the fourth (cosine) is a fixed threshold. So the design question per pass is: **what surface signal marks a chunk as relevant — a unit, an enum phrase, an image, or just semantic similarity?**
+
+### Design principle 1 — Units make passes selective (the main lever)
+
+Name every numeric field with a **unit suffix**. The suffix maps to a physical **dimension**, and a pass's dimension set is the union over its fields. Because the measurement matcher is **dimension-grouped**, declaring one `*_km` field makes the pass fire on *any* length-bearing chunk (km, m, mi, feet, …) — and NOT on a chunk that only has, say, frequency units. This is how units distinguish per-pass usefulness:
+
+- a **propulsion** pass with `burn_time_sec`, `mass_kg` → dimensions {time, mass} → fires on seconds/kilograms chunks, not antenna-gain chunks.
+- an **antenna** pass with `beamwidth_deg`, `gain_dbi` → {angle, gain} → fires on degree/dBi chunks, not burn-time chunks.
+
+The suffix→dimension map lives in `app/services/extraction_pass_signal_config.py` (`SUFFIX_DIMENSION`); the unit surface forms in `app/services/extraction_signal_detectors.py` (`DIMENSION_UNITS`). Shipped: `_km/_m/_mm/_cm`→length, `_deg/_rad`→angle, `_sec/_usec/_ms/_ns`→time, `_mhz/_ghz/_khz/_hz`→frequency, `_mps`→velocity, `_kg/_g`→mass, `_dbi`→gain, `_kw/_w`→power. **For a new domain add your units** — e.g. medical `_mgdl`/`_mmhg`, finance `_usd` — by adding the suffix→dimension to `SUFFIX_DIMENSION` and the unit surface forms (abbreviations + spelled-out + plurals) to `DIMENSION_UNITS`. **Avoid bare single-character units** (m, s, g) in `DIMENSION_UNITS`: they false-match inside identifiers (e.g. the `m` in `S-75M`). Rely on 2+ char abbreviations and spelled-out forms.
+
+### Design principle 2 — Enum fields enable categorical matching
+
+For attributes with a closed vocabulary (status, type, mode), declare an **enum field** and register it: add the field name to `CATEGORICAL_PHRASE_FIELDS` (`extraction_pass_signal_config.py`) and its values / prose phrases to `CATEGORICAL_PHRASES` (`extraction_signal_detectors.py`). A chunk then fires the categorical signal if it contains one of those phrases. **Keep phrases ≥4 chars and prefer multi-word** to avoid substring false-positives (a bare `arh` matches "warhead"; `clos` matches "closure"). This lets passes whose content is qualitative (e.g. a guidance pass: "semi-active radar homing") be selected without numeric units.
+
+### Design principle 3 — Image fields enable image-presence
+
+For entities documented by figures/photos, declare a `*_photo` (or `*_image`) field. The pass then fires on any chunk whose `source_refs` include a `#/pictures/` ref — catching figure-bearing chunks that may have little text.
+
+### Design principle 4 — cosine_tau catches the rest
+
+`cosine_tau` (default 0.55) keeps chunks semantically relevant to the pass's fields but carrying no explicit unit/enum/image signal. It is the one tunable knob: raise for precision, lower for recall. Leave it at 0.55 unless a validation run shows a systematic gap.
+
+### Procedure
+
+1. **Build the bundle + schema** (see "Adding a Custom Ontology Bundle"), applying design principles 1–3: unit-suffixed numeric fields, enum fields for closed vocabularies, `*_photo` fields for figures.
+2. **Extend the signal lexicons** for your domain's units/enums: `SUFFIX_DIMENSION` + `DIMENSION_UNITS` (units); `CATEGORICAL_PHRASE_FIELDS` + `CATEGORICAL_PHRASES` (enums). This is the only code change, and it is schema-driven, not data-fit. Unit-test with `tests/unit/test_extraction_signal_detectors.py` and `tests/unit/test_extraction_pass_signal_config.py`.
+3. **Configure each field-group pass** in the manifest's `retrieval:` block: `selection_mode: absolute_union`, `cosine_tau: 0.55`. Leave **identity passes** without a `retrieval:` block — they run full-doc and are not routable.
+4. **Verify the config is schema-derived as intended:**
+   ```bash
+   python3 -c "from app.services.extraction_pass_signal_config import derive_pass_signal_config as d; import json; print(json.dumps({k:(sorted(v.dimensions),sorted(v.categorical_fields),v.has_image_field) for k,v in d('<your_bundle>').items()}, indent=2))"
+   ```
+   Confirm each pass's dimensions/categorical/image match your intent (e.g. a propulsion pass shows `[["mass","time"], [], false]`).
+5. **Deploy:** manifest edit, then `docker compose -p eip-mmdpp up -d --force-recreate api worker worker-graph` (bind-mounted code reloads on restart), and set `VECTOR_ROUTER_MODE=narrow_only`.
+6. **Validate (optional, recommended) against ground truth — a check, not training.** If you have lineage-grounded labels, compare per-pass recall/precision (bake-off harness). Expect off-domain passes to yield 0 (empty_selection→ZERO_YIELD) — that is correct, not a failure.
+
+### Notes
+
+- **No calibration loop.** Unlike the legacy guarded-ranker (which fit `ranker_weights`/`quantile_q` per corpus — the `scripts/` calibration tools `export_bakeoff_dataset` / `check_gate_coverage` / `eval_guarded_ranker` / `fit_guarded_ranker` still exist for that deprecated `guarded_quantile` path), absolute_union has zero learned parameters. Re-targeting a new corpus needs only schema design + lexicon extension.
+- **Empty is expected.** A pass with no matching content on a doc returns 0 chunks → ZERO_YIELD/COMPLETE. Design one pass per attribute-group; not every pass fires on every doc.
+- **Units are the highest-leverage choice.** A pass whose numeric fields all share a dimension common across the corpus over-selects (everything has that unit); a pass with a distinctive dimension self-selects cleanly. Choose field units that discriminate the pass's content.
 
 ## Creating Custom Queries
 
@@ -1534,7 +1647,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-pass` endpoint using a bundle-based architecture. The orchestrator in `derive_ontology_graph` dispatches 5 extraction passes (reference, radar_domain, missile_domain, other_systems, system_links) sequentially, each with its own hand-authored Pydantic schema from the active ontology bundle (`ontology_bundles/air_defense_v3/`). Each pass sends `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the Docling-Graph service, which returns extracted entities and relationships. After all required passes complete (with per-pass retry + skip logic and a required-pass gate), the merge-and-resolve layer collapses bridge entities across passes, resolves relationships by identity-dict or ref_id lookup, and tracks rejection reasons. The three-phase graph import writes nodes (with `tracker.mark()`), then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE edges are auto-created during node upsert. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. The `GraphWriteTracker` gates rollback on failure — failures before the first graph mutation skip rollback to avoid deleting data from a prior successful run.
+Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-pass` endpoint using a bundle-based architecture. The orchestrator in `derive_ontology_graph` dispatches 5 extraction passes (reference, radar_domain, missile_domain, other_systems, system_links) sequentially, each with its own hand-authored Pydantic schema from the active ontology bundle (`ontology_bundles/air_defense_v3/`). Each pass sends `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the Docling-Graph service, which returns extracted entities and relationships. After all required passes complete (with per-pass retry + skip logic and a required-pass gate), the merge-and-resolve layer collapses bridge entities across passes, resolves relationships by identity-dict or ref_id lookup, and tracks rejection reasons. The three-phase graph import writes nodes (with `tracker.mark()`), then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE edges are auto-created during node upsert. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. The `GraphWriteTracker` gates rollback on failure — failures before the first graph mutation skip rollback to avoid deleting data from a prior successful run. Per-field lineage is precise: each extracted field's source chunk is taken from the merge-time `__property_provenance` map (the chunk of the batch that emitted that field's value), so a spec value (e.g. "max range 50 km") is attributed to the chunk it physically appears in, not the chunk where the entity name first appears.
 
 ## Data Migration (from Neo4j + Qdrant to ArcadeDB)
 

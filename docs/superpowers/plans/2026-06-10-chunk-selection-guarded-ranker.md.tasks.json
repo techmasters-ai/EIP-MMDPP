@@ -1,0 +1,180 @@
+{
+ "planPath": "docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md",
+ "tasks": [
+  {
+   "id": 1,
+   "subject": "Task 1: Harden unit-token matcher in field_value_grounding",
+   "status": "completed",
+   "description": "**Goal:** Unit synonyms match as bounded tokens via shared unit_token_regex/has_unit_token; label+gate single source.\n\n**Files:**\n- app/services/field_value_grounding.py\n- docker/docling-graph/tests/fixtures/unit_matcher_cases.json\n- tests/unit/test_field_value_grounding.py\n\n**Acceptance Criteria:**\n- [ ] helpers exported, unicode-aware guards\n- [ ] '50 sites' no longer matches unit s\n- [ ] SAME_CHUNK token-bounded\n- [ ] all fixture + pre-existing tests pass\n\n**Verify:** python3 -m pytest tests/unit/test_field_value_grounding.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/field_value_grounding.py\", \"docker/docling-graph/tests/fixtures/unit_matcher_cases.json\", \"tests/unit/test_field_value_grounding.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_field_value_grounding.py -v\", \"acceptanceCriteria\": [\"helpers exported, unicode-aware guards\", \"'50 sites' no longer matches unit s\", \"SAME_CHUNK token-bounded\", \"all fixture + pre-existing tests pass\"]}\n```"
+  },
+  {
+   "id": 2,
+   "subject": "Task 2: Mirror matcher hardening in docling-graph provenance",
+   "status": "completed",
+   "description": "**Goal:** _vg_value_in_chunk gets byte-equivalent semantics pinned to the same fixture; registered in run_dg_lineage.\n\n**Files:**\n- docker/docling-graph/app/provenance.py\n- docker/docling-graph/tests/test_value_grounding_mirror.py\n- scripts/run_tests.sh\n\n**Acceptance Criteria:**\n- [ ] mirror matches app matcher on all fixture cases\n- [ ] verbatim helpers + cross-ref comments\n- [ ] registered in run_dg_lineage\n- [ ] delta tests pass\n- [ ] rebuild required at deploy noted\n\n**Verify:** PYTHONPATH=docker/docling-graph/repo python3 -m pytest docker/docling-graph/tests/test_value_grounding_mirror.py docker/docling-graph/tests/test_entity_provenance_from_delta.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/provenance.py\", \"docker/docling-graph/tests/test_value_grounding_mirror.py\", \"scripts/run_tests.sh\"], \"verifyCommand\": \"PYTHONPATH=docker/docling-graph/repo python3 -m pytest docker/docling-graph/tests/test_value_grounding_mirror.py docker/docling-graph/tests/test_entity_provenance_from_delta.py -v\", \"acceptanceCriteria\": [\"mirror matches app matcher on all fixture cases\", \"verbatim helpers + cross-ref comments\", \"registered in run_dg_lineage\", \"delta tests pass\", \"rebuild required at deploy noted\"]}\n```",
+   "blockedBy": [
+    1
+   ]
+  },
+  {
+   "id": 3,
+   "subject": "Task 3: Add sec/usec/dbi SUFFIX_UNITS + groundable-fields audit",
+   "status": "completed",
+   "description": "**Goal:** _sec/_usec/_dbi fields groundable; audit test makes suffix gaps hard failures.\n\n**Files:**\n- app/services/field_value_grounding.py\n- scripts/audit_groundable_fields.py\n- tests/unit/test_groundable_fields_audit.py\n\n**Acceptance Criteria:**\n- [ ] new suffixes ground\n- [ ] audit walks record_cls.model_fields of every pass (NOT field_queries)\n- [ ] UNITLESS_OK allowlist explicit\n- [ ] zero GAP rows\n\n**Verify:** python3 -m pytest tests/unit/test_groundable_fields_audit.py -v && python3 -m scripts.audit_groundable_fields\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/field_value_grounding.py\", \"scripts/audit_groundable_fields.py\", \"tests/unit/test_groundable_fields_audit.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_groundable_fields_audit.py -v && python3 -m scripts.audit_groundable_fields\", \"acceptanceCriteria\": [\"new suffixes ground\", \"audit walks record_cls.model_fields of every pass (NOT field_queries)\", \"UNITLESS_OK allowlist explicit\", \"zero GAP rows\"]}\n```"
+  },
+  {
+   "id": 4,
+   "subject": "Task 4: Suspect-label audit + dataset re-export + re-baseline report (USER GATE)",
+   "status": "completed",
+   "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** Regenerate 8-doc ground truth under hardened matcher + suffixes; audit suspect positive; Phase-0 report; PHASE GATE before Phase 1.\n\n**Files:**\n- reports/dataset_v1_relabel/\n- docs/operational/phase0-relabel-report-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] re-export same 8 runs into dataset_v1_relabel (never overwrite reports/dataset)\n- [ ] old-vs-new positive table + activated passes\n- [ ] SA2-SR71 c16 audited with (field,value,tier) evidence + decision\n- [ ] AUROC both LODO conventions\n- [ ] read-only DB\n- [ ] user go-ahead before Phase 1\n\n**Verify:** ls reports/dataset_v1_relabel/bakeoff_dataset.csv docs/operational/phase0-relabel-report-2026-06.md\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"reports/dataset_v1_relabel/\", \"docs/operational/phase0-relabel-report-2026-06.md\"], \"verifyCommand\": \"ls reports/dataset_v1_relabel/bakeoff_dataset.csv docs/operational/phase0-relabel-report-2026-06.md\", \"acceptanceCriteria\": [\"re-export same 8 runs into dataset_v1_relabel (never overwrite reports/dataset)\", \"old-vs-new positive table + activated passes\", \"SA2-SR71 c16 audited with (field,value,tier) evidence + decision\", \"AUROC both LODO conventions\", \"read-only DB\", \"user go-ahead before Phase 1\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"old\", \"dataset_v1\", \"35 positives\"], [\"new\", \"dataset_v1_relabel\", \"relabel\"]]}\n```",
+   "blockedBy": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "id": 5,
+   "subject": "Task 5: Unit-signature derivation + G1 gate predicate module",
+   "status": "completed",
+   "description": "**Goal:** Schema-derived per-pass unit signature + pure G1 predicate (digit AND signature-unit token) via the shared matcher.\n\n**Files:**\n- app/services/extraction_unit_gate.py\n- app/services/extraction_query_builder.py\n- app/services/ontology_bundles.py\n- tests/unit/test_extraction_unit_gate.py\n\n**Acceptance Criteria:**\n- [ ] signature from record_cls.model_fields union of units_for\n- [ ] gate = digit AND has_unit_token (shared matcher)\n- [ ] gate superset of label on fixture\n- [ ] RetrievalProfile.unit_gate default False\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_extraction_query_builder.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_unit_gate.py\", \"app/services/extraction_query_builder.py\", \"app/services/ontology_bundles.py\", \"tests/unit/test_extraction_unit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_extraction_query_builder.py -v\", \"acceptanceCriteria\": [\"signature from record_cls.model_fields union of units_for\", \"gate = digit AND has_unit_token (shared matcher)\", \"gate superset of label on fixture\", \"RetrievalProfile.unit_gate default False\"]}\n```",
+   "blockedBy": [
+    1
+   ]
+  },
+  {
+   "id": 6,
+   "subject": "Task 6: Retain per-row dense cosines (max_field_cosine) in multi-query scorer",
+   "status": "completed",
+   "description": "**Goal:** Stop discarding the cosine matrix: row_cosines (entity/max-field/mean-top3) for ALL rows; capture-only.\n\n**Files:**\n- app/services/extraction_chunk_search.py\n- app/services/extraction_candidate_scoring.py\n- tests/unit/test_extraction_chunk_search_dense_multi.py\n\n**Acceptance Criteria:**\n- [ ] row_cosines over ALL rows before top-k slice\n- [ ] uncensored max_field_cosine proven\n- [ ] COMPONENT_KEYS += max_field_cosine, mean_top3_field_cosine\n- [ ] final_score byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_chunk_search_dense_multi.py tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_chunk_search.py\", \"app/services/extraction_candidate_scoring.py\", \"tests/unit/test_extraction_chunk_search_dense_multi.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_chunk_search_dense_multi.py tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"row_cosines over ALL rows before top-k slice\", \"uncensored max_field_cosine proven\", \"COMPONENT_KEYS += max_field_cosine, mean_top3_field_cosine\", \"final_score byte-identical\"]}\n```"
+  },
+  {
+   "id": 7,
+   "subject": "Task 7: Gate union into candidate pool (cap-exempt) + diagnostics",
+   "status": "completed",
+   "description": "**Goal:** unit_gate=True: G1 over ALL rows; gated chunks join pool past top_n cap, flow through rerank/C5/capture, flagged + counted.\n\n**Files:**\n- app/services/extraction_chunk_search.py\n- app/services/extraction_candidate_scoring.py\n- app/api/v1/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] gated chunk outside pool reaches selection pool with gate_flags={'unit'}\n- [ ] cap-exempt\n- [ ] default byte-identical\n- [ ] score_components_all covers enlarged pool\n- [ ] unit_gate_total/unit_gate_added diagnostics\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_chunk_search.py\", \"app/services/extraction_candidate_scoring.py\", \"app/api/v1/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_unit_gate.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\", \"acceptanceCriteria\": [\"gated chunk outside pool reaches selection pool with gate_flags={'unit'}\", \"cap-exempt\", \"default byte-identical\", \"score_components_all covers enlarged pool\", \"unit_gate_total/unit_gate_added diagnostics\"]}\n```",
+   "blockedBy": [
+    5,
+    6
+   ]
+  },
+  {
+   "id": 8,
+   "subject": "Task 8: Structural text features (digit_density, label_value_lines, unit_token_count)",
+   "status": "completed",
+   "description": "**Goal:** Three name-free text statistics in capture for every candidate; PHASE 1 GATE after this task.\n\n**Files:**\n- app/services/extraction_candidate_scoring.py\n- app/services/extraction_unit_gate.py\n- app/api/v1/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] exact formulas per plan\n- [ ] spec-block fixture values\n- [ ] byte-identical final_score\n- [ ] regexes compiled once per call\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_candidate_scoring.py\", \"app/services/extraction_unit_gate.py\", \"app/api/v1/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"exact formulas per plan\", \"spec-block fixture values\", \"byte-identical final_score\", \"regexes compiled once per call\"]}\n```",
+   "blockedBy": [
+    5
+   ]
+  },
+  {
+   "id": 9,
+   "subject": "Task 9: Persist + wire is_table with score-neutral default",
+   "status": "completed",
+   "description": "**Goal:** Table identity survives merged indexing (synth-ref + raw-ref derivation), table_meta at all merge sites, table_boost 0.08->0.0.\n\n**Files:**\n- app/services/hybrid_chunking.py\n- app/services/extraction_chunk_index.py\n- app/services/extraction_chunk_search.py\n- app/api/v1/extraction_routing.py\n- app/services/ontology_bundles.py\n\n**Acceptance Criteria:**\n- [ ] derivation = source_refs \u2229 (raw #/tables/ \u222a _synth_only_table_refs values) \u2014 NOT DocItemLabel.TABLE alone\n- [ ] read_chunk_is_table default False\n- [ ] table_meta at 3 sites\n- [ ] byte-identical default via boost flip\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_extraction_chunk_search_direct.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/hybrid_chunking.py\", \"app/services/extraction_chunk_index.py\", \"app/services/extraction_chunk_search.py\", \"app/api/v1/extraction_routing.py\", \"app/services/ontology_bundles.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_extraction_chunk_search_direct.py -v\", \"acceptanceCriteria\": [\"derivation = source_refs \\u2229 (raw #/tables/ \\u222a _synth_only_table_refs values) \\u2014 NOT DocItemLabel.TABLE alone\", \"read_chunk_is_table default False\", \"table_meta at 3 sites\", \"byte-identical default via boost flip\"]}\n```"
+  },
+  {
+   "id": 10,
+   "subject": "Task 10: G2 table gate",
+   "status": "completed",
+   "description": "**Goal:** is_table + unit-bearing chunks join the gate union with flag 'table' (no digit required).\n\n**Files:**\n- app/services/extraction_chunk_search.py\n- app/services/extraction_candidate_scoring.py\n- tests/unit/test_extraction_unit_gate.py\n\n**Acceptance Criteria:**\n- [ ] table+unit-no-digit gated as table\n- [ ] separate diagnostics counters\n- [ ] default-off byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_unit_gate.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_chunk_search.py\", \"app/services/extraction_candidate_scoring.py\", \"tests/unit/test_extraction_unit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_unit_gate.py -v\", \"acceptanceCriteria\": [\"table+unit-no-digit gated as table\", \"separate diagnostics counters\", \"default-off byte-identical\"]}\n```",
+   "blockedBy": [
+    7,
+    9
+   ]
+  },
+  {
+   "id": 11,
+   "subject": "Task 11: Union schema-derived unit keywords into manifest lists",
+   "status": "completed",
+   "description": "**Goal:** inject_pass_keywords merges derived units INTO non-empty manifest lists (was: shadowed).\n\n**Files:**\n- app/api/v1/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] union not override, NFC+casefold dedup\n- [ ] empty-manifest path unchanged\n- [ ] final_score byte-identical\n\n**Verify:** python3 -m pytest tests/unit/test_v1_extraction_routing.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/api/v1/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_v1_extraction_routing.py -v\", \"acceptanceCriteria\": [\"union not override, NFC+casefold dedup\", \"empty-manifest path unchanged\", \"final_score byte-identical\"]}\n```"
+  },
+  {
+   "id": 12,
+   "subject": "Task 12: Word-boundary keyword matching + mining normalization unify",
+   "status": "completed",
+   "description": "**Goal:** Single-token pass-keywords word-bounded in keyword_hit_counts ONLY (alias channel untouched); mining scripts NFC-unified.\n\n**Files:**\n- app/services/extraction_lexical_search.py\n- scripts/mine_pass_keywords.py\n- scripts/keyword_discrimination_check.py\n\n**Acceptance Criteria:**\n- [ ] mach !~ machinery; phrases keep substring\n- [ ] alias channel regression-tested unchanged\n- [ ] mining normalization == runtime\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_lexical_search.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/extraction_lexical_search.py\", \"scripts/mine_pass_keywords.py\", \"scripts/keyword_discrimination_check.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_lexical_search.py -v\", \"acceptanceCriteria\": [\"mach !~ machinery; phrases keep substring\", \"alias channel regression-tested unchanged\", \"mining normalization == runtime\"]}\n```"
+  },
+  {
+   "id": 13,
+   "subject": "Task 13: Per-keyword runtime weights",
+   "status": "completed",
+   "description": "**Goal:** lexical_keyword_weights dict; weighted-sum counting; unweighted byte-identical.\n\n**Files:**\n- app/services/ontology_bundles.py\n- app/services/extraction_lexical_search.py\n- app/services/extraction_chunk_search.py\n\n**Acceptance Criteria:**\n- [ ] default byte-identical\n- [ ] weighted sum works\n- [ ] float-safe normalization\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_lexical_search.py tests/unit/test_extraction_candidate_scoring.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/ontology_bundles.py\", \"app/services/extraction_lexical_search.py\", \"app/services/extraction_chunk_search.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_lexical_search.py tests/unit/test_extraction_candidate_scoring.py -v\", \"acceptanceCriteria\": [\"default byte-identical\", \"weighted sum works\", \"float-safe normalization\"]}\n```",
+   "blockedBy": [
+    12
+   ]
+  },
+  {
+   "id": 14,
+   "subject": "Task 14: Header-projection diagnostic -> conditional match_text",
+   "status": "completed",
+   "description": "**Goal:** Empirical go/no-go on the match_text haystack (render_graph text may already carry headers); implement only on confirmed gap; user mini-gate between.\n\n**Files:**\n- scripts/diagnose_table_haystack.py\n- docs/operational/table-haystack-diagnostic-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] diagnostic report with go/no-go\n- [ ] user mini-gate before implementation\n- [ ] GO: lineage/grounding non-consumers grep-verified; chunk_text untouched\n- [ ] NO-GO: spec \u00a75.2 superseded note\n\n**Verify:** python3 -m scripts.diagnose_table_haystack --run 1329caf5-d57b-403d-96ea-1399a7d3d67f --chunks 93,94,124\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/diagnose_table_haystack.py\", \"docs/operational/table-haystack-diagnostic-2026-06.md\"], \"verifyCommand\": \"python3 -m scripts.diagnose_table_haystack --run 1329caf5-d57b-403d-96ea-1399a7d3d67f --chunks 93,94,124\", \"acceptanceCriteria\": [\"diagnostic report with go/no-go\", \"user mini-gate before implementation\", \"GO: lineage/grounding non-consumers grep-verified; chunk_text untouched\", \"NO-GO: spec \\u00a75.2 superseded note\"]}\n```"
+  },
+  {
+   "id": 15,
+   "subject": "Task 15: Re-mine keywords against value-grounded label",
+   "status": "completed",
+   "description": "**Goal:** Miner positives from the relabeled CSV (--positives-csv), unit tokens minable (--allow-units); review-only output. PHASE 2 GATE after Phase-2 tasks.\n\n**Files:**\n- scripts/mine_pass_keywords.py\n\n**Acceptance Criteria:**\n- [ ] --positives-csv swaps posset source\n- [ ] --allow-units relaxes only unit tokens\n- [ ] review-only\n- [ ] DESIG guardrail intact otherwise\n\n**Verify:** python3 -m scripts.mine_pass_keywords --help\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/mine_pass_keywords.py\"], \"verifyCommand\": \"python3 -m scripts.mine_pass_keywords --help\", \"acceptanceCriteria\": [\"--positives-csv swaps posset source\", \"--allow-units relaxes only unit tokens\", \"review-only\", \"DESIG guardrail intact otherwise\"]}\n```",
+   "blockedBy": [
+    4
+   ]
+  },
+  {
+   "id": 16,
+   "subject": "Task 16: Export/eval harness + guarded frontier + gate-coverage check",
+   "status": "completed",
+   "description": "**Goal:** NEW_FEATURES plumbing (backward-compatible), eval_guarded_ranker frontier (both LODO conventions), check_gate_coverage literal acceptance.\n\n**Files:**\n- scripts/a0_captured_separation.py\n- scripts/export_bakeoff_dataset.py\n- scripts/eval_guarded_ranker.py\n- scripts/check_gate_coverage.py\n- tests/unit/test_eval_guarded_ranker.py\n\n**Acceptance Criteria:**\n- [ ] old dataset still loads (missing cols -> 0.0)\n- [ ] hand-computable fixture frontier\n- [ ] gate-coverage exit semantics\n- [ ] both LODO conventions labeled\n\n**Verify:** python3 -m pytest tests/unit/test_eval_guarded_ranker.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/a0_captured_separation.py\", \"scripts/export_bakeoff_dataset.py\", \"scripts/eval_guarded_ranker.py\", \"scripts/check_gate_coverage.py\", \"tests/unit/test_eval_guarded_ranker.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_eval_guarded_ranker.py -v\", \"acceptanceCriteria\": [\"old dataset still loads (missing cols -> 0.0)\", \"hand-computable fixture frontier\", \"gate-coverage exit semantics\", \"both LODO conventions labeled\"]}\n```",
+   "blockedBy": [
+    7,
+    8,
+    9,
+    10
+   ]
+  },
+  {
+   "id": 17,
+   "subject": "Task 17: Deploy + re-collect 8 docs + evaluate (USER GATE)",
+   "status": "completed",
+   "description": "**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Goal:** Fresh 8-doc capture with full feature set live; guarded-ranker eval report; PHASE GATE before Phase 4.\n\n**Files:**\n- reports/dataset_v2/\n- docs/operational/phase3-guarded-ranker-eval-2026-06.md\n\n**Acceptance Criteria:**\n- [ ] deploy verified: rebuilt docling-graph + both workers restarted with fresh StartedAt\n- [ ] idle-pool probe before runs\n- [ ] 8 fresh runs, non-empty score_components_all\n- [ ] dataset_v2 new features non-constant\n- [ ] check_gate_coverage exit 0\n- [ ] eval report both LODO conventions + gate/ranker cost table\n- [ ] user go-ahead before Phase 4\n\n**Verify:** python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv && ls docs/operational/phase3-guarded-ranker-eval-2026-06.md\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"reports/dataset_v2/\", \"docs/operational/phase3-guarded-ranker-eval-2026-06.md\"], \"verifyCommand\": \"python3 -m scripts.check_gate_coverage reports/dataset_v2/bakeoff_dataset.csv && ls docs/operational/phase3-guarded-ranker-eval-2026-06.md\", \"acceptanceCriteria\": [\"deploy verified: rebuilt docling-graph + both workers restarted with fresh StartedAt\", \"idle-pool probe before runs\", \"8 fresh runs, non-empty score_components_all\", \"dataset_v2 new features non-constant\", \"check_gate_coverage exit 0\", \"eval report both LODO conventions + gate/ranker cost table\", \"user go-ahead before Phase 4\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"dataset_v1\", \"old\", \"baseline\"], [\"dataset_v2\", \"new\", \"re-collect\"]]}\n```",
+   "blockedBy": [
+    4,
+    10,
+    11,
+    13,
+    14,
+    15,
+    16
+   ]
+  },
+  {
+   "id": 18,
+   "subject": "Task 18: selection_mode + shared cut helper + selection diagnostics",
+   "status": "completed",
+   "description": "**Goal:** Four [:top_k] slices -> select_candidates helper; topk default byte-identical; guarded_quantile = gates \u222a quantile cut, gates exempt from k_max.\n\n**Files:**\n- app/services/ontology_bundles.py\n- app/services/extraction_candidate_scoring.py\n- app/api/v1/extraction_routing.py\n- app/schemas/extraction_routing.py\n\n**Acceptance Criteria:**\n- [ ] topk byte-identical at 4 sites\n- [ ] guarded semantics exact incl. gate k_max exemption\n- [ ] edge cases tested\n- [ ] diagnostics schema-stable, worker untouched\n\n**Verify:** python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"app/services/ontology_bundles.py\", \"app/services/extraction_candidate_scoring.py\", \"app/api/v1/extraction_routing.py\", \"app/schemas/extraction_routing.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_extraction_candidate_scoring.py tests/unit/test_v1_extraction_routing.py tests/unit/test_extraction_routing_fallback.py -v\", \"acceptanceCriteria\": [\"topk byte-identical at 4 sites\", \"guarded semantics exact incl. gate k_max exemption\", \"edge cases tested\", \"diagnostics schema-stable, worker untouched\"]}\n```",
+   "blockedBy": [
+    7
+   ]
+  },
+  {
+   "id": 19,
+   "subject": "Task 19: Calibration script (fit_guarded_ranker)",
+   "status": "completed",
+   "description": "**Goal:** dataset_v2 -> sign-constrained LogReg weights + quantile_q + margin -> fit JSON + manifest snippet; refuses on gate-coverage failure.\n\n**Files:**\n- scripts/fit_guarded_ranker.py\n- tests/unit/test_fit_guarded_ranker.py\n\n**Acceptance Criteria:**\n- [ ] sign-constrained drop-and-refit\n- [ ] q selection + margin steps documented as non-guarantee\n- [ ] fit JSON + manifest snippet\n- [ ] gate-coverage precondition\n\n**Verify:** python3 -m pytest tests/unit/test_fit_guarded_ranker.py -v\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"scripts/fit_guarded_ranker.py\", \"tests/unit/test_fit_guarded_ranker.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_fit_guarded_ranker.py -v\", \"acceptanceCriteria\": [\"sign-constrained drop-and-refit\", \"q selection + margin steps documented as non-guarantee\", \"fit JSON + manifest snippet\", \"gate-coverage precondition\"]}\n```",
+   "blockedBy": [
+    16,
+    17
+   ]
+  },
+  {
+   "id": 20,
+   "subject": "Task 20: Bundle propagation + docs + full suite",
+   "status": "completed",
+   "description": "**Goal:** Config to air_defense_v3 then 3 siblings; VERIFICATION_CHECKLIST + README; suite green by junit XML; PHASE 4 GATE after.\n\n**Files:**\n- ontology_bundles/air_defense_v3/manifest.yaml\n- ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml\n- ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml\n- ontology_bundles/air_defense_v3_merged_v1/manifest.yaml\n- VERIFICATION_CHECKLIST.md\n- README.md\n\n**Acceptance Criteria:**\n- [ ] 4 bundles parse\n- [ ] unit suite green by junit XML not banner\n- [ ] acceptance file 33 passed run DIRECTLY (unmarked)\n- [ ] docs updated\n- [ ] no new env vars confirmed\n\n**Verify:** bash scripts/run_tests.sh unit && python3 -m pytest tests/integration/test_sa2_dvina_extraction_acceptance.py -q\n\n**Steps:** see plan doc docs/superpowers/plans/2026-06-10-chunk-selection-guarded-ranker.md (same task number) for full code + TDD steps.\n\n```json:metadata\n{\"files\": [\"ontology_bundles/air_defense_v3/manifest.yaml\", \"ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml\", \"ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml\", \"ontology_bundles/air_defense_v3_merged_v1/manifest.yaml\", \"VERIFICATION_CHECKLIST.md\", \"README.md\"], \"verifyCommand\": \"bash scripts/run_tests.sh unit && python3 -m pytest tests/integration/test_sa2_dvina_extraction_acceptance.py -q\", \"acceptanceCriteria\": [\"4 bundles parse\", \"unit suite green by junit XML not banner\", \"acceptance file 33 passed run DIRECTLY (unmarked)\", \"docs updated\", \"no new env vars confirmed\"]}\n```",
+   "blockedBy": [
+    18,
+    19
+   ]
+  }
+ ],
+ "lastUpdated": "2026-06-17T11:40:00Z"
+}

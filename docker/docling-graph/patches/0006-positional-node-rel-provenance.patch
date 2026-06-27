@@ -1,0 +1,27 @@
+--- a/docling_graph/core/extractors/contracts/delta/ir_normalizer.py	2026-05-20 19:44:22.218406111 -0500
++++ b/docling_graph/core/extractors/contracts/delta/ir_normalizer.py	2026-06-01 11:54:45.980010260 -0500
+@@ -45,15 +45,20 @@
+     stats: dict,
+ ) -> dict:
+     """Build a per-node/per-rel provenance dict by validating LLM-emitted
+-    evidence_ids against the batch pool. Falls back to batch IDs when none
+-    are valid; increments stats['invalid_evidence_ids'] for hallucinations.
++    evidence_ids against the batch pool. The POSITIONAL batch lineage
++    (self_refs/chunk_indexes/page_numbers) in base_provenance is authoritative
++    and passes through untouched; evidence_ids holds ONLY the LLM's explicit,
++    validated citations (possibly empty) and is NEVER clobbered with the whole
++    batch evidence pool. cited_refs is the diagnostic alias for those explicit
++    citations. Increments stats['invalid_evidence_ids'] for hallucinations.
+ 
+-    Returns the SHALLOW COPY of base_provenance with evidence_ids set.
++    Returns the SHALLOW COPY of base_provenance with evidence_ids/cited_refs set.
+     Per-node callers must additionally set property_evidence after."""
+     out = dict(base_provenance)
+     raw = raw_obj.get("evidence_ids") or []
+     valid, invalid = _partition_evidence(raw, batch_evidence_ids)
+-    out["evidence_ids"] = valid or list(batch_evidence_ids)
++    out["evidence_ids"] = list(valid)
++    out["cited_refs"] = list(valid)
+     if invalid:
+         stats["invalid_evidence_ids"] = stats.get("invalid_evidence_ids", 0) + len(invalid)
+     return out

@@ -1,0 +1,25 @@
+{
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {"$ref": "#/texts/0"},
+      {"$ref": "#/groups/0"},
+      {"$ref": "#/texts/3"},
+      {"$ref": "#/groups/1"}
+    ]
+  },
+  "texts": [
+    {"self_ref": "#/texts/0", "label": "section_header", "text": "Introduction"},
+    {"self_ref": "#/texts/1", "label": "list_item", "text": "First bullet under Introduction", "parent": {"$ref": "#/groups/0"}},
+    {"self_ref": "#/texts/2", "label": "list_item", "text": "Second bullet under Introduction", "parent": {"$ref": "#/groups/0"}},
+    {"self_ref": "#/texts/3", "label": "section_header", "text": "Equipment Specifications"},
+    {"self_ref": "#/texts/4", "label": "list_item", "text": "RSNA-75 Fan Song radar", "parent": {"$ref": "#/groups/1"}},
+    {"self_ref": "#/texts/5", "label": "list_item", "text": "SA-2 missile family", "parent": {"$ref": "#/groups/1"}}
+  ],
+  "groups": [
+    {"self_ref": "#/groups/0", "label": "list", "children": [{"$ref": "#/texts/1"}, {"$ref": "#/texts/2"}]},
+    {"self_ref": "#/groups/1", "label": "list", "children": [{"$ref": "#/texts/4"}, {"$ref": "#/texts/5"}]}
+  ],
+  "tables": [],
+  "pictures": []
+}

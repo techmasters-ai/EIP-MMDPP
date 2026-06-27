@@ -45,6 +45,13 @@ def _clear_env(monkeypatch):
 
 
 def _build(pass_name=None):
+    # build_pipeline_config() constructs a docling_graph.PipelineConfig, so it
+    # requires the `docling_graph` package — only installed inside the
+    # docling-graph service image, not the monorepo host/CI env. Skip (not
+    # fail) the tests that exercise this path when the package is absent.
+    # test_app_config_settings_default_is_three uses only app.config and runs
+    # regardless, which is why this guard is scoped to the builder helper.
+    pytest.importorskip("docling_graph")
     cb = _load_config_builder()
     return cb.build_pipeline_config(
         source="/tmp/nonexistent-source-path.json",

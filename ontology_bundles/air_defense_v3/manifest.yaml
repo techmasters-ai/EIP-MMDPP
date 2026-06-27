@@ -4,8 +4,17 @@ ontology_name: "EIP Military Equipment Ontology"
 ontology_version: "3.0.0"
 extraction_profile_version: "1.0.0"
 
+# B5/B6 (2026-05-28): multi-channel retrieval + post-rerank-boost fields
+# (field_query_top_k, lexical_top_k, pattern_hit_limit, fallback_*,
+# rerank/lexical/pattern/section/table_boost/negative weights,
+# subset_schema_extraction) are NOT repeated here; they take their defaults
+# from the RetrievalProfile model in app/services/ontology_bundles.py.
+# Omitting defaults prevents 4-bundle drift. See plan:
+# docs/superpowers/plans/2026-05-28-schema-wide-retrieval-routing-upgrade.md
+
 passes:
   - name: radar_identity
+    phase: identity
     required: false
     kind: entities
     input_mode: document_only
@@ -17,6 +26,7 @@ passes:
     depends_on: []
 
   - name: radar_power_rf
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -26,8 +36,36 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "magnetron"
+        - "klystron"
+        - "traveling wave tube"
+        - "TWT"
+        - "duplexer"
+        - "power amplifier"
+        - "RF output"
+        - "average power"
+        - "duty cycle"
 
   - name: radar_antenna
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -37,8 +75,36 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "reflector"
+        - "feed horn"
+        - "parabolic"
+        - "phased array"
+        - "sidelobe"
+        - "boresight"
+        - "radome"
+        - "array face"
+        - "aperture"
 
   - name: radar_timing
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -48,8 +114,34 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "antenna rotation"
+        - "rotation period"
+        - "scan rate"
+        - "revisit"
+        - "pulse repetition interval"
+        - "interpulse"
+        - "rpm"
 
   - name: radar_modulation
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -59,8 +151,36 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "pulse compression"
+        - "matched filter"
+        - "chirp"
+        - "Barker"
+        - "coherent integration"
+        - "frequency agility"
+        - "phase coding"
+        - "modulation on pulse"
+        - "MOP"
 
   - name: missile_identity
+    phase: identity
     required: false
     kind: entities
     input_mode: document_only
@@ -72,6 +192,7 @@ passes:
     depends_on: []
 
   - name: missile_kinematics
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -81,8 +202,34 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "engagement envelope"
+        - "kill zone"
+        - "no-escape zone"
+        - "engagement boundary"
+        - "intercept envelope"
+        - "footprint"
+        - "slant range"
 
   - name: missile_guidance
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -92,8 +239,36 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "seeker"
+        - "homing"
+        - "midcourse"
+        - "proportional navigation"
+        - "command link"
+        - "datalink"
+        - "illuminator"
+        - "gimbal"
+        - "terminal phase"
 
   - name: missile_airframe
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -103,8 +278,36 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "fuselage"
+        - "fins"
+        - "canard"
+        - "wingspan"
+        - "fin span"
+        - "control surfaces"
+        - "nose cone"
+        - "airframe"
+        - "warhead"
 
   - name: missile_speed_timing
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -114,8 +317,35 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "burnout"
+        - "boost phase"
+        - "coast phase"
+        - "flyout"
+        - "terminal velocity"
+        - "supersonic"
+        - "hypersonic"
+        - "mach"
 
   - name: missile_propulsion
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -125,8 +355,37 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    retrieval:
+      unit_gate: true
+      selection_mode: absolute_union
+      cosine_tau: 0.55
+      quantile_q: 0.5
+      k_min: 3
+      k_max: 0
+      ranker_weights:
+        unit_token_count: 1.242183
+        digit_density: 0.304987
+        mean_top3_field_cosine: 0.272968
+        max_field_cosine: 0.219610
+        rerank_norm: 0.055489
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+      lexical_keywords:
+        - "rocket motor"
+        - "propellant"
+        - "nozzle"
+        - "specific impulse"
+        - "solid propellant"
+        - "liquid propellant"
+        - "oxidizer"
+        - "grain"
+        - "thrust"
+        - "fuel"
 
   - name: system_links
+    phase: relationship
     required: true
     kind: relationships_only
     input_mode: document_plus_entity_refs

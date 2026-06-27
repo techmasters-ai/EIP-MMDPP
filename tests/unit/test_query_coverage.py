@@ -645,9 +645,16 @@ class TestUnifiedQueryRouting:
     """Tests verifying that unified_query dispatches to the correct handler."""
 
     @pytest.mark.asyncio
+    @patch("app.api.v1.retrieval._backfill_table_chunk_metadata", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._text_vector_search", new_callable=AsyncMock)
-    async def test_basic_strategy_calls_text_vector_search(self, mock_text, mock_urls, _mock_doc_names, _mock_page_numbers):
+    async def test_basic_strategy_calls_text_vector_search(self, mock_text, mock_urls, _mock_table_meta, _mock_doc_names, _mock_page_numbers):
+        # _backfill_table_chunk_metadata was added to unified_query after these
+        # routing tests were written. It is unconditionally awaited on the
+        # result list; left unmocked it runs db.execute(...).fetchall() against
+        # the unconfigured AsyncMock db and raises "coroutine object is not
+        # iterable". Patch it (the app code is correct — production rows iterate
+        # fine). The other backfill helpers are already patched.
         from app.api.v1.retrieval import unified_query
 
         mock_text.return_value = [_make_item(score=0.9)]
@@ -662,9 +669,12 @@ class TestUnifiedQueryRouting:
         assert response.total == 1
 
     @pytest.mark.asyncio
+    @patch("app.api.v1.retrieval._backfill_table_chunk_metadata", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._multi_modal_pipeline", new_callable=AsyncMock)
-    async def test_hybrid_strategy_calls_multi_modal(self, mock_mm, mock_urls, _mock_doc_names, _mock_page_numbers):
+    async def test_hybrid_strategy_calls_multi_modal(self, mock_mm, mock_urls, _mock_table_meta, _mock_doc_names, _mock_page_numbers):
+        # See test_basic_strategy_calls_text_vector_search: _backfill_table_chunk_metadata
+        # is awaited post-handler and must be mocked or it hits the unconfigured AsyncMock db.
         from app.api.v1.retrieval import unified_query
 
         mock_mm.return_value = [_make_item(score=0.85)]

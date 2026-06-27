@@ -33,8 +33,12 @@ like an uppercase ontology name is treated as an entity.
 from __future__ import annotations
 
 import logging
+import math
+import re
+import unicodedata
 import uuid
-from typing import Any, get_args, get_origin
+from functools import lru_cache
+from typing import Any, Iterable, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -86,6 +90,7 @@ def synthesize_provenance_from_pass_output(
     template_cls: type[BaseModel],
     chunk_to_self_refs: dict[int, list[str]] | None,
     provenance_cls: type,
+    chunk_to_page_numbers: dict[int, list[int]] | None = None,
 ) -> list[Any]:
     """Emit one ExtractionProvenance row per entity in ``pass_output``.
 
@@ -109,7 +114,11 @@ def synthesize_provenance_from_pass_output(
     * ``identity_values`` — copied from identity_fields of the item
     * ``element_uid`` — first self_ref from chunk 0 (via
       chunk_to_self_refs) if available, else empty
-    * ``page`` / ``chunk_index`` — None / 0
+    * ``page`` — first page of chunk 0 (via ``chunk_to_page_numbers``,
+      the parallel page map built by ``main.py`` from the SAME
+      ``last_chunk_metadata`` that yields ``chunk_to_self_refs``), or
+      ``None`` when no page map is supplied (genuinely page-less source)
+    * ``chunk_index`` — 0 when self_refs exist, else None
 
     Coarse but deterministic. Enough to seed MENTIONED_IN /
     EXTRACTED_FROM edges so the entity reaches chunk provenance.
@@ -117,13 +126,34 @@ def synthesize_provenance_from_pass_output(
     if not isinstance(pass_output, dict):
         return []
 
+    # Pick the source chunk id ONCE so element_uid and page are guaranteed
+    # co-sourced from the same chunk. Prefer chunk 0; else the first available
+    # self_refs key. element_uid + page are then both indexed by this single
+    # cid — never two independent `get(0) or next(iter(...))` fallbacks that
+    # could resolve to DIFFERENT chunks.
     if chunk_to_self_refs:
-        first_refs = chunk_to_self_refs.get(0) or next(
-            iter(chunk_to_self_refs.values()), None
-        )
+        cid = 0 if 0 in chunk_to_self_refs else next(iter(chunk_to_self_refs), None)
+    else:
+        cid = None
+
+    if cid is not None and chunk_to_self_refs:
+        first_refs = chunk_to_self_refs.get(cid)
         first_element_uid = first_refs[0] if first_refs else ""
     else:
         first_element_uid = ""
+
+    # Resolve page from the SAME chunk id as element_uid (cid above). Reads the
+    # parallel page map main.py builds from last_chunk_metadata.page_numbers,
+    # which ultimately traces to the same last_chunk_metadata that yields
+    # chunk_to_self_refs — so element_uid and page never diverge. Stays None
+    # when no map is supplied (genuinely page-less source — never fabricated).
+    first_page: int | None = None
+    if cid is not None and chunk_to_page_numbers:
+        pages = chunk_to_page_numbers.get(cid)
+        if pages:
+            first = pages[0]
+            if isinstance(first, int):
+                first_page = first
 
     out: list[Any] = []
     for field_name, field_info in template_cls.model_fields.items():
@@ -152,8 +182,12 @@ def synthesize_provenance_from_pass_output(
                     ontology_name=ontology_name,
                     identity_values=identity_values,
                     element_uid=first_element_uid,
-                    page=None,
-                    chunk_index=0 if chunk_to_self_refs else None,
+                    page=first_page,
+                    # Populate page_numbers too (the primary path sets both);
+                    # mirror the single resolved page so consumers reading
+                    # either field agree.
+                    page_numbers=[first_page] if first_page is not None else [],
+                    chunk_index=cid,
                 )
             )
     return out
@@ -178,13 +212,14 @@ def _resolve_element_uid(
 ) -> str | None:
     """Return element_uid for a knowledge-graph node, or None if none.
 
-    Resolution order:
+    Resolution order (cited-evidence preference REMOVED — Task 2):
       1. Direct `element_uid` attribute on the node dict.
       2. Nested `provenance.element_uid`.
-      3. Nested `provenance.self_refs[0]` (extraction-time, authoritative).
-      4. Nested `provenance.evidence_ids[0]` IF it is a Docling self_ref
-         (starts with '#/').
-      5. `provenance.chunk_indexes[0]` → first self_ref via
+      3. Nested `provenance.self_refs[0]` (positional, authoritative — the
+         delta-IR normalizer now stamps self_refs as the AUTHORITATIVE
+         positional lineage of the batch; cited refs live in cited_refs and
+         are NO LONGER preferred here).
+      4. `provenance.chunk_indexes[0]` → first self_ref via
          chunk_to_self_refs (extraction-time map from main.py).
     """
     direct = node_data.get("element_uid")
@@ -204,12 +239,6 @@ def _resolve_element_uid(
         first = self_refs[0]
         if isinstance(first, str) and first:
             return first
-
-    evidence_ids = prov.get("evidence_ids")
-    if isinstance(evidence_ids, list):
-        for eid in evidence_ids:
-            if isinstance(eid, str) and eid.startswith("#/"):
-                return eid
 
     if chunk_to_self_refs:
         chunk_indexes = prov.get("chunk_indexes")
@@ -593,4 +622,614 @@ def build_relationship_provenance_from_delta_trace(
                 supporting_snippet=None,
             )
         )
+
+    # --- DTO-node relationship branch (bug #59) ----------------------------
+    # A relationships-ONLY DTO pass (e.g. system_links, whose
+    # SystemLinkRelationship items are is_entity=False with rel_type /
+    # from_ref_id / to_ref_id DTO fields) is classified by the delta catalog
+    # as COMPONENT NODES, not graph edges: those rows land in `nodes` with
+    # `properties["rel_type"]` set and NEVER in `relationships`. The loop above
+    # therefore yields nothing for such a pass, so no relationship provenance is
+    # built and committed edges carry no source_chunk_ids.
+    #
+    # The lineage data exists on each such node's own `provenance` dict
+    # (self_refs / page_numbers / evidence_ids — the SAME positional-batch shape
+    # the entity-node path reads via build_entity_provenance_from_delta_graph).
+    # Mirror the INTENT of the rel_type special-case in
+    # evidence_gate.summarize_pass_output (which counts each node carrying a
+    # non-empty rel_type as one edge) — though at a different stage/key: that
+    # path gates on the MODEL schema + reads raw pass_output `rel_type`, whereas
+    # here we read the post-normalization node `properties["rel_type"]` off
+    # _delta_merged_graph. Emit one row per such DTO node, taking
+    # relationship_type from node["properties"]["rel_type"].
+    #
+    # source/target instance ids are intentionally left None: the DTO node has
+    # no resolvable endpoint node in this graph, and the worker's
+    # _build_relationship_records keys provenance with a `__rel_type_fallback__`
+    # bucket on rel_type alone, so rel_type-only provenance still attaches
+    # source_chunk_ids downstream.
+    #
+    # The DTO branch runs ALWAYS-IN-ADDITION (not empty-only): it keys solely on
+    # node["properties"]["rel_type"]. In practice a pass is either DTO-style
+    # (rel_type nodes, empty relationships[]) or graph-edge-style (typed edges,
+    # rel_type-free nodes), never both, so this does NOT double-count: a
+    # graph-edge relationship's endpoint nodes do not carry rel_type, and a DTO
+    # node never appears in relationships[]. NOTE: this is a naming convention,
+    # not an enforced invariant — if a future is_entity=True model ever declares
+    # a `rel_type` PROPERTY field, its node would emit here AND its typed edges
+    # in the relationships[] loop above → double-emit. Guard (skip rel_type nodes
+    # that are is_entity / at a relationships-only path) if that ever occurs.
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        props = n.get("properties")
+        rel_type = props.get("rel_type") if isinstance(props, dict) else None
+        if not isinstance(rel_type, str) or not rel_type:
+            continue
+        prov = n.get("provenance") if isinstance(n.get("provenance"), dict) else {}
+        # Cross-pass DTO ref ids (e.g. "E001") live on node["properties"]; the
+        # worker resolves them through upstream_refs to a precise
+        # (from_identity, rel_type, to_identity) triple so each edge keys to its
+        # OWN source chunks (was: every edge of a rel_type collapsing into one
+        # __rel_type_fallback__ bucket → identical lineage smear). source/target
+        # instance ids stay None (no resolvable endpoint node in this graph).
+        from_ref_id = props.get("from_ref_id")
+        to_ref_id = props.get("to_ref_id")
+        # evidence_ids is the PER-EDGE granular precise anchor (distinct per
+        # DTO node); self_refs is the coarse batch-context union the node
+        # spanned. Both are carried; downstream resolution favors evidence_ids.
+        out.append(
+            provenance_cls(
+                relationship_type=rel_type,
+                source_instance_id=None,
+                target_instance_id=None,
+                from_ref_id=from_ref_id if isinstance(from_ref_id, str) else None,
+                to_ref_id=to_ref_id if isinstance(to_ref_id, str) else None,
+                evidence_ids=[
+                    eid for eid in (prov.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                self_refs=[
+                    r for r in (prov.get("self_refs") or [])
+                    if isinstance(r, str)
+                ],
+                page_numbers=sorted({
+                    p for p in (prov.get("page_numbers") or [])
+                    if isinstance(p, int)
+                }),
+                supporting_snippet=None,
+            )
+        )
     return out
+
+
+def _build_path_to_entity_model(
+    template_cls: type[BaseModel],
+) -> dict[str, type[BaseModel]]:
+    """Map each delta node ``path`` → its entity model class.
+
+    The path KEY here MUST equal the canonical catalog path the normalizer
+    stamps on every ``_delta_merged_graph`` node — which carries the ``[]``
+    list-suffix (e.g. ``radar_systems[]``, ``radar_systems[].specs[]``).
+    The lookup in ``build_entity_provenance_from_delta_graph`` does
+    ``path_to_model.get(str(node["path"]))``; a key WITHOUT the suffix
+    silently misses every list-entity node → ``item_cls is None`` → every
+    row skipped → total lineage collapse.
+
+    This walks the template reproducing the EXACT path construction of
+    ``docling_graph...delta.catalog.build_delta_node_catalog`` (list fields
+    append ``[]``; scalar model fields do not; component nodes stay in the
+    tree so entities nested under a component still get the right path), and
+    then INTERSECTS the result with the real catalog's entity-node paths so
+    the bridge cannot drift from what the normalizer actually emits. Only
+    ``is_entity=True`` models are mapped — non-entity component nodes are
+    skipped exactly like the synth/primary entity walks.
+    """
+    out: dict[str, type[BaseModel]] = {}
+    visited: set[type[BaseModel]] = set()
+
+    def walk(model: type[BaseModel], path_prefix: str) -> None:
+        # NOTE: this visited-set guard INTENTIONALLY diverges from the real
+        # catalog walk (build_delta_node_catalog, catalog.py:244-310), which
+        # has NO such guard and re-walks a shared component model once under
+        # EACH parent path that reaches it. The guard here visits a shared
+        # model only under its FIRST parent path, so an entity nested beneath
+        # a component reachable from 2+ parents (a diamond) would be MISSED.
+        # This is SAFE ONLY while no schema has a shared-component-with-
+        # nested-entities diamond — verified true for every current template.
+        # The drift guard below INTERSECTS with the catalog's paths, so it can
+        # only FILTER paths this walk produced — it can NEVER RECOVER a path
+        # the visited-guard skipped. If a diamond is ever introduced, drop this
+        # guard (match the catalog's un-guarded re-walk) instead of relying on
+        # the intersection.
+        if model in visited:
+            return
+        visited.add(model)
+        for field_name, field_info in model.model_fields.items():
+            annotation = getattr(field_info, "annotation", None)
+            item_cls = _find_model_class(annotation)
+            if item_cls is None:
+                continue
+            # Mirror catalog path construction: list-typed model fields get
+            # the `[]` suffix; scalar model fields do not.
+            is_list = get_origin(annotation) is list
+            segment = f".{field_name}" if path_prefix else field_name
+            base_path = f"{path_prefix}{segment}" if path_prefix else field_name
+            path = f"{base_path}[]" if is_list else base_path
+            cfg = item_cls.model_config or {}
+            if cfg.get("is_entity"):
+                out[path] = item_cls
+            # Recurse with the suffixed path so children inherit the `[]`
+            # form (e.g. radar_systems[].specs[]). Components recurse too so
+            # entities nested under them resolve to the catalog path.
+            walk(item_cls, path)
+
+    walk(template_cls, "")
+
+    # Drift guard: keep only paths the REAL catalog reports as nodes. Catch
+    # ONLY ImportError so the isolated-unit-test case (no docling_graph package
+    # importable) still falls back to the walk-derived map — but a GENUINE
+    # build_delta_node_catalog failure (it imports fine but raises) propagates
+    # instead of silently degrading to the un-intersected walk map, which would
+    # mask a real catalog/normalizer drift. AttributeError (e.g. a renamed
+    # `.nodes`/`.path` attribute) is intentionally NOT caught for the same
+    # reason: it signals the catalog contract changed and must be seen.
+    try:
+        from docling_graph.core.extractors.contracts.delta.catalog import (
+            build_delta_node_catalog,
+        )
+    except ImportError:
+        return out
+
+    catalog_paths = {spec.path for spec in build_delta_node_catalog(template_cls).nodes}
+    return {path: cls for path, cls in out.items() if path in catalog_paths}
+
+
+def build_entity_provenance_from_delta_graph(
+    context: Any,
+    template_cls: type[BaseModel],
+    provenance_cls: type,
+    field_provenance_cls: type,
+    chunk_to_self_refs: dict[int, list[str]] | None = None,
+    chunk_to_evidence_units: dict[int, list[dict]] | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Emit PRECISE per-entity ExtractionProvenance + per-field
+    ExtractionFieldProvenance from ``context._delta_merged_graph["nodes"]``.
+
+    This is the KEYSTONE source of entity+field lineage. The
+    Pydantic→graph converter STRIPS provenance off
+    ``context.knowledge_graph``, so ``build_provenance_from_context``
+    returns [] in production and the pipeline would otherwise fall to the
+    COARSE chunk-0 ``synthesize_provenance_from_pass_output``. Task 1's
+    positional stamp (self_refs / chunk_indexes / page_numbers /
+    cited_refs / property_evidence) lands on ``_delta_merged_graph`` —
+    which only the relationship builder read until now. Mirrors the
+    node-walk of ``build_relationship_provenance_from_delta_trace``.
+
+    CRITICAL: ``ontology_name`` is the entity model's
+    ``model_config["ontology_name"]`` VALUE (e.g. "RADAR_SYSTEM"), NOT the
+    node's ``node_type`` (the class name e.g. "RadarSystemEntity"). The
+    worker's ``logical_identity_from_dict`` keys on the ontology_name
+    value; the class name would drop EVERY row → silent total lineage
+    collapse. Derivation mirrors ``synthesize_provenance_from_pass_output``
+    (model_config.get("ontology_name") or item_cls.__name__).
+
+    ``identity_values`` come from the delta node's ``ids`` dict (NOT
+    ``_resolve_identity_values``, which returns {} for delta nodes). The
+    node ``ids`` keys already equal the model's graph_id_fields, so the
+    worker identity index matches.
+
+    ``element_uid`` == self_refs[0] (positional, authoritative). Scalar
+    ``page`` == page_numbers[0] — REQUIRED, the worker lineage gate
+    rejects any entity whose provenance has ``page is None``.
+
+    ``chunk_to_evidence_units`` (chunk_index → [{text, evidence_id, ...}])
+    is the SAME map main.py builds for ``build_auto_field_evidence`` /
+    ``build_provenance_from_context``. It is used to populate each field
+    row's ``supporting_snippet`` with the joined evidence-unit text for the
+    field's cited refs (falling back to the entity's chunk_indexes). This
+    is LOAD-BEARING: the worker's ``_parse_pass_response`` DROPS any field
+    row with a falsy ``supporting_snippet`` — emitting "" here silently
+    zeroes per-field lineage even though the row is "emitted" service-side.
+
+    Returns ``(entity_rows, field_rows)``. Both empty when no usable
+    delta graph is present.
+    """
+    merged_graph = getattr(context, "_delta_merged_graph", None)
+    if not isinstance(merged_graph, dict):
+        return [], []
+    nodes = merged_graph.get("nodes") or []
+    if not isinstance(nodes, list):
+        return [], []
+
+    path_to_model = _build_path_to_entity_model(template_cls)
+
+    entity_rows: list[Any] = []
+    field_rows: list[Any] = []
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        path = node.get("path")
+        item_cls = path_to_model.get(str(path)) if path is not None else None
+        if item_cls is None:
+            # Not an entity-typed node we recognise (component / unknown).
+            continue
+        cfg = item_cls.model_config or {}
+        ontology_name = str(cfg.get("ontology_name") or item_cls.__name__)
+
+        ids = node.get("ids")
+        identity_values = dict(ids) if isinstance(ids, dict) else {}
+
+        prov = node.get("provenance") if isinstance(node.get("provenance"), dict) else {}
+        self_refs = [r for r in (prov.get("self_refs") or []) if isinstance(r, str)]
+        chunk_indexes = [c for c in (prov.get("chunk_indexes") or []) if isinstance(c, int)]
+        page_numbers = [p for p in (prov.get("page_numbers") or []) if isinstance(p, int)]
+        cited_refs = [r for r in (prov.get("cited_refs") or []) if isinstance(r, str)]
+
+        # element_uid == self_refs[0]; fall back through chunk_indexes →
+        # chunk_to_self_refs only when positional self_refs are absent.
+        element_uid: str | None = self_refs[0] if self_refs else None
+        if element_uid is None and chunk_to_self_refs and chunk_indexes:
+            refs = chunk_to_self_refs.get(chunk_indexes[0])
+            if refs:
+                element_uid = refs[0]
+        if element_uid is None:
+            # No resolvable element_uid → cannot seed mentions; skip so the
+            # row never reaches the worker lineage gate as a dead entry.
+            logger.warning(
+                "build_entity_provenance_from_delta_graph: skipping node "
+                "path=%s ontology=%s — no resolvable element_uid (self_refs "
+                "empty and no chunk_to_self_refs hit)",
+                path, ontology_name,
+            )
+            continue
+
+        # Scalar page REQUIRED by the worker gate; page_numbers[0] when present.
+        scalar_page: int | None = page_numbers[0] if page_numbers else None
+
+        instance_id = _resolve_instance_id(node) or str(uuid.uuid4())
+
+        entity_rows.append(
+            provenance_cls(
+                instance_id=str(instance_id),
+                ontology_name=ontology_name,
+                identity_values=identity_values,
+                element_uid=element_uid,
+                page=scalar_page,
+                chunk_index=chunk_indexes[0] if chunk_indexes else None,
+                evidence_ids=[
+                    eid for eid in (prov.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                page_numbers=page_numbers,
+                self_refs=self_refs,
+                chunk_indexes=chunk_indexes,
+                cited_refs=cited_refs,
+            )
+        )
+
+        # Entity-level evidence text — computed ONCE per node and reused as
+        # the per-field snippet fallback. Joined from the SAME evidence-unit
+        # map main.py feeds the text-match builder.
+        entity_evidence_text = _join_evidence_text_for_node(
+            {"chunk_indexes": chunk_indexes, "evidence_ids": prov.get("evidence_ids") or []},
+            chunk_to_evidence_units,
+        )
+
+        # Per-field provenance. PREFER the merge-time ``__property_provenance``
+        # map (``merge_delta_graphs`` in the delta helpers): it records, per
+        # field, the provenance of EACH 1-chunk batch that emitted that field's
+        # value. With 1-chunk batches each stamp's chunk_indexes/self_refs/
+        # page_numbers point at the EXACT chunk the field's value came from —
+        # which is NOT necessarily where the entity's name first appeared. The
+        # entity node's top-level provenance keeps only the first-seen batch's
+        # span, so stamping every field with it collapses all fields to that
+        # one chunk (the "50 km lives in chunk 9, not the title chunk" bug).
+        #
+        # Fall back to the LLM-cited ``property_evidence`` + entity span only
+        # when no merge map is present (legacy / pre-stamp graphs).
+        property_provenance = node.get("__property_provenance")
+        if isinstance(property_provenance, dict) and property_provenance:
+            _append_field_rows_from_property_provenance(
+                field_rows=field_rows,
+                property_provenance=property_provenance,
+                field_provenance_cls=field_provenance_cls,
+                instance_id=instance_id,
+                node_properties=node.get("properties") if isinstance(node.get("properties"), dict) else {},
+                entity_self_refs=self_refs,
+                entity_chunk_indexes=chunk_indexes,
+                entity_page_numbers=page_numbers,
+                entity_element_uid=element_uid,
+                entity_scalar_page=scalar_page,
+                entity_evidence_text=entity_evidence_text,
+                chunk_to_evidence_units=chunk_to_evidence_units,
+            )
+        else:
+            property_evidence = prov.get("property_evidence")
+            if isinstance(property_evidence, dict):
+                for fname, fevidence in property_evidence.items():
+                    if not isinstance(fname, str):
+                        continue
+                    cited_field_refs = (
+                        [e for e in fevidence if isinstance(e, str)]
+                        if isinstance(fevidence, list) else []
+                    )
+                    # field evidence_id / element_uid: prefer the field's own
+                    # cited self_ref, else the entity's element_uid.
+                    field_evidence_id = cited_field_refs[0] if cited_field_refs else None
+
+                    # supporting_snippet is LOAD-BEARING — the worker
+                    # (_parse_pass_response) DROPS any field row whose
+                    # supporting_snippet is falsy, so an empty string here
+                    # silently zeroes per-field lineage. Resolve the text from
+                    # the SAME evidence-unit map build_auto_field_evidence uses:
+                    #   1. join units cited by THIS field (property_evidence
+                    #      refs) over the entity's chunk_indexes;
+                    #   2. else the entity-level evidence text (all the node's
+                    #      cited refs);
+                    #   3. else ANY text in the entity's chunk_indexes
+                    #      (uncited).
+                    # Only when no text is resolvable at all does the snippet
+                    # fall to "" — and that row is the genuine no-text case.
+                    field_snippet = _join_evidence_text_for_node(
+                        {"chunk_indexes": chunk_indexes, "evidence_ids": cited_field_refs},
+                        chunk_to_evidence_units,
+                    ) if cited_field_refs else None
+                    if not field_snippet:
+                        field_snippet = entity_evidence_text
+                    if not field_snippet:
+                        # Uncited fallback: any unit text across the entity's
+                        # chunk span (cited_ids empty → join takes all units).
+                        field_snippet = _join_evidence_text_for_node(
+                            {"chunk_indexes": chunk_indexes, "evidence_ids": []},
+                            chunk_to_evidence_units,
+                        )
+
+                    field_rows.append(
+                        field_provenance_cls(
+                            instance_id=str(instance_id),
+                            field_name=fname,
+                            value=None,
+                            supporting_snippet=field_snippet or "",
+                            element_uid=field_evidence_id or element_uid,
+                            evidence_id=field_evidence_id,
+                            page=scalar_page,
+                            chunk_index=chunk_indexes[0] if chunk_indexes else None,
+                            self_refs=self_refs,
+                            chunk_indexes=chunk_indexes,
+                        )
+                    )
+
+    return entity_rows, field_rows
+
+
+# ---------------------------------------------------------------------------
+# Value→chunk matcher (inlined mirror of app/services/field_value_grounding.py).
+# docling-graph is a separate service; rather than depend on the worker package
+# we inline this small, stable matcher so the field-provenance builder can
+# VALUE-GROUND a field to the chunk whose text actually CONTAINS its value.
+# This corrects LLM OVER-EMISSION: gemma emits a salient field value while
+# looking at a prose chunk that does not contain it; __property_provenance
+# faithfully records that emission chunk, but the committed lineage should point
+# at the chunk the value physically lives in (e.g. a spec table). See task #67.
+# Keep in sync with field_value_grounding.py if its matching logic changes.
+# ---------------------------------------------------------------------------
+_VG_SUFFIX_UNITS: dict[str, list[str]] = {
+    "km": ["km", "км"], "mhz": ["mhz"], "ghz": ["ghz"], "khz": ["khz"],
+    "kw": ["kw"], "mw": ["mw"], "dbw": ["dbw"], "dbm": ["dbm"],
+    "deg": ["deg", "°", "degree", "degrees", "град"], "kg": ["kg", "кг"],
+    "mm": ["mm"], "cm": ["cm"], "kmh": ["km/h", "kph"], "mps": ["m/s"],
+    "mach": ["mach", "m="], "kn": ["kn", "knot"], "us": ["µs", "us", "microsec"],
+    "ms": ["ms"], "s": ["s", "sec", "second", "seconds"], "m": ["m", "metre", "meter"],
+}
+
+
+def _vg_nfc(s: str | None) -> str:
+    return unicodedata.normalize("NFC", s or "").casefold()
+
+
+def _vg_unit_token_regex(unit_nfc: str) -> str:
+    # Mirrors app/services/field_value_grounding.unit_token_regex — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    pat = re.escape(unit_nfc)
+    if re.match(r"\w", unit_nfc):
+        pat = r"(?<![^\W\d_])" + pat  # not preceded by a unicode letter
+    if re.search(r"\w$", unit_nfc):
+        pat = pat + r"(?!\w)"  # not followed by a unicode word char
+    return pat
+
+
+@lru_cache(maxsize=128)
+def _vg_compiled_unit_re(unit_nfc: str) -> "re.Pattern[str]":
+    # Mirrors app/services/field_value_grounding._compiled_unit_re — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    return re.compile(_vg_unit_token_regex(unit_nfc))
+
+
+def _vg_has_unit_token(text_nfc: str, units: Iterable[str]) -> bool:
+    # Mirrors app/services/field_value_grounding.has_unit_token — update together (fixture: tests/fixtures/unit_matcher_cases.json).
+    return any(_vg_compiled_unit_re(_vg_nfc(u)).search(text_nfc) for u in units)
+
+
+def _vg_units_for(field: str) -> list[str]:
+    f = (field or "").lower()
+    for suf in sorted(_VG_SUFFIX_UNITS, key=len, reverse=True):
+        if f.endswith("_" + suf):
+            return _VG_SUFFIX_UNITS[suf]
+    return []
+
+
+def _vg_num_variants(value: Any) -> set[str]:
+    # Mirrors app/services/field_value_grounding.num_variants — update together.
+    # Two-decimal rendering ("10.60") matches trailing-zero table prints (Task 4b).
+    out: set[str] = set()
+    try:
+        fv = float(value)
+    except (TypeError, ValueError):
+        return out
+    if not math.isfinite(fv):
+        return out
+    if fv == int(fv):
+        out.add(str(int(fv)))
+    out.add(f"{fv:g}")
+    out.add(str(value))
+    out.add(f"{fv:.2f}")
+    return {s for s in out if s}
+
+
+def _vg_value_in_chunk(num_strs: set[str], units: list[str], text_nfc: str) -> bool:
+    """True if a numeric value appears in the chunk text — ADJACENT (number next
+    to unit, prose) OR SAME_CHUNK (number + unit elsewhere in chunk, ≥2 digits —
+    detached-unit table). Mirrors field_value_grounding.value_in_chunk."""
+    units_nfc = [_vg_nfc(u) for u in units]
+    for ns in num_strs:
+        for u in units_nfc:
+            if re.search(r"(?<![\d.])" + re.escape(ns) + r"\s*[\(\-–]?\s*" + _vg_unit_token_regex(u), text_nfc):
+                return True
+    if _vg_has_unit_token(text_nfc, units_nfc):
+        for ns in num_strs:
+            if len(re.sub(r"\D", "", ns)) >= 2 and re.search(
+                r"(?<!\d)" + re.escape(ns) + r"(?!\d)(?!\.\d)", text_nfc
+            ):
+                return True
+    return False
+
+
+def _value_grounded_field_chunks(
+    value: Any, field_name: str, chunk_to_evidence_units: dict[int, list[dict]] | None
+) -> tuple[list[int], list[str]]:
+    """Return (chunk_indexes, evidence_ids) for chunks whose text CONTAINS the
+    numeric, unit-suffixed value. Empty for non-numeric / unitless / not-found —
+    caller then keeps the emission-chunk attribution unchanged."""
+    units = _vg_units_for(field_name)
+    if not units:
+        return [], []
+    nums = _vg_num_variants(value)
+    if not nums:
+        return [], []
+    g_ci: list[int] = []
+    g_refs: list[str] = []
+    for ci, units_list in (chunk_to_evidence_units or {}).items():
+        if not isinstance(units_list, list):
+            continue
+        text = " ".join(
+            u.get("text", "") for u in units_list if isinstance(u, dict)
+        )
+        if _vg_value_in_chunk(nums, units, _vg_nfc(text)):
+            if ci not in g_ci:
+                g_ci.append(int(ci))
+            for u in units_list:
+                eid = u.get("evidence_id") if isinstance(u, dict) else None
+                if isinstance(eid, str) and eid not in g_refs:
+                    g_refs.append(eid)
+    return sorted(g_ci), g_refs
+
+
+def _append_field_rows_from_property_provenance(
+    *,
+    field_rows: list[Any],
+    property_provenance: dict[str, Any],
+    field_provenance_cls: type,
+    instance_id: Any,
+    node_properties: dict[str, Any] | None,
+    entity_self_refs: list[str],
+    entity_chunk_indexes: list[int],
+    entity_page_numbers: list[int],
+    entity_element_uid: str | None,
+    entity_scalar_page: int | None,
+    entity_evidence_text: str | None,
+    chunk_to_evidence_units: dict[int, list[dict]] | None,
+) -> None:
+    """Emit one ExtractionFieldProvenance row per field in the merge-time
+    ``__property_provenance`` map, stamping each row with the PRECISE chunk
+    origin of the batch(es) that emitted that field's value.
+
+    Each ``property_provenance[field]`` is a list of stamps; with
+    ``attach_provenance=True`` every stamp is the batch's provenance dict
+    (self_refs / chunk_indexes / page_numbers / evidence_ids). A field
+    emitted in multiple batches gets the UNION of those origins. When a stamp
+    carried no positional lineage (e.g. ``attach_provenance`` off → the merge
+    stored a bare uid string), the field falls back to the entity's span so
+    the row never regresses below the pre-fix behavior.
+    """
+    for fname, raw_stamps in property_provenance.items():
+        if not isinstance(fname, str):
+            continue
+        stamps = raw_stamps if isinstance(raw_stamps, list) else [raw_stamps]
+
+        f_self_refs: list[str] = []
+        f_chunk_indexes: list[int] = []
+        f_page_numbers: list[int] = []
+        f_evidence_ids: list[str] = []
+        for stamp in stamps:
+            if not isinstance(stamp, dict):
+                continue  # bare uid string / unknown — no positional lineage.
+            for r in stamp.get("self_refs") or []:
+                if isinstance(r, str) and r not in f_self_refs:
+                    f_self_refs.append(r)
+            for c in stamp.get("chunk_indexes") or []:
+                if isinstance(c, int) and c not in f_chunk_indexes:
+                    f_chunk_indexes.append(c)
+            for p in stamp.get("page_numbers") or []:
+                if isinstance(p, int) and p not in f_page_numbers:
+                    f_page_numbers.append(p)
+            for e in stamp.get("evidence_ids") or []:
+                if isinstance(e, str) and e not in f_evidence_ids:
+                    f_evidence_ids.append(e)
+        f_chunk_indexes.sort()
+        f_page_numbers.sort()
+
+        # Fall back to the entity span for any axis the stamps left empty.
+        if not f_self_refs:
+            f_self_refs = entity_self_refs
+        if not f_chunk_indexes:
+            f_chunk_indexes = entity_chunk_indexes
+        if not f_page_numbers:
+            f_page_numbers = entity_page_numbers
+
+        # VALUE-GROUNDING OVERRIDE: if the field's extracted value physically
+        # appears in some chunk(s), attribute the row to the chunk(s) that
+        # actually CONTAIN it — correcting LLM over-emission where the value was
+        # emitted on a chunk that doesn't contain it (#67). Numeric+unit fields
+        # only; non-text / null / not-found keep the emission attribution.
+        g_ci, g_refs = _value_grounded_field_chunks(
+            (node_properties or {}).get(fname), fname, chunk_to_evidence_units
+        )
+        if g_ci:
+            f_chunk_indexes = g_ci
+            if g_refs:
+                f_self_refs = g_refs
+                f_evidence_ids = g_refs
+
+        field_evidence_id = f_evidence_ids[0] if f_evidence_ids else None
+        field_element_uid = f_self_refs[0] if f_self_refs else entity_element_uid
+        field_page = f_page_numbers[0] if f_page_numbers else entity_scalar_page
+
+        # supporting_snippet is LOAD-BEARING (worker drops rows with a falsy
+        # snippet). Resolve from the field's OWN chunk/evidence first, then the
+        # entity-level text, then any uncited text across the field's chunks.
+        field_snippet = _join_evidence_text_for_node(
+            {"chunk_indexes": f_chunk_indexes, "evidence_ids": f_evidence_ids},
+            chunk_to_evidence_units,
+        )
+        if not field_snippet:
+            field_snippet = entity_evidence_text
+        if not field_snippet:
+            field_snippet = _join_evidence_text_for_node(
+                {"chunk_indexes": f_chunk_indexes, "evidence_ids": []},
+                chunk_to_evidence_units,
+            )
+
+        field_rows.append(
+            field_provenance_cls(
+                instance_id=str(instance_id),
+                field_name=fname,
+                value=None,
+                supporting_snippet=field_snippet or "",
+                element_uid=field_evidence_id or field_element_uid,
+                evidence_id=field_evidence_id,
+                page=field_page,
+                chunk_index=f_chunk_indexes[0] if f_chunk_indexes else None,
+                self_refs=f_self_refs,
+                chunk_indexes=f_chunk_indexes,
+            )
+        )

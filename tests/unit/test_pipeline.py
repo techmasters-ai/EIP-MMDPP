@@ -73,14 +73,12 @@ class TestTaskRouting:
 # ---------------------------------------------------------------------------
 
 class TestDAGConstruction:
-    """Verify start_ingest_pipeline constructs a proper Celery chain."""
+    """Verify start_ingest_pipeline seeds the first ledger row (post 2026-05-10
+    ledger-seed refactor — it no longer constructs/dispatches a Celery chain)."""
 
     def test_pipeline_returns_task_id(self):
         from unittest.mock import patch, MagicMock
         from app.workers.dispatch_types import IngestDispatchResult
-
-        mock_chain_result = MagicMock()
-        mock_chain_result.id = "mock-task-id"
 
         fake_manifest = MagicMock()
         fake_manifest.ontology_name = "Test Ontology"
@@ -89,21 +87,23 @@ class TestDAGConstruction:
 
         with patch("app.workers.pipeline._get_db") as mock_get_db, \
              patch("app.workers.pipeline._create_pipeline_run", return_value="run-1"), \
-             patch("app.workers.pipeline.chain") as mock_chain_fn, \
+             patch("app.workers.pipeline._seed_first_stage") as mock_seed, \
              patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
 
             db = MagicMock()
             db.execute.return_value.scalar_one_or_none.return_value = None
             db.get.return_value = None  # no Document row — falls back to system default
             mock_get_db.return_value = db
-            mock_chain_fn.return_value.apply_async.return_value = mock_chain_result
 
             from app.workers.pipeline import start_ingest_pipeline
             result = start_ingest_pipeline(str(uuid.uuid4()))
 
             assert isinstance(result, IngestDispatchResult)
-            assert result.celery_task_id == "mock-task-id"
-            mock_chain_fn.return_value.apply_async.assert_called_once()
+            # Ledger-seed contract: empty task id; the dispatcher-poller publishes
+            # prepare_document from the seeded PENDING row within 5s.
+            assert result.celery_task_id == ""
+            mock_seed.assert_called_once()
+            assert mock_seed.call_args.kwargs.get("stage_name") == "prepare_document"
 
 
 # ---------------------------------------------------------------------------

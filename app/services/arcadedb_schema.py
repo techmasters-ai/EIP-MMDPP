@@ -28,6 +28,33 @@ _YAML_TO_ARCADE: dict[str, str] = {
 
 # Structural vertex types (not from ontology)
 _STRUCTURAL_VERTEX_TYPES = {
+    # VR Phase C.1 (rev 10): ephemeral per-pipeline-run chunk index used by the
+    # Vector Router to narrow extraction scope.  Indexed on pipeline_run_id
+    # (filter dimension) and created_at (janitor age-sweep — rev 8 M5).
+    # HNSW LSM_VECTOR index on `embedding` (dim=1024, cosine) matches bge-m3
+    # output and the existing TextChunk.text_embedding dim.
+    # NOTE: `chunk_text` is the stored field name; callers remap to
+    # "content_text" at the reranker call site ONLY — not here.
+    "ExtractionChunk": [
+        ("vertex_id", "STRING"),         # synthetic PK: f"{pipeline_run_id}:{self_ref}" (legacy)
+                                         #            or f"{pipeline_run_id}:chunk_{chunk_index}" (merged)
+        ("pipeline_run_id", "STRING"),   # filter dimension (B-tree indexed)
+        ("document_id", "STRING"),
+        ("self_ref", "STRING"),          # e.g. "#/texts/12" (legacy per-element rows only)
+        ("chunk_text", "STRING"),
+        ("embedding", "ARRAY_OF_FLOATS"),  # dim=1024, cosine HNSW
+        ("page_number", "INTEGER"),
+        ("modality", "STRING"),          # text | table | picture_caption
+        ("created_at", "DATETIME"),      # set via sysdate(); janitor sweep key (rev 8 M5)
+        # --- Phase 1 Task 1 (merged-chunk routing) -------------------
+        # Defaults applied APPLICATION-SIDE via read_chunk_* accessors
+        # in extraction_chunk_index.py; NO ArcadeDB DEFAULT clause.
+        # Legacy per-element rows carry: chunk_index=-1, source_refs=[],
+        # token_count=0. New merged-mode rows carry real values.
+        ("chunk_index", "INTEGER"),      # position in HybridChunker output (-1 = legacy)
+        ("source_refs", "LIST"),         # element self_refs covered by this merged chunk
+        ("token_count", "INTEGER"),      # tokenizer.count_tokens(chunk_text); diagnostics
+    ],
     "TextChunk": [
         ("chunk_id", "STRING"),
         ("document_id", "STRING"),
@@ -60,6 +87,18 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("title", "STRING"),
         ("upload_datetime", "DATETIME"),
         ("document_datetime", "DATETIME"),
+        # Free-text mirror of the owning collection's name (the Collection
+        # vertex carries the same value; threaded here so a Document row is
+        # self-describing without a BELONGS_TO traversal).
+        ("source_name", "STRING"),
+    ],
+    # First-class collection ("source") vertex. One per ingest.sources row;
+    # keyed on source_id (UNIQUE — see Phase 7). Documents in the same
+    # collection share ONE Collection vertex via Document -BELONGS_TO-> Collection.
+    # NOT an ontology entity type — structural infrastructure only.
+    "Collection": [
+        ("source_id", "STRING"),
+        ("name", "STRING"),
     ],
     "Alias": [
         ("alias_name", "STRING"),
@@ -96,7 +135,30 @@ _STRUCTURAL_EDGE_TYPES = [
     "HAS_FIGURE",
     "HAS_TABLE",
     "CHILD_OF",
+    # Document -> Collection membership. Structural (no source_chunk_ids
+    # lineage, not an ontology relationship type) so the per-run domain-edge
+    # retract (Fix N) and the doc-scoped lineage gate both exclude it.
+    "BELONGS_TO",
 ]
+
+# Document-anchor + derive-rules STRUCTURAL edge types that ARE declared in the
+# ontology relationship_types registry (so they would otherwise look like domain
+# rels) but are built by the docling document-anchor walker / derive_rules
+# structural path (via create_structural_edge_sync), NOT the ontology
+# relationship path — they legitimately carry no source_chunk_ids lineage and are
+# NOT per-document-retractable domain edges.
+#
+# Single source of truth for the four extras that the schema's
+# _STRUCTURAL_EDGE_TYPES list omits (it lists the HAS_SECTION/HAS_FIGURE/HAS_TABLE/
+# CHILD_OF doc-anchor subset but not HAS_IMAGE / NEAR_TEXT / the chunk-containment
+# CONTAINS / the derive-rules MENTIONED_IN). Consumed by BOTH:
+#   * scripts/verify_lineage_e2e.py — STRUCTURAL_EDGE_TYPES (the doc-scoped
+#     fail-closed lineage gate's domain/structural partition).
+#   * app/workers/pipeline.py::_domain_relationship_edge_types — the per-run
+#     domain-edge retract's structural exclusion set.
+# Promoting it here guarantees the retract and the gate cannot diverge on what
+# counts as a domain edge (anti-drift).
+_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES = ("HAS_IMAGE", "NEAR_TEXT", "CONTAINS", "MENTIONED_IN")
 
 # Common properties on all ontology entity vertex types
 _COMMON_ENTITY_PROPS = [
@@ -116,6 +178,11 @@ _COMMON_EDGE_PROPS = [
     ("extraction_confidence", "DOUBLE"),
     ("created_at", "DATETIME"),
     ("updated_at", "DATETIME"),
+    # Task 5: per-edge source-chunk lineage resolved in the merge phase from
+    # the relationship's positional self_refs (no fan-out, no RID round-trip).
+    ("source_chunk_ids", "LIST"),
+    ("source_pages", "LIST"),
+    ("source_self_refs", "LIST"),
 ]
 
 # Common properties on structural edge types
@@ -175,6 +242,70 @@ async def _run_ddl_batch(
             msg = str(exc).lower()
             if "already exists" not in msg:
                 report.errors.append(f"{phase}: {exc}")
+
+
+async def _backfill_merged_chunk_columns(client: Any, database: str) -> None:
+    """Coalesce legacy NULLs on ExtractionChunk's merged-chunk columns to defaults.
+
+    Three columns were added in Phase 1 Task 1 of the merged-chunk routing
+    plan without ArcadeDB DEFAULT clauses (application-side coalescing via
+    the ``read_chunk_*`` accessors). Pre-existing rows ingested before that
+    change carry NULL in these columns; this helper applies the documented
+    legacy defaults:
+
+      * ``chunk_index = -1`` (legacy marker; merged rows have a real position)
+      * ``token_count = 0``  (legacy rows: no tokenizer counted them)
+      * ``source_refs = []`` (legacy rows: no constituent ref list known)
+
+    Idempotency: each statement is filtered by ``WHERE col IS NULL`` so a
+    second invocation against an already-defaulted DB updates zero rows.
+    Safe to run on every startup. Errors are logged but do NOT propagate —
+    the schema-sync caller continues so a transient backfill failure does
+    not block the rest of the schema sync.
+    """
+    backfills: list[tuple[str, str]] = [
+        (
+            "chunk_index",
+            "UPDATE ExtractionChunk SET chunk_index = -1 WHERE chunk_index IS NULL",
+        ),
+        (
+            "token_count",
+            "UPDATE ExtractionChunk SET token_count = 0 WHERE token_count IS NULL",
+        ),
+        (
+            "source_refs",
+            "UPDATE ExtractionChunk SET source_refs = [] WHERE source_refs IS NULL",
+        ),
+    ]
+
+    for col, sql in backfills:
+        try:
+            result = await client.command(database, "sql", sql)
+            # ArcadeDB UPDATE returns [{"count": N}] (per-statement) on success.
+            count = 0
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                count = int(result[0].get("count", 0))
+            if count > 0:
+                logger.info(
+                    "ExtractionChunk backfill: column=%s rows_updated=%d "
+                    "(coalesced NULL → legacy default)",
+                    col, count,
+                )
+            else:
+                logger.debug(
+                    "ExtractionChunk backfill: column=%s no NULL rows to update",
+                    col,
+                )
+        except Exception as exc:
+            # Non-fatal: the application-side accessors still coalesce on read.
+            # Most common cause early in a fresh DB lifecycle is that the
+            # ExtractionChunk vertex type was created moments earlier and the
+            # schema is still propagating — the next schema-sync will retry.
+            logger.warning(
+                "ExtractionChunk backfill failed for column=%s — %s: %s "
+                "(read-side accessors still coalesce NULLs to the default)",
+                col, type(exc).__name__, exc,
+            )
 
 
 async def sync_schema_from_ontology(
@@ -263,6 +394,20 @@ async def sync_schema_from_ontology(
     )
     report.types_created += len(_STRUCTURAL_VERTEX_TYPES)
 
+    # --- Phase 3b: idempotent backfill of merged-chunk legacy defaults ---
+    # M1 (Phase 1 Task 1 code-review fix): the three columns added for
+    # merged-chunk routing — chunk_index, token_count, source_refs — have
+    # NO ArcadeDB DEFAULT clause. Application-side coalescing via
+    # read_chunk_* accessors handles NULLs on read, but a fresh DB / a
+    # restore-from-snapshot would leave legacy rows with NULL until the
+    # operator re-ran the migration UPDATEs by hand. Wiring the same
+    # UPDATEs into the schema-sync helper makes the backfill automatic.
+    #
+    # Idempotency: each WHERE col IS NULL filter makes the UPDATE a no-op
+    # on a row that already carries the default — safe to re-run on every
+    # startup.
+    await _backfill_merged_chunk_columns(client, database)
+
     # --- Phase 4: structural edge types + properties ---
     struct_edge_ddl: list[str] = []
     for etype in _STRUCTURAL_EDGE_TYPES:
@@ -285,6 +430,8 @@ async def sync_schema_from_ontology(
         ("ImageChunk", "image_embedding", _image_dim, "COSINE", "INT8", False),
         ("CommunityReport", "report_embedding", 1024, "COSINE", "INT8", True),
         ("TrustedTextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
+        # VR C.1: ExtractionChunk HNSW index — dim=1024 matches bge-m3 + TextChunk
+        ("ExtractionChunk", "embedding", 1024, "COSINE", "INT8", True),
     ]
     vector_ddl: list[str] = []
     for vtype, vprop, dims, sim, quant, hier in vector_indexes:
@@ -346,6 +493,12 @@ async def sync_schema_from_ontology(
         ("Alias", "alias_name"),
         ("TrustedTextChunk", "chunk_id"),
         ("CommunityReport", "community_id"),
+        # VR C.1: ExtractionChunk synthetic PK — unique per pipeline_run_id:self_ref pair
+        ("ExtractionChunk", "vertex_id"),
+        # First-class collection: one Collection vertex per source_id. The
+        # UNIQUE index is also what lets the population path UPSERT on source_id
+        # (ArcadeDB UPSERT requires a UNIQUE index on the WHERE field).
+        ("Collection", "source_id"),
     ]
     unique_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"
@@ -357,8 +510,15 @@ async def sync_schema_from_ontology(
     # --- Phase 7b: non-unique secondary indexes for filtering ---
     # Spec 2026-05-11-table-aware-chunking §11.4 — TextChunk.chunk_kind
     # enables fast filtering by chunk_kind in retrieval queries.
+    # VR C.1: ExtractionChunk.pipeline_run_id — vector_search filter dimension.
+    # VR C.1: ExtractionChunk.created_at — janitor age-sweep (rev 8 M5).
+    # (vertex_id UNIQUE index handled separately in Phase 7 above — do NOT add
+    # it here; adding it to secondary_indexes would create a NOTUNIQUE shadow
+    # index on a column that already has a UNIQUE index.)
     secondary_indexes = [
         ("TextChunk", "chunk_kind"),
+        ("ExtractionChunk", "pipeline_run_id"),
+        ("ExtractionChunk", "created_at"),
     ]
     secondary_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {stype} ({sprop}) NOTUNIQUE"
@@ -370,7 +530,10 @@ async def sync_schema_from_ontology(
     # --- Phase 8: BucketSelectionStrategy 'thread' for write-heavy types ---
     # Eliminates contention and ConcurrentModificationException on parallel
     # pipeline ingestion (ArcadeDB Manual §5.5.24).
-    write_heavy_types = ["TextChunk", "ImageChunk", "TrustedTextChunk"]
+    # VR C.1: ExtractionChunk is bulk-written by build_extraction_index (C.2)
+    # at every pipeline_run start — hundreds of vertices per run, potentially
+    # concurrent across runs. Apply the thread bucket strategy before C.2 lands.
+    write_heavy_types = ["TextChunk", "ImageChunk", "TrustedTextChunk", "ExtractionChunk"]
     for e in ontology.get("entity_types", []):
         write_heavy_types.append(_safe_type_name(e["name"]))
     bucket_ddl = [

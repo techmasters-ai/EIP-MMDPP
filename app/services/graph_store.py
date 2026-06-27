@@ -228,6 +228,17 @@ class GraphStore(Protocol):
         """Create a structural edge (e.g. EXTRACTED_FROM) and return its ID."""
         ...
 
+    async def upsert_collection_and_link(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Find-or-create the Collection for *source_id* and link the Document
+        via BELONGS_TO (both idempotent). No-op when *source_id* is missing.
+        Returns the Collection RID (or "")."""
+        ...
+
     # ------------------------------------------------------------------
     # Query operations
     # ------------------------------------------------------------------
@@ -341,8 +352,22 @@ class GraphStore(Protocol):
         query_vector: list[float],
         top_k: int = 10,
         score_threshold: float | None = None,
+        document_ids: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[GraphEntityResult]:
-        """ANN search over node embeddings for a given vertex type and property."""
+        """ANN search over node embeddings for a given vertex type and property.
+
+        Parameters
+        ----------
+        document_ids:
+            Optional list of document UUIDs to restrict results to (existing param).
+        filters:
+            Optional dict of additional vertex property filters. Each key must be
+            a known property of the target vertex type; unknown keys raise ValueError
+            to catch typos. Compiled to a parameterized WHERE clause and ANDed with
+            the document_ids clause when both are provided.
+            ``None`` or ``{}`` → unfiltered (no extra WHERE clause).
+        """
         ...
 
     async def set_vertex_embedding(
@@ -565,6 +590,15 @@ class GraphStore(Protocol):
         """Synchronous variant of :meth:`create_structural_edge`."""
         ...
 
+    def upsert_collection_and_link_sync(
+        self,
+        document_rid: str,
+        source_id: str | None,
+        name: str | None,
+    ) -> str:
+        """Synchronous variant of :meth:`upsert_collection_and_link`."""
+        ...
+
     def set_vertex_embedding_sync(
         self,
         vertex_type: str,
@@ -678,6 +712,33 @@ class GraphStore(Protocol):
         full-document-delete callers.
 
         Spec §6.8 + residual check #1.
+        """
+        ...
+
+    def retract_document_domain_edges_sync(
+        self,
+        document_id: str,
+        domain_edge_types: list[str],
+    ) -> int:
+        """Retract this document's prior DOMAIN relationship edges per run.
+
+        Called by the merge phase BEFORE re-committing the run's domain edges so
+        the document's domain-edge population after any run equals exactly what
+        THIS run extracted — find-or-create only re-touches re-emitted edges, so
+        un-re-emitted prior edges would otherwise keep stale lineage and break the
+        doc-scoped fail-closed lineage gate (Fix N).
+
+        ``domain_edge_types`` is the gate-aligned set of domain relationship
+        classes (every ontology relationship type MINUS the structural set). For
+        each class, the implementation removes ``document_id`` from the edge's
+        ``document_ids`` LIST (shared edges shrink; single-owner edges empty) then
+        prunes edges whose list is now empty. MUST NOT touch structural edges
+        (``HAS_*``, ``NEAR_TEXT``, ``CONTAINS``, ``MENTIONED_IN``,
+        ``EXTRACTED_FROM``, ``CONTAINS_TEXT``) or ``HAS_PROVENANCE``. A missing
+        edge class (fresh DB) is a no-op, not an error.
+
+        Returns the number of SQL statements that executed successfully
+        (logging parity with :meth:`delete_extraction_layer_graph_sync`).
         """
         ...
 

@@ -131,3 +131,40 @@ def test_parse_pass_response_skips_malformed_provenance_rows():
     )
     assert len(result.provenance) == 1
     assert result.provenance[0].instance_id == "uuid-ok"
+
+
+def test_parse_pass_response_carries_relationship_ref_ids():
+    """A relationship_provenance row's from_ref_id / to_ref_id are carried
+    from the raw response dict into the parsed ExtractionRelationshipProvenance
+    so the merge phase can resolve them to a precise per-edge triple."""
+    from app.workers.pipeline import _parse_pass_response
+
+    raw = _minimal_radar_response_json()
+    raw["relationship_provenance"] = [
+        {
+            "relationship_type": "ASSOCIATED_WITH",
+            "from_ref_id": "E001",
+            "to_ref_id": "E041",
+            "evidence_ids": ["#/texts/6"],
+            "self_refs": ["#/texts/5", "#/texts/6"],
+            "page_numbers": [3],
+        },
+        # refless row (e.g. typed-edge / VARIANT_OF): ref ids default None
+        {
+            "relationship_type": "VARIANT_OF",
+            "self_refs": ["#/texts/9"],
+        },
+    ]
+
+    result = _parse_pass_response(
+        raw, _pass_def_for_radar(), _manifest_with_radar_bundle(),
+    )
+    rows = result.relationship_provenance
+    assert len(rows) == 2
+    assert rows[0].relationship_type == "ASSOCIATED_WITH"
+    assert rows[0].from_ref_id == "E001"
+    assert rows[0].to_ref_id == "E041"
+    assert rows[0].evidence_ids == ["#/texts/6"]
+    # refless row keeps defaults
+    assert rows[1].from_ref_id is None
+    assert rows[1].to_ref_id is None

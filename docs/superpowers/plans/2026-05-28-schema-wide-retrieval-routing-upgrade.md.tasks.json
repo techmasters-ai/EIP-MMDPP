@@ -1,0 +1,243 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-28-schema-wide-retrieval-routing-upgrade.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task A1: Verify SelectedChunk receiver subset contract",
+      "status": "pending"
+    },
+    {
+      "id": 1,
+      "subject": "Task A2: Capture router selected_chunks in worker scope object",
+      "status": "pending",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "subject": "Task A3: Forward selected_chunks in ExtractPassRequest",
+      "status": "pending",
+      "blockedBy": [
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "subject": "Task A4: Add worker selected_chunks_forwarded diagnostics",
+      "status": "pending",
+      "blockedBy": [
+        2
+      ]
+    },
+    {
+      "id": 4,
+      "subject": "Task A5: Worker\u2192docling-graph selected_chunks byte-identity test",
+      "status": "pending",
+      "blockedBy": [
+        3
+      ]
+    },
+    {
+      "id": 5,
+      "subject": "Task B1: Add FieldRetrievalQuery + PassRetrievalProfile dataclasses",
+      "status": "pending"
+    },
+    {
+      "id": 6,
+      "subject": "Task B2: Implement build_retrieval_profile() with backward-compat shim",
+      "status": "pending",
+      "blockedBy": [
+        5
+      ]
+    },
+    {
+      "id": 7,
+      "subject": "Task B3: Add retrieval metadata to 4 radar field-group schemas",
+      "status": "pending",
+      "blockedBy": [
+        6
+      ]
+    },
+    {
+      "id": 8,
+      "subject": "Task B4: Add retrieval metadata to 5 missile field-group schemas",
+      "status": "pending",
+      "blockedBy": [
+        6
+      ]
+    },
+    {
+      "id": 9,
+      "subject": "Task B5: Extend RetrievalProfile pydantic with multi-channel config fields",
+      "status": "pending"
+    },
+    {
+      "id": 10,
+      "subject": "Task B6: Update merged_v1 manifest fields for passes already present",
+      "status": "pending",
+      "blockedBy": [
+        9
+      ]
+    },
+    {
+      "id": 11,
+      "subject": "Task B7: Propagate modified schema modules to sibling bundles",
+      "status": "pending",
+      "blockedBy": [
+        7,
+        8
+      ]
+    },
+    {
+      "id": 12,
+      "subject": "Task C1: Batched dense entity + per-field queries with one row fetch",
+      "status": "pending",
+      "blockedBy": [
+        6,
+        9
+      ]
+    },
+    {
+      "id": 13,
+      "subject": "Task C2: Lexical alias search over fetched chunk rows",
+      "status": "pending",
+      "blockedBy": [
+        12
+      ]
+    },
+    {
+      "id": 14,
+      "subject": "Task C3: Literal/re-prefixed pattern search over fetched chunk rows",
+      "status": "pending",
+      "blockedBy": [
+        12
+      ]
+    },
+    {
+      "id": 15,
+      "subject": "Task C4: Candidate merging with provenance by stable candidate key",
+      "status": "pending",
+      "blockedBy": [
+        12,
+        13,
+        14
+      ]
+    },
+    {
+      "id": 16,
+      "subject": "Task C5: Blended scoring with negative-term penalty",
+      "status": "pending",
+      "blockedBy": [
+        15
+      ]
+    },
+    {
+      "id": 17,
+      "subject": "Task C6: Wire multi-channel retrieval into chunk-scope merged mode",
+      "status": "pending",
+      "blockedBy": [
+        16
+      ]
+    },
+    {
+      "id": 18,
+      "subject": "Task C7: Multi-channel diagnostics and field coverage",
+      "status": "pending",
+      "blockedBy": [
+        17
+      ]
+    },
+    {
+      "id": 19,
+      "subject": "Task C8: Opportunistic nonblocking identity-anchor queries",
+      "status": "pending",
+      "blockedBy": [
+        18
+      ]
+    },
+    {
+      "id": 20,
+      "subject": "Task D1: Reuse table-normalization substitution before merged chunk emission",
+      "status": "pending"
+    },
+    {
+      "id": 21,
+      "subject": "Task D2: Verify table text is self-contained and header-aware",
+      "status": "pending",
+      "blockedBy": [
+        20
+      ]
+    },
+    {
+      "id": 22,
+      "subject": "Task D3: Persist content_type/table_refs/section_path in ExtractionChunk rows",
+      "status": "pending",
+      "blockedBy": [
+        21
+      ]
+    },
+    {
+      "id": 23,
+      "subject": "Task D4: Re-index verification docs and inspect table chunks",
+      "status": "pending",
+      "blockedBy": [
+        22
+      ]
+    },
+    {
+      "id": 24,
+      "subject": "Task D5: Table chunks discoverable via lexical + pattern channels",
+      "status": "pending",
+      "blockedBy": [
+        17,
+        22
+      ]
+    },
+    {
+      "id": 25,
+      "subject": "Task E1: Field-coverage and enough-candidates helpers",
+      "status": "pending",
+      "blockedBy": [
+        16
+      ]
+    },
+    {
+      "id": 26,
+      "subject": "Task E2: Graduated fallback ladder before full-document fallback",
+      "status": "pending",
+      "blockedBy": [
+        17,
+        25
+      ]
+    },
+    {
+      "id": 27,
+      "subject": "Task E3: Fallback diagnostics and tests",
+      "status": "pending",
+      "blockedBy": [
+        26
+      ]
+    },
+    {
+      "id": 28,
+      "subject": "Offline recall and selected-token calibration update",
+      "status": "pending",
+      "blockedBy": [
+        4,
+        18,
+        24,
+        27
+      ]
+    },
+    {
+      "id": 29,
+      "subject": "Final code-reviewer subagent across entire branch",
+      "status": "pending",
+      "blockedBy": [
+        28
+      ]
+    }
+  ],
+  "lastUpdated": "2026-05-28T18:35:00-05:00"
+}

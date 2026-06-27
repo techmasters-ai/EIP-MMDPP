@@ -33,6 +33,8 @@ IDENTITY_FIELDS: frozenset[str] = frozenset({"system_name"})
 AIR_DEFENSE_BUNDLE_KEYS: frozenset[str] = frozenset({
     "air_defense_v3",
     "air_defense_v3_baseline_subset",
+    "air_defense_v3_narrowing_v1",
+    "air_defense_v3_merged_v1",
 })
 
 

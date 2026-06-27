@@ -603,6 +603,8 @@ class TestPassResultUpstreamRefsAttachment:
 
         # Both refs attached as LogicalIdentity (both pass the shared
         # validity rule AND are valid endpoints for ASSOCIATED_WITH).
+        # Bug #59 fix: keyed by ref_id only; cross-pass canonicalization
+        # is handled by identity_aliases inside merge_and_resolve.
         assert result.upstream_refs is not None
         assert set(result.upstream_refs.keys()) == {"E001", "E002"}
         assert all(
@@ -734,6 +736,366 @@ class TestCallExtractPass:
                 timeout=10.0,
             )
             assert result == clean_empty
+
+    def test_clean_empty_pipeline_error_does_not_retry(self):
+        """The library raises ExtractionError on ANY empty extraction, so an
+        off-domain pass (e.g. missile pass on a radar-only doc) arrives as a
+        pipeline_error stub. When the quality gate failed ONLY for
+        empty_output / missing_root_instance, no batch errored, and no hard-
+        failure log signature fired, the LLM simply found nothing — a retry at
+        temp=0.1 is deterministically futile. Treat it as a legitimate
+        ZERO_YIELD (return the stub) instead of raising PassRetryable.
+
+        Mirrors the real EWIRDB missile-pass stub shape.
+        """
+        from app.workers.pipeline import _call_extract_pass
+
+        clean_empty_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {
+                    "ok": False,
+                    "reasons": ["missing_root_instance", "empty_output"],
+                },
+                "batch_errors": {},
+                "library_log": (
+                    "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                    "empty_output | path_counts={}\n"
+                    "[Extraction] Error extracting from DoclingDocument: "
+                    "Failed to extract data from DoclingDocument\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=clean_empty_stub),
+        ):
+            result = _call_extract_pass(
+                {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                 "document_id": "doc-1"},
+                timeout=10.0,
+            )
+            assert result == clean_empty_stub
+
+    def test_clean_empty_detected_from_library_log_when_structured_gate_absent(self):
+        """When the structured quality_gate field is missing, the detector
+        must fall back to the always-present captured library_log signature
+        ("Quality gate failed: <reasons>") to recognise the clean empty.
+        """
+        from app.workers.pipeline import _call_extract_pass
+
+        stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "library_log": (
+                    "[DeltaExtraction] Quality gate failed: empty_output | "
+                    "path_counts={}\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=stub),
+        ):
+            result = _call_extract_pass(
+                {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                 "document_id": "doc-1"},
+                timeout=10.0,
+            )
+            assert result == stub
+
+    def test_pipeline_error_with_hard_failure_signature_still_retries(self):
+        """A pipeline_error whose log carries a HARD-failure signature
+        (LLM returned no valid JSON — a transient parse/truncation failure)
+        must STILL raise PassRetryable. A retry can genuinely recover it.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        hard_fail_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {"ok": False, "reasons": ["empty_output"]},
+                "library_log": (
+                    "[LlmBackend] No valid JSON returned from LLM after retries\n"
+                    "[DeltaExtraction] Quality gate failed: empty_output\n"
+                ),
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=hard_fail_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    def test_pipeline_error_with_batch_errors_still_retries(self):
+        """A pipeline_error with non-empty batch_errors means a batch genuinely
+        failed (not a clean off-domain empty) — must STILL raise PassRetryable.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        batch_err_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "ExtractionError",
+                    "message": "Failed to extract data from DoclingDocument",
+                },
+                "quality_gate": {"ok": False, "reasons": ["empty_output"]},
+                "batch_errors": {"3": "JSONDecodeError: unterminated string"},
+                "library_log": "[DeltaExtraction] Quality gate failed: empty_output\n",
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=batch_err_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    def test_pipeline_error_without_empty_signal_still_retries(self):
+        """A bare pipeline_error with NO quality-gate / log empty signal is
+        ambiguous (could be a real internal failure) — conservative default is
+        to retry, exactly as before this change.
+        """
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        bare_stub = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "PipelineError",
+                    "message": "stage 'Extraction' failed",
+                },
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=bare_stub),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    # -----------------------------------------------------------------------
+    # Raised-on-empty path tests — directly exercise _is_clean_empty_pipeline_error
+    # -----------------------------------------------------------------------
+
+    def test_raised_on_empty_no_quality_gate_is_clean_empty(self):
+        """Bug repro: when the upstream library raises ExtractionError BEFORE
+        the delta quality gate runs, library_log has no 'Quality gate failed:'
+        line and quality_gate is absent. The previous code returned False here
+        (no reasons → False) → PassRetryable → 3 wasted retries → FAILED.
+
+        With the fix, the pipeline_error type/message signature is detected and
+        the call correctly returns True (ZERO_YIELD, no retry).
+
+        This test MUST FAIL before the fix and PASS after.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            # No quality_gate field — raised before the gate ran.
+            # No 'Quality gate failed:' in library_log.
+            "library_log": (
+                "[Extraction] Running extraction on 3 chunks\n"
+                "[LlmBackend] Sending batch 1/3\n"
+                "[LlmBackend] Sending batch 2/3\n"
+                "[LlmBackend] Sending batch 3/3\n"
+                "[Extraction] ExtractionError: no schema-matching records found\n"
+            ),
+            # No batch_errors.
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_raised_on_empty_hard_failure_sig_still_retries(self):
+        """Retry preserved: same raised-on-empty shape but library_log carries
+        a hard-failure signature (LLM returned no valid JSON). The empty is NOT
+        a legitimate domain miss — retry can recover it.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": (
+                "[LlmBackend] No valid JSON returned from LLM after retries\n"
+                "[Extraction] ExtractionError: no schema-matching records found\n"
+            ),
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_raised_on_empty_batch_errors_still_retries(self):
+        """Retry preserved: same raised-on-empty shape but diagnostics carries
+        batch_errors — a batch genuinely failed, so it may be recoverable.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": (
+                "[Extraction] Running extraction on 3 chunks\n"
+            ),
+            "batch_errors": [{"batch": 2, "error": "JSONDecodeError: unterminated string"}],
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_raised_on_empty_unrecognized_error_still_retries(self):
+        """Retry preserved: pipeline_error message does NOT contain 'ExtractionError'
+        or 'Failed to extract data from DoclingDocument' — an unknown internal
+        error at a different stage. Stay conservative: retry.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": "Pipeline failed at stage 'Sanitize': MemoryError",
+            },
+            "library_log": "[Sanitize] OOM during normalization\n",
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_existing_reasons_path_still_works(self):
+        """Existing behavior unchanged: when library_log contains the
+        'Quality gate failed:' line with clean-empty reasons (empty_output,
+        missing_root_instance), the classifier still returns True.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "ExtractionError",
+                "message": "Failed to extract data from DoclingDocument",
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: empty_output, missing_root_instance"
+                " | path_counts={}\n"
+            ),
+        }
+        metadata = {"node_count": 0, "edge_count": 0}
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_nonzero_yield_not_clean_empty(self):
+        """Not-a-clean-empty path: node_count >= 2 means the pass produced the
+        Pass-wrapper ROOT node PLUS at least one real record child — real
+        output — so it cannot be a clean empty regardless of pipeline_error
+        presence. (node_count == 1 is the lone empty wrapper, which IS a clean
+        empty; only node_count >= 2 counts as produced output.)
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: markdown_length=4602"
+                ),
+            },
+            "library_log": "",
+        }
+        metadata = {"node_count": 2, "edge_count": 0}  # wrapper + 1 real record
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
+
+    def test_empty_wrapper_node_with_clean_reasons_is_clean_empty(self):
+        """Live Handwritten case: an empty extraction emits ONLY the Pass-wrapper
+        ROOT node (node_count=1, edge_count=0). The quality gate surfaced
+        clean-empty reasons (missing_root_instance, empty_output), no batch
+        errored, no hard-failure signature. The lone wrapper must NOT be treated
+        as 'produced something' — it is a legitimate ZERO_YIELD → return True.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: error=Failed to extract data from DoclingDocument"
+                ),
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                "empty_output | path_counts={}"
+            ),
+        }
+        metadata = {"node_count": 1, "edge_count": 0}  # lone empty wrapper
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is True
+
+    def test_relationship_pass_with_edges_not_clean_empty(self):
+        """A relationship pass (e.g. system_links) can emit the lone wrapper
+        node (node_count=1) yet still produce real relationships
+        (edge_count=2). edge_count > 0 = produced real output → not a clean
+        empty, even with clean-empty quality-gate reasons present.
+        """
+        from app.workers.pipeline import _is_clean_empty_pipeline_error
+
+        diagnostics = {
+            "pipeline_error": {
+                "type": "PipelineError",
+                "message": (
+                    "Pipeline failed at stage 'Extraction': ExtractionError\n"
+                    "Details: error=Failed to extract data from DoclingDocument"
+                ),
+            },
+            "library_log": (
+                "[DeltaExtraction] Quality gate failed: missing_root_instance, "
+                "empty_output | path_counts={}"
+            ),
+        }
+        metadata = {"node_count": 1, "edge_count": 2}  # wrapper + 2 edges
+        assert _is_clean_empty_pipeline_error(diagnostics, metadata) is False
 
 
 # ---------------------------------------------------------------------------

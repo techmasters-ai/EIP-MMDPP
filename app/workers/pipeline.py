@@ -30,6 +30,8 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import json
 import logging
+import re
+import time
 import uuid
 from typing import Any, Literal, Optional
 
@@ -161,6 +163,11 @@ class PassAttemptOutcome:
     raw_response_payload: dict | None  # literal /extract-pass JSON; set when HTTP call succeeded
     counts: dict | None            # _count_pass_output result; set iff COMPLETE
     error: Exception | None        # PassRetryable/PassTransportError/PassTerminal; set iff FAILED
+    # C0 wall-time telemetry (Phase 0 of walltime-reduction plan): 5 worker-side
+    # metrics — doc_json_load_ms (caller-supplied), request_bytes, response_bytes,
+    # service_queue_wait_ms, pass_wall_ms. None on SKIPPED outcomes (no work
+    # performed); always populated on COMPLETE/FAILED.
+    worker_diagnostics: dict | None = None
 
 
 @_dataclass
@@ -198,6 +205,63 @@ def _attempt_rollback(document_id: str) -> str:
     except Exception as rollback_exc:
         logger.error("rollback during failure handling also failed: %s", rollback_exc)
         return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
+
+
+def _domain_relationship_edge_types(ontology: dict) -> list[str]:
+    """Enumerate the ontology's DOMAIN relationship edge type names (Fix N).
+
+    = the ontology relationship type names (the same canonical helper the schema
+    sync and gate use, ``build_relationship_type_names``) MINUS the structural
+    set. The structural set is the shared schema constant
+    ``_STRUCTURAL_EDGE_TYPES`` UNION the document-anchor / derive-rules extras
+    ``_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES`` (HAS_IMAGE, NEAR_TEXT, CONTAINS,
+    MENTIONED_IN) — the SAME two constants ``scripts/verify_lineage_e2e.py`` builds
+    its ``STRUCTURAL_EDGE_TYPES`` from, so this retract and the doc-scoped
+    fail-closed lineage gate can NEVER diverge on what counts as a domain edge.
+
+    For air_defense_v3 this yields exactly the 24 domain rel types (excludes the 8
+    structural rels CHILD_OF, CONTAINS, HAS_FIGURE, HAS_IMAGE, HAS_SECTION,
+    HAS_TABLE, MENTIONED_IN, NEAR_TEXT). Names are routed through ``_safe_type_name``
+    so a reserved word maps to the actual ArcadeDB class name (defensive).
+    """
+    from app.services.ontology_templates import build_relationship_type_names
+    from app.services.arcadedb_schema import (
+        _STRUCTURAL_EDGE_TYPES,
+        _ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES,
+        _safe_type_name,
+    )
+
+    structural = set(_STRUCTURAL_EDGE_TYPES) | set(_ANCHOR_DERIVE_STRUCTURAL_EDGE_TYPES)
+    return [
+        _safe_type_name(name)
+        for name in build_relationship_type_names(ontology)
+        if _safe_type_name(name) not in structural
+    ]
+
+
+def _retract_document_domain_edges(merged, ontology, document_id, tracker) -> int:
+    """Retract the document's prior domain relationship edges before re-commit (Fix N).
+
+    Why: the domain-edge import path is find-or-create — it only re-touches edges
+    THIS run re-emits, so any prior edge the run did NOT re-emit keeps its STALE
+    lineage and the doc would re-accumulate stale global edges across narrowed
+    re-runs, breaking the doc-scoped fail-closed lineage gate. Retracting the
+    document's full domain-edge population here, immediately before
+    ``_import_graph_phase_domain_edges``, makes the post-run population == exactly
+    this run's extraction (every committed edge re-emitted with fresh lineage).
+
+    Ontology-driven (NOT emit-driven): the type list is the full domain rel set so
+    types this run did not emit are still retracted. Empty domain set → no-op,
+    tracker untouched (no mutation). Otherwise ``tracker.mark()`` (a rollback-
+    gating mutation) then the store retract.
+    """
+    domain_edge_types = _domain_relationship_edge_types(ontology)
+    if not domain_edge_types:
+        return 0
+    tracker.mark()
+    return get_graph_store().retract_document_domain_edges_sync(
+        str(document_id), domain_edge_types
+    )
 
 
 def _rel_to_dict(rel_tuple) -> dict:
@@ -359,9 +423,17 @@ def _serialize_for_audit(
                 "entity_type": record.identity.entity_type,
                 "entity_id": entity_id,
                 "rid": rid,
+                # Task 3: forward the POSITIONAL lineage LISTS in addition
+                # to the legacy scalars (scalar element_uid stays =
+                # self_refs[0] when present). derive_structure_links can
+                # now emit one EXTRACTED_FROM edge per source element
+                # instead of collapsing to a single chunk.
                 "element_uid": prov.element_uid,
                 "page": prov.page,
                 "chunk_index": prov.chunk_index,
+                "self_refs": prov.self_refs,
+                "chunk_indexes": prov.chunk_indexes,
+                "page_numbers": prov.page_numbers,
                 "instance_id": prov.instance_id,
             })
 
@@ -458,6 +530,79 @@ def _classify_extraction_quality(
     if section_count > 0 and text_chunk_count > 0:
         return "degraded"
     return "anomaly"
+
+
+def _has_resolvable_lineage(e) -> bool:
+    """STRICT lineage predicate (spec Component 2C). True iff the entity has
+    at least one provenance row carrying BOTH a non-empty ``element_uid`` AND a
+    non-null ``page`` — the minimum required to resolve a commit back to its
+    Docling anchor. ``page == 0`` is a real page and passes; only ``""``/None
+    element_uid or ``page is None`` fail the gate."""
+    return any(
+        getattr(p, "element_uid", "") and getattr(p, "page", None) is not None
+        for p in (getattr(e, "provenance", None) or [])
+    )
+
+
+def _partition_entities_by_lineage(merged) -> list:
+    """STRICT lineage gate (spec Component 2C). Mutates ``merged`` in place to
+    keep only lineage-complete entities; prunes edges referencing rejected
+    identities; returns the rejected entity list. Runs BEFORE the provenance
+    envelope / node import so NO downstream consumer (domain edges, structural
+    edges, audit serialization) ever sees a lineage-less entity. No-op
+    pass-through when every entity has resolvable lineage."""
+    keep, rejected = [], []
+    for e in merged.entities:
+        (keep if _has_resolvable_lineage(e) else rejected).append(e)
+    if rejected:
+        rejected_ids = {e.identity for e in rejected}
+        merged.entities = keep
+        # MergedEdgeRecord fields are from_identity / to_identity
+        # (extraction_merge.py:366-367) — NOT source_identity/target_identity.
+        merged.edges = [
+            ed for ed in (getattr(merged, "edges", None) or [])
+            if getattr(ed, "from_identity", None) not in rejected_ids
+            and getattr(ed, "to_identity", None) not in rejected_ids
+        ]
+        # Defensive: identity is a LogicalIdentity in production (has
+        # identity_values_dict), but a diagnostic log must NEVER raise and
+        # fail the merge task — fall back to the raw identity for any other
+        # type (e.g. a str).
+        def _id_repr(_id):
+            f = getattr(_id, "identity_values_dict", None)
+            return f() if callable(f) else _id
+        logger.error(
+            "LINEAGE_GATE: rejected %d/%d entities lacking resolvable lineage "
+            "(element_uid+page) — NOT committed; identities=%r",
+            len(rejected), len(keep) + len(rejected),
+            [_id_repr(e.identity) for e in rejected][:20],
+        )
+    return rejected
+
+
+def _record_lineage_rejection(run_id, rejected) -> None:
+    """Surface the strict lineage rejection on ``run.metrics`` (MERGE, not
+    replace — ``_write_pipeline_run_metrics`` runs just before and reassigns
+    ``run.metrics`` wholesale, so a read-modify-write is required here to avoid
+    clobbering the quality-signal blob). Hard signal: the run is marked, never
+    silent, when any entity is rejected."""
+    from app.models.ingest import PipelineRun
+
+    with get_sync_session() as session:
+        run = session.get(PipelineRun, run_id)
+        if run is None:
+            logger.error(
+                "LINEAGE_GATE: PipelineRun %s not found — cannot record "
+                "lineage rejection signal", run_id,
+            )
+            return
+        metrics = dict(run.metrics or {})              # copy existing (merge)
+        metrics["lineage_rejected_count"] = len(rejected)
+        metrics["lineage_rejected_sample"] = [
+            e.identity.identity_values_dict() for e in rejected
+        ][:20]
+        run.metrics = metrics                          # merged write
+        session.commit()
 
 
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
@@ -604,6 +749,8 @@ def _execute_pass_attempt(
     doc_json: dict,
     upstream_refs: dict,
     document_id: str,
+    caller_worker_diag: dict | None = None,
+    chunk_scope: dict | None = None,
 ) -> "PassAttemptOutcome":
     """One attempt at one pass.  Does NOT retry — the caller decides retry.
     Does NOT write StageRun or pipeline_pass_outputs — the caller persists.
@@ -617,6 +764,12 @@ def _execute_pass_attempt(
     helper. It's reserved for Task 5's Celery task, which will use it to
     correlate StageRun and pipeline_pass_outputs writes after the helper
     returns.
+
+    C0 telemetry: ``caller_worker_diag`` carries metrics owned by the outer
+    caller (e.g. ``doc_json_load_ms`` from ``derive_ontology_graph_pass``).
+    The helper captures its own 4 metrics (request_bytes, response_bytes,
+    service_queue_wait_ms, pass_wall_ms) and merges them with the caller's
+    onto ``outcome.worker_diagnostics``.
     """
     # 1. Skip check
     if _should_skip(pass_def, upstream_refs, ontology):
@@ -628,6 +781,7 @@ def _execute_pass_attempt(
             raw_response_payload=None,
             counts=None,
             error=None,
+            worker_diagnostics=None,
         )
 
     # 2. Compute selected_refs ONCE — reused for both the request body and the
@@ -639,19 +793,134 @@ def _execute_pass_attempt(
     )
 
     # 3. Build request + call HTTP
+    # Phase 2 Task 11: forward router's selected_chunks when present so
+    # docling-graph uses them byte-identically (skips its own re-chunking).
+    forwarded_selected_chunks: list[dict] | None = None
+    if chunk_scope is not None:
+        _raw = chunk_scope.get("selected_chunks")
+        if isinstance(_raw, list) and _raw:
+            forwarded_selected_chunks = _raw
+    # Tasks F2+F4: forward field_subset from chunk_scope when present.
+    # Not gated by WORKER_FORWARD_SELECTED_CHUNKS — separate feature.
+    forwarded_field_subset: list[str] | None = None
+    if chunk_scope is not None:
+        _raw_fs = chunk_scope.get("field_subset")
+        if isinstance(_raw_fs, list) and _raw_fs:
+            forwarded_field_subset = _raw_fs
+    # 3a. empty_selection short-circuit (Task 5).
+    # When absolute_union selected 0 chunks the router emits
+    # mode="empty_selection".  _compute_effective_chunk_scope (Task 4) maps
+    # that to the sentinel {"mode": "empty_selection", "self_refs": []}.
+    # There is nothing to extract — return COMPLETE/EMPTY immediately without
+    # building or sending the request.
+    if chunk_scope is not None and chunk_scope.get("mode") == "empty_selection":
+        import importlib as _importlib
+        from pydantic import ValidationError as _ValidationError
+        from app.services.extraction_merge import (
+            ExtractionMetadata as _ExtractionMetadata,
+            PassResult as _PassResult,
+            PreMergeWalkSummary as _PreMergeWalkSummary,
+        )
+        logger.info(
+            "EXTRACT_PASS_EMPTY_SELECTION bundle=%s pass=%s document_id=%s — "
+            "absolute_union selected 0 chunks; ZERO_YIELD (COMPLETE/EMPTY), no extraction call.",
+            bundle_key, pass_def.name, document_id,
+        )
+        _full_module = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
+        try:
+            _tmod = _importlib.import_module(_full_module)
+            _tcls = getattr(_tmod, pass_def.template_class)
+            _template_instance = _tcls.model_validate({})
+        except (ImportError, AttributeError, _ValidationError) as _exc:
+            # Bundle/template misconfig (bad module, wrong template_class, or an
+            # empty-validation failure). The pass still has nothing to extract, so
+            # fall back to an empty SimpleNamespace sentinel — safe because
+            # _build_pre_merge_walk_summary / classify_yield / _count_pass_output
+            # all guard with isinstance(BaseModel)/hasattr checks. Log it: per the
+            # soft-fail-visibility rule this misconfig must surface, and since
+            # model_validate({}) succeeds for every shipped routable pass, this
+            # path only fires on a genuinely broken bundle. Any OTHER exception
+            # is an unexpected bug and is intentionally NOT caught here.
+            logger.warning(
+                "EXTRACT_PASS_EMPTY_SELECTION template resolution failed for "
+                "bundle=%s pass=%s (%s) — using empty sentinel; pass still "
+                "finalizes as COMPLETE/EMPTY.",
+                manifest.bundle_key, pass_def.name, _exc,
+            )
+            import types as _types
+            _template_instance = _types.SimpleNamespace()
+        _empty_pass_result = _PassResult(
+            pass_name=pass_def.name,
+            template_instance=_template_instance,
+            metadata=_ExtractionMetadata(
+                schema_size_chars=0,
+                structured_output_mode="strict",
+            ),
+            pre_merge_rejections=[],
+            provenance=[],
+            field_evidence={},
+            relationship_provenance=[],
+            table_overlay=None,
+        )
+        _empty_pass_result.pre_merge_walk = _PreMergeWalkSummary(
+            entities=[],
+            raw_edge_count=0,
+        )
+        _empty_yield_val = classify_yield(_empty_pass_result, pass_def, ontology)
+        _empty_yield_str = (
+            _empty_yield_val.value
+            if hasattr(_empty_yield_val, "value")
+            else str(_empty_yield_val)
+        )
+        _empty_counts = _count_pass_output(_empty_pass_result, pass_def, ontology)
+        return PassAttemptOutcome(
+            execution_status="COMPLETE",
+            skip_reason=None,
+            yield_status=_empty_yield_str,
+            pass_result=_empty_pass_result,
+            raw_response_payload=None,
+            counts=_empty_counts,
+            error=None,
+            worker_diagnostics={
+                **(caller_worker_diag or {}),
+                "request_bytes": 0,
+                "response_bytes": 0,
+                "service_queue_wait_ms": 0.0,
+                "pass_wall_ms": 0.0,
+                "zero_yield_reason": "empty_selection",
+            },
+        )
+
     request_body = _build_extract_pass_request(
         bundle_key=bundle_key,
         pass_def=pass_def,
         doc_json=doc_json,
         upstream_refs=selected_refs,
         document_id=document_id,
+        selected_chunks=forwarded_selected_chunks,
+        field_subset=forwarded_field_subset,
+        pipeline_run_id=pipeline_run_id,
     )
+    # C0 telemetry: measure request size + HTTP wall + pass wall. perf_counter
+    # is the wall-clock workhorse (monotonic, ns resolution); negligible cost
+    # vs. an LLM call. request_bytes uses default=str for non-JSON-native
+    # types (UUID, datetime) — same convention _call_extract_pass uses.
+    _pass_t0 = time.perf_counter()
+    _request_bytes = len(json.dumps(request_body, default=str).encode("utf-8"))
+    _http_t0 = time.perf_counter()
     try:
         raw_payload = _call_extract_pass(request_body, timeout=settings.docling_graph_timeout)
     except (PassRetryable, PassTransportError, PassTerminal) as exc:
         # PassTransportError is a subclass of PassRetryable, so the tuple catches all
         # three; the caller (_run_single_pass) uses order-dependent isinstance checks
         # to distinguish them.
+        _failed_worker_diag = {
+            **(caller_worker_diag or {}),
+            "request_bytes": _request_bytes,
+            "response_bytes": 0,
+            "service_queue_wait_ms": 0.0,
+            "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+        }
         return PassAttemptOutcome(
             execution_status="FAILED",
             skip_reason=None,
@@ -660,7 +929,27 @@ def _execute_pass_attempt(
             raw_response_payload=None,
             counts=None,
             error=exc,
+            worker_diagnostics=_failed_worker_diag,
         )
+
+    _http_rtt_ms = (time.perf_counter() - _http_t0) * 1000.0
+    _response_bytes = len(json.dumps(raw_payload, default=str).encode("utf-8"))
+    # service_queue_wait_ms = HTTP RTT minus sum of server-reported phase timings.
+    # Service reports its own per-phase ms in raw_payload['diagnostics']. The
+    # delta absorbs network + queue + asyncio scheduling. Clamp to 0 because
+    # the mocked-call case in tests has near-zero RTT but non-zero service
+    # timings — negative wait time is nonsensical.
+    _service_diag = (raw_payload or {}).get("diagnostics") or {}
+    if not isinstance(_service_diag, dict):
+        _service_diag = {}
+    _server_processing_ms = sum(
+        float(_service_diag.get(_k, 0.0) or 0.0)
+        for _k in (
+            "sanitize_ms", "table_overlay_ms", "table_normalization_ms",
+            "run_pipeline_ms", "postprocess_ms", "field_provenance_ms",
+        )
+    )
+    _service_queue_wait_ms = max(0.0, _http_rtt_ms - _server_processing_ms)
 
     # 4. Parse response
     try:
@@ -674,29 +963,25 @@ def _execute_pass_attempt(
             raw_response_payload=raw_payload,  # captured — useful forensic data
             counts=None,
             error=exc,
+            worker_diagnostics={
+                **(caller_worker_diag or {}),
+                "request_bytes": _request_bytes,
+                "response_bytes": _response_bytes,
+                "service_queue_wait_ms": _service_queue_wait_ms,
+                "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+            },
         )
 
     # 5. Attach upstream refs as LogicalIdentity objects so merge_and_resolve
     #    can resolve from_ref_id / to_ref_id (extraction_merge.py:384).
     #    Only document_plus_entity_refs passes use this — document_only passes
     #    do not consume upstream refs.
+    #    Reuses the same selection that built the request body above (selected_refs)
+    #    so the merge side sees exactly the refs the LLM was told about.
     if pass_def.input_mode == "document_plus_entity_refs":
-        from app.services.extraction_merge import logical_identity_from_dict
-        # Reuse the same selection that built the request body above —
-        # ensures the merge side sees exactly the refs the LLM was
-        # told about, and removes a drift surface where future edits
-        # could cause the two sites to disagree.
-        selected = selected_refs or {}
-        pass_result.upstream_refs = {}
-        for ref_id, ref in selected.items():
-            identity = logical_identity_from_dict(
-                ref.entity_type,
-                ref.identity_values or {},
-                ontology,
-                document_id,
-            )
-            if identity is not None:
-                pass_result.upstream_refs[ref_id] = identity
+        pass_result.upstream_refs = _build_upstream_refs_for_pass_result(
+            pass_def, selected_refs or {}, ontology, document_id,
+        )
 
     # 6. Compute pre_merge_walk + yield_status + counts
     # Plan Task 34b: build the single shared pre-merge carrier and
@@ -724,7 +1009,69 @@ def _execute_pass_attempt(
         raw_response_payload=raw_payload,
         counts=counts,
         error=None,
+        worker_diagnostics={
+            **(caller_worker_diag or {}),
+            "request_bytes": _request_bytes,
+            "response_bytes": _response_bytes,
+            "service_queue_wait_ms": _service_queue_wait_ms,
+            "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+        },
     )
+
+
+def _trim_response_for_persistence(outcome: "PassAttemptOutcome") -> dict | None:
+    """P6 — return a non-mutating copy of ``outcome.raw_response_payload``
+    with ``diagnostics.library_log`` stripped on COMPLETE outcomes.
+
+    ``library_log`` is the captured stdout/stderr of run_pipeline; on a
+    successful pass it bloats pipeline_pass_outputs.extract_pass_response_json
+    and inflates system_links rehydration cost (every upstream pass row is
+    re-parsed). On FAILED / SKIPPED outcomes it's forensic gold and is
+    preserved verbatim.
+
+    The original ``outcome.raw_response_payload`` is NOT mutated — main.py's
+    log emitters in the ``finally`` block read it after this returns, and
+    re-running with a stripped log would lose data.
+    """
+    payload = outcome.raw_response_payload
+    if not payload:
+        return payload  # None or empty dict — nothing to trim
+    if outcome.execution_status != "COMPLETE":
+        return payload  # forensic gold; keep verbatim
+    service_diag = payload.get("diagnostics")
+    if not isinstance(service_diag, dict) or "library_log" not in service_diag:
+        return payload  # nothing to strip
+    # Shallow copy at both levels — caller's dict identity preserved.
+    trimmed_diag = {k: v for k, v in service_diag.items() if k != "library_log"}
+    trimmed_payload = {**payload, "diagnostics": trimmed_diag}
+    return trimmed_payload
+
+
+def _build_pass_diagnostics_dict(
+    outcome: "PassAttemptOutcome",
+    override_extra: dict | None = None,
+) -> dict:
+    """Merge service-side diagnostics (from raw_response_payload['diagnostics']),
+    worker-side diagnostics (outcome.worker_diagnostics), and any override
+    extras into the single diagnostics dict written to
+    ``pipeline_pass_outputs.diagnostics``.
+
+    Precedence (low → high): service, worker, override. This means an override
+    key always wins, and a worker-captured metric wins over a same-named
+    service one if they ever collide (current 13-metric set has no overlap).
+
+    Handles None / non-dict inputs gracefully — a FAILED transport outcome
+    has raw_response_payload=None and worker_diagnostics with the partial
+    metrics it could capture; this helper still returns a usable dict.
+    """
+    service_diag = (outcome.raw_response_payload or {}).get("diagnostics") or {}
+    if not isinstance(service_diag, dict):
+        service_diag = {}
+    worker_diag = outcome.worker_diagnostics or {}
+    merged = {**service_diag, **worker_diag}
+    if override_extra:
+        merged = {**merged, **override_extra}
+    return merged
 
 
 def _run_single_pass(
@@ -1091,7 +1438,7 @@ def _build_provenance_envelope(
     )
 
 
-def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance):
+def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance, db=None):
     """Spec §5.6 phase 2 — node upsert.
 
     Builds the full NodeRecord list in pure Python FIRST so that any
@@ -1100,9 +1447,27 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
     correctly skips.  tracker.mark() is called AFTER the list is built
     and IMMEDIATELY before the first graph_store mutation.
 
+    Task 5: when ``db`` is supplied, the self_ref -> chunk resolver maps are
+    built ONCE (before the per-entity record comprehension) and used to resolve
+    a RESOLVED chunk_id onto every ``_field_evidence`` row — falling back to the
+    entity's resolved chunk-set, never None when the entity has lineage, never
+    all-document. ``db=None`` (legacy / test callers) skips field resolution.
+
     Task 4.4.
     """
     from app.services.graph_store import NodeRecord
+
+    # Task 5: build the resolver maps ONCE per call (not per-entity) and resolve
+    # each entity's _field_evidence rows' chunk_id in place BEFORE serialization.
+    if db is not None:
+        identity_map, element_uid_chunk_map, chunk_page_map = _build_lineage_resolver_maps(
+            db, document_id,
+        )
+        for e in merged.entities:
+            if getattr(e, "field_evidence", None):
+                _resolve_field_evidence_chunk_ids(
+                    e, element_uid_chunk_map, identity_map, chunk_page_map,
+                )
 
     # Build all records in pure Python first. If this raises, tracker
     # stays False and the rollback gate correctly skips.
@@ -1239,6 +1604,10 @@ def _import_graph_phase_domain_edges(
     merged, ontology, tracker, provenance,
     relationship_provenance_rows=None,
     entity_provenance_rows=None,
+    db=None,
+    document_id=None,
+    upstream_refs=None,
+    identity_aliases=None,
 ) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
@@ -1266,66 +1635,44 @@ def _import_graph_phase_domain_edges(
     match also try this fallback, so behavior degrades gracefully rather
     than silently dropping provenance.
 
+    Task 5: when ``db`` is supplied, each rel's positional self_refs are
+    resolved (once-built resolver maps, no fan-out) and written onto
+    ``record.properties`` as ``source_chunk_ids`` / ``source_pages`` /
+    ``source_self_refs``. The upsert injects record.properties on both
+    create+update branches — no SQL change.
+
     Task 4.4.
     """
-    from app.services.graph_store import RelationshipRecord
-
-    # Build instance_id → LogicalIdentity map from entity provenance rows.
-    id_to_identity = _instance_to_identity_map(entity_provenance_rows)
-
-    # Sentinel used as the "from_identity" slot in the fallback bucket key.
-    _FALLBACK = "__rel_type_fallback__"
-
-    # Build provenance buckets keyed by composite (from_identity, rel_type,
-    # to_identity) where resolvable, or (_FALLBACK, rel_type) otherwise.
-    provenance_by_triple: dict[tuple, dict] = {}
-
-    for row in (relationship_provenance_rows or []):
-        rt = getattr(row, "relationship_type", None)
-        if not rt:
-            continue
-        src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
-        tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
-        src_identity = id_to_identity.get(src_id_str)
-        tgt_identity = id_to_identity.get(tgt_id_str)
-
-        if src_identity is not None and tgt_identity is not None:
-            key: tuple = (src_identity, rt, tgt_identity)
-        else:
-            key = (_FALLBACK, rt)
-
-        bucket = provenance_by_triple.setdefault(key, {
-            "evidence_ids": [],
-            "self_refs": [],
-            "page_numbers": [],
-        })
-        bucket["evidence_ids"] = sorted(set(
-            bucket["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
-        ))
-        bucket["self_refs"] = sorted(set(
-            bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
-        ))
-        bucket["page_numbers"] = sorted(set(
-            bucket["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
-        ))
-
-    rel_records = []
-    for e in merged.edges:
-        triple_key = (e.from_identity, e.rel_type, e.to_identity)
-        fallback_key = (_FALLBACK, e.rel_type)
-        rel_prov = (
-            provenance_by_triple.get(triple_key)
-            or provenance_by_triple.get(fallback_key)
+    # Task 5: resolver maps for relationship source-chunk lineage. Empty maps
+    # when db is None (legacy/test callers) — rel records still build, just
+    # without source_chunk_ids props (never fabricated).
+    if db is not None:
+        identity_map, element_uid_chunk_map, chunk_page_map = _build_lineage_resolver_maps(
+            db, document_id,
         )
-        rel_records.append(RelationshipRecord(
-            from_type=e.from_identity.entity_type,
-            from_identity=e.from_identity.as_upsert_identity_dict(),
-            to_type=e.to_identity.entity_type,
-            to_identity=e.to_identity.as_upsert_identity_dict(),
-            rel_type=e.rel_type,
-            extraction_confidence=e.confidence,
-            provenance=rel_prov or None,
-        ))
+    else:
+        identity_map, element_uid_chunk_map, chunk_page_map = {}, {}, {}
+
+    rel_records = _build_relationship_records(
+        edges=merged.edges,
+        relationship_provenance_rows=relationship_provenance_rows,
+        entity_provenance_rows=entity_provenance_rows,
+        element_uid_chunk_map=element_uid_chunk_map,
+        identity_map=identity_map,
+        upstream_refs=upstream_refs,
+        identity_aliases=identity_aliases,
+        chunk_page_map=chunk_page_map,
+    )
+
+    # Fix M: lineage-NULL guard tied to the ACTUAL post-resolution OUTCOME, not
+    # to an empty identity_map. After Fix F seeds #/texts/N / #/tables/N keys
+    # directly into element_uid_chunk_map, prose/table refs resolve on the DIRECT
+    # .get(ref) hop with an EMPTY identity_map — so "identity_map is empty" is no
+    # longer a reliable NULL-lineage signal. Warn only when records were actually
+    # built with EMPTY source_chunk_ids despite non-empty provenance rows.
+    _warn_on_null_relationship_lineage(
+        rel_records, relationship_provenance_rows, document_id,
+    )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
     graph_store = get_graph_store()
@@ -1413,6 +1760,10 @@ def _terminalize_doc_and_run(document_id: str, run_id: str | None, doc_status: s
     All failure paths are swallowed — the caller is usually the guard handling
     an already-failing task; we don't want the terminalization itself to mask
     the original exception.
+
+    VR C.4 (Q5c): also calls cleanup_extraction_index to delete ExtractionChunk
+    rows for this run (best-effort; the hourly janitor provides defense-in-depth
+    per rev 9 H3).
     """
     from datetime import datetime as dt
     from app.models.ingest import Document, PipelineRun
@@ -1454,6 +1805,26 @@ def _terminalize_doc_and_run(document_id: str, run_id: str | None, doc_status: s
             db.close()
         except Exception:
             pass
+
+    # VR C.4: best-effort cleanup of ExtractionChunk rows for this run.
+    # cleanup_extraction_index already swallows exceptions (returns 0 on failure).
+    # The janitor provides defense-in-depth for runs where this fails.
+    if run_id:
+        try:
+            from app.services.extraction_chunk_index import cleanup_extraction_index
+            store = get_graph_store()
+            deleted = cleanup_extraction_index(run_id, store=store)
+            logger.info(
+                "VR: terminal cleanup deleted %d ExtractionChunk rows for run=%s",
+                deleted, run_id,
+            )
+        except Exception:
+            logger.warning(
+                "VR: terminal cleanup ExtractionChunk failed for run=%s "
+                "(janitor will retry)",
+                run_id,
+                exc_info=True,
+            )
 
 
 def check_required_pass_gate(pipeline_run_id) -> GateResult:
@@ -1555,6 +1926,717 @@ def _build_docling_document_json(document_id: str) -> dict:
     return _json_mod.loads(raw)
 
 
+def _resolve_mention_chunks(
+    self_refs: list[str],
+    element_uid_chunk_map: dict[str, list[str]],
+    identity_map: dict[str, str],
+) -> tuple[list[str], bool]:
+    """Resolve a mention's self_refs to concrete chunk ids. Returns
+    (chunk_ids, is_coarse).
+
+    Task 4 precision fix — there is NO all-document / all-artifact fan-out.
+
+    Resolution order:
+      (1) resolve EACH self_ref via element_uid_chunk_map (direct hit) or
+          identity_map (self_ref -> element_uid -> element_uid_chunk_map);
+          UNION the concrete chunks of all resolved self_refs, dedup preserving
+          order. Unresolvable self_refs simply contribute nothing — they are
+          NOT fanned out across the document or artifact.
+      (2) is_coarse is True ONLY when there were self_refs but NONE resolved
+          to a chunk. In that case the caller WARNs and emits no edge, linking
+          to nothing rather than fanning out across the document.
+    """
+    resolved: list[str] = []
+    seen: set[str] = set()
+
+    for ref in self_refs or []:
+        chunks: list[str] | None = element_uid_chunk_map.get(ref)
+        if not chunks and isinstance(ref, str) and ref.startswith("#/"):
+            mapped_uid = identity_map.get(ref)
+            if mapped_uid:
+                chunks = element_uid_chunk_map.get(mapped_uid)
+        if chunks:
+            for cid in chunks:
+                if cid not in seen:
+                    seen.add(cid)
+                    resolved.append(cid)
+
+    # Coarse ONLY when there were self_refs but none resolved: caller WARNs and
+    # emits no edge. Never fan out across the whole document/artifact.
+    is_coarse = (not resolved) and bool(self_refs)
+    return resolved, is_coarse
+
+
+def _build_element_uid_chunk_map(elements, text_chunks, image_chunks) -> dict[str, list[str]]:
+    """Build the element_uid -> [chunk_id] map shared by the merge phase
+    (field/relationship lineage) and ``derive_structure_links`` (EXTRACTED_FROM).
+
+    Bridges DocumentElement rows to their chunk(s) via the shared
+    ``artifact_id``. Includes BOTH text_chunks AND image_chunks so entities
+    grounded in images/schematics get linked to the corresponding ImageChunk.
+
+    Takes the already-loaded row lists (no db query here) and returns the map.
+    Field/rel lineage and EXTRACTED_FROM lineage MUST keep identical map
+    semantics; centralizing the build here prevents the two call sites from
+    silently diverging on a future edit (new chunk type, changed key).
+    """
+    artifact_id_to_element_uid: dict[str, str] = {}
+    for elem in elements:
+        if elem.artifact_id and elem.element_uid:
+            artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
+
+    element_uid_chunk_map: dict[str, list[str]] = {}
+    for tc in text_chunks:
+        if tc.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
+    for ic in image_chunks:
+        if ic.artifact_id:
+            euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
+            if euid:
+                element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
+    return element_uid_chunk_map
+
+
+def _build_self_ref_chunk_map(rows) -> dict[str, list[str]]:
+    """Build a ``self_ref -> [chunk_id]`` map from ArcadeDB TextChunk rows.
+
+    ``rows`` is an iterable of ``(chunk_id, self_refs, chunk_index)`` tuples.
+    For each chunk, every Docling self_ref in its ``self_refs`` list is keyed to
+    that chunk's id. When a single self_ref spans MULTIPLE chunks (e.g. a table
+    `#/tables/1` rendered across two embedding chunks), the resulting list is
+    ordered by ``(chunk_index, chunk_id)`` ascending — so the scalar
+    ``resolved[0]`` consumers (``_resolve_field_evidence_chunk_ids``) pick the
+    LOWEST-index chunk deterministically, while the union consumers
+    (relationship / entity ``source_chunk_ids``) still see every chunk.
+
+    Fix L: ``chunk_id`` is the SECONDARY sort key. Existing ArcadeDB TextChunk
+    vertices were written WITHOUT a persisted ``chunk_index`` (NULL), so the
+    chunk_index sort alone is a no-op on them and multi-chunk resolution was
+    non-deterministic. The ``chunk_id`` tiebreak guarantees REPRODUCIBLE
+    ordering even when chunk_index is uniformly NULL. (Positional-correct
+    multi-chunk-table selection — i.e. the table's FIRST chunk being the lowest
+    by reading order — additionally requires a non-NULL chunk_index, which the
+    writer now persists; pre-existing vertices need a re-ingest for that, but the
+    chunk_id tiebreak keeps the interim deterministic.)
+
+    Pure (no DB): the thin DB wrapper ``_load_self_ref_chunk_map_from_arcadedb``
+    fetches the rows and delegates here. ``self_refs`` may be None/empty — those
+    chunks simply contribute nothing.
+
+    WHY this bridge exists: native HybridChunker leaves prose/table chunks with
+    ``artifact_id=None``, so the artifact_id join in
+    ``_build_element_uid_chunk_map`` reaches ONLY image-derived chunks. The
+    authoritative prose/table ``self_ref -> chunk_id`` mapping is persisted onto
+    the ArcadeDB TextChunk vertex ``self_refs`` property (see
+    ``_build_native_chunk_meta`` / ``_build_text_chunk_sql``); this rebuilds the
+    inverse so the merge/structure resolver can reach those chunks.
+    """
+    by_self_ref: dict[str, list[tuple[int, str]]] = {}
+    for chunk_id, self_refs, chunk_index in rows:
+        if not self_refs:
+            continue
+        cid = str(chunk_id)
+        idx = chunk_index if chunk_index is not None else 0
+        for ref in self_refs:
+            if not ref:
+                continue
+            by_self_ref.setdefault(str(ref), []).append((idx, cid))
+
+    self_ref_chunk_map: dict[str, list[str]] = {}
+    for ref, entries in by_self_ref.items():
+        # Sort by (chunk_index, chunk_id) ascending — chunk_index primary,
+        # chunk_id the deterministic tiebreak (Fix L: chunk_index is NULL→0 on
+        # existing vertices, so chunk_id makes multi-chunk order reproducible).
+        # Dedup chunk ids preserving that order.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for _idx, cid in sorted(entries, key=lambda e: (e[0], e[1])):
+            if cid not in seen:
+                seen.add(cid)
+                ordered.append(cid)
+        self_ref_chunk_map[ref] = ordered
+    return self_ref_chunk_map
+
+
+def _load_self_ref_chunk_map_from_arcadedb(document_id) -> dict[str, list[str]]:
+    """Load the ``self_ref -> [chunk_id]`` bridge from ArcadeDB TextChunk vertices.
+
+    Native HybridChunker prose/table chunks have ``artifact_id=None`` (only
+    image-derived chunks carry one), so the merge-phase artifact_id join cannot
+    reach them. The authoritative mapping IS persisted onto each ArcadeDB
+    TextChunk vertex's ``self_refs`` property (written via
+    ``_build_text_chunk_sql`` from ``_build_native_chunk_meta``); the vertex
+    ``chunk_id`` equals the Postgres ``TextChunk.id`` (both are
+    ``str(meta["chunk_id"])``), so the ids returned here are directly comparable
+    to the rest of the lineage maps.
+
+    Read-only. Reuses the same ``graph_store._client.query_sync`` mechanism used
+    by ``_load_chunks_for_derivation`` / ``_get_structural_document_rid`` in this
+    module. Degrades to ``{}`` on any failure (a missing graph store, an absent
+    ``self_refs`` property) so resolution falls back to the artifact_id-join map
+    rather than raising — never all-document.
+    """
+    try:
+        graph_store = get_graph_store()
+        rows = graph_store._client.query_sync(
+            graph_store._database, "sql",
+            "SELECT chunk_id, self_refs, chunk_index FROM TextChunk "
+            "WHERE document_id = :doc_id "
+            # Fix L: deterministic order — chunk_index primary, chunk_id tiebreak
+            # (chunk_index is NULL on pre-Fix-L vertices, so chunk_id keeps the
+            # multi-chunk self_ref resolution reproducible even before re-ingest).
+            "ORDER BY chunk_index, chunk_id",
+            params={"doc_id": str(document_id)},
+        )
+    except Exception as exc:  # pragma: no cover - defensive, integration-tested
+        logger.warning(
+            "_load_self_ref_chunk_map_from_arcadedb: ArcadeDB read failed for "
+            "%s: %s; falling back to artifact_id-join lineage only",
+            document_id, exc,
+        )
+        return {}
+
+    tuples = [
+        (row.get("chunk_id"), row.get("self_refs"), row.get("chunk_index"))
+        for row in (rows or [])
+    ]
+    return _build_self_ref_chunk_map(tuples)
+
+
+def _seed_self_ref_chunk_map(element_uid_chunk_map, self_ref_chunk_map) -> None:
+    """Seed the RAW Docling self_ref keys (``#/texts/N``, ``#/tables/N``) from
+    the ArcadeDB bridge into ``element_uid_chunk_map`` IN PLACE.
+
+    ``_resolve_mention_chunks`` does a DIRECT ``element_uid_chunk_map.get(ref)``
+    on the raw self_ref BEFORE the identity_map hop, so seeding here makes
+    prose/table self_refs resolve on that first hop. Existing artifact_id-join
+    keys (image chunks) are NOT clobbered: a self_ref key only takes effect if
+    that exact ``#/...`` string isn't already present (it never is — those keys
+    are DocumentElement element_uids, a disjoint namespace).
+    """
+    for ref, chunk_ids in (self_ref_chunk_map or {}).items():
+        element_uid_chunk_map.setdefault(ref, list(chunk_ids))
+
+
+def _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id) -> None:
+    """Seed RAW self_ref keys (``#/texts/N``, ``#/tables/N``) into
+    ``element_uid_chunk_map`` IN PLACE from the ArcadeDB ``TextChunk.self_refs``
+    bridge.
+
+    Native HybridChunker leaves prose/table chunk ``artifact_id=None``, so the
+    ``_build_element_uid_chunk_map`` artifact-id join reaches ONLY image-derived
+    chunks; the ArcadeDB ``TextChunk`` vertices carry ``self_refs``, the
+    authoritative prose/table bridge. Seeding those here lets
+    ``_resolve_mention_chunks`` resolve prose/table field+entity refs on its
+    direct ``.get(ref)`` hop. Degrades to artifact-only on any DB miss.
+
+    Shared by BOTH seed call sites (the merge phase
+    ``_build_lineage_resolver_maps`` and the structure phase
+    ``derive_structure_links``) so the two can't diverge, mirroring the
+    ``_build_element_uid_chunk_map`` extraction precedent. The pure
+    ``_build_self_ref_chunk_map`` builder and its ``_seed_self_ref_chunk_map`` /
+    ``_load_self_ref_chunk_map_from_arcadedb`` halves stay independently testable.
+    """
+    _seed_self_ref_chunk_map(
+        element_uid_chunk_map,
+        _load_self_ref_chunk_map_from_arcadedb(document_id),
+    )
+
+
+def _build_lineage_resolver_maps(db, document_id):
+    """Build the (identity_map, element_uid_chunk_map, chunk_page_map) needed
+    to resolve self_refs -> concrete chunk ids IN THE MERGE PHASE.
+
+    Replicates the element_uid_chunk_map build in ``derive_structure_links``
+    (query DocumentElement + TextChunk + ImageChunk via the supplied ``db``
+    session, map element_uid -> [chunk_id] via the shared artifact_id), plus a
+    chunk_id -> page map so resolved fields/edges can back-fill a page number.
+
+    ``identity_map`` bridges Docling self_refs (``#/texts/N``) to
+    DocumentElement.element_uid (loaded from the persisted docling_document.json
+    ``_enrichments.identity_map``; {} on any miss — degrades to the precise/empty
+    chunk-set, never all-document).
+
+    Built ONCE per merge and threaded into BOTH the node phase (field
+    chunk_id resolution) and the domain-edge phase (relationship
+    source_chunk_ids). No graph mutation here — pure read.
+    """
+    from sqlalchemy import select
+    from app.models.ingest import DocumentElement
+    from app.models.retrieval import TextChunk, ImageChunk
+
+    doc_uuid = uuid.UUID(str(document_id))
+    elements = db.execute(
+        select(DocumentElement)
+        .where(DocumentElement.document_id == doc_uuid)
+        .order_by(DocumentElement.element_order)
+    ).scalars().all()
+    text_chunks = db.execute(
+        select(TextChunk).where(TextChunk.document_id == doc_uuid)
+    ).scalars().all()
+    image_chunks = db.execute(
+        select(ImageChunk).where(ImageChunk.document_id == doc_uuid)
+    ).scalars().all()
+
+    element_uid_chunk_map = _build_element_uid_chunk_map(
+        elements, text_chunks, image_chunks,
+    )
+
+    # Seed prose/table self_refs from the ArcadeDB bridge (see augmenter).
+    _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id)
+
+    chunk_page_map: dict[str, int] = {}
+    for tc in text_chunks:
+        if tc.page_number is not None:
+            chunk_page_map[str(tc.id)] = tc.page_number
+    for ic in image_chunks:
+        if ic.page_number is not None:
+            chunk_page_map[str(ic.id)] = ic.page_number
+
+    identity_map = _load_identity_map(document_id)
+    return identity_map, element_uid_chunk_map, chunk_page_map
+
+
+def _entity_resolved_chunk_set(entity, element_uid_chunk_map, identity_map):
+    """Resolve the UNION of an entity's provenance self_refs to concrete chunk
+    ids (precise, no fan-out). Used as the field-level fallback chunk-set when a
+    field's OWN self_ref doesn't resolve."""
+    entity_self_refs: list[str] = []
+    seen: set[str] = set()
+    for prov_row in getattr(entity, "provenance", None) or []:
+        for ref in getattr(prov_row, "self_refs", None) or []:
+            if ref not in seen:
+                seen.add(ref)
+                entity_self_refs.append(ref)
+    resolved, _ = _resolve_mention_chunks(
+        entity_self_refs, element_uid_chunk_map, identity_map,
+    )
+    return resolved
+
+
+def _resolve_field_evidence_chunk_ids(
+    entity, element_uid_chunk_map, identity_map, chunk_page_map=None,
+):
+    """Resolve a RESOLVED chunk_id onto every ``_field_evidence`` row of an
+    entity (mutates rows in place).
+
+    Each field row already carries its PRECISE per-field source ref — the
+    docling-graph provenance builder now stamps every field with the chunk of
+    the batch that emitted that field's value (read from the merge-time
+    ``__property_provenance`` map), so the row's ``element_uid`` / ``self_refs``
+    point at the field's true origin chunk, not the entity's first-seen span.
+
+    Per spec / Task 5 acceptance (Fix K — precise scalar anchor):
+      * the SCALAR ``chunk_id`` is the row's OWN PRECISE per-field anchor — its
+        ``element_uid`` if present, else its scalar ``evidence_id`` — resolved
+        through the same ``_resolve_mention_chunks`` resolver. The coarse batch
+        ``self_refs`` union (which spans the WHOLE extraction batch, ~18 refs)
+        is NOT used for the scalar; resolving the union and taking ``[0]`` picks
+        an arbitrary chunk that only happens to look right when the chunker
+        collapsed each batch into one chunk (SA-2). The precise anchor pins the
+        scalar to the field's exact source chunk reproducibly.
+      * only when the precise anchor resolves to NOTHING does the scalar fall
+        back to the coarse ``self_refs`` union (preserve recall — don't drop a
+        legitimately multi-chunk field), then to the ENTITY's resolved
+        chunk-set (never None when the entity has resolvable lineage);
+      * never all-document, never fabricated — if nothing resolves, chunk_id
+        stays None.
+
+    NOTE: this fixes only the SCALAR. The full coarse ``self_refs`` union is
+    untouched on the row, so any consumer that legitimately wants the multi-chunk
+    LIST still has it; only the single ``chunk_id`` is pinned to the precise
+    anchor.
+
+    Also back-fills ``page`` from chunk_page_map when the row has no page and a
+    chunk resolved.
+    """
+    chunk_page_map = chunk_page_map or {}
+    field_evidence = getattr(entity, "field_evidence", None)
+    if not field_evidence:
+        return
+
+    entity_chunks = _entity_resolved_chunk_set(
+        entity, element_uid_chunk_map, identity_map,
+    )
+
+    for rows in field_evidence.values():
+        for row in rows:
+            # PRECISE per-field anchor first: the row's own element_uid, else
+            # its scalar evidence_id. This is the field's EXACT source ref.
+            precise_anchor = (
+                getattr(row, "element_uid", None)
+                or getattr(row, "evidence_id", None)
+            )
+            resolved: list[str] = []
+            if precise_anchor:
+                resolved, _ = _resolve_mention_chunks(
+                    [precise_anchor], element_uid_chunk_map, identity_map,
+                )
+            if not resolved:
+                # Precise anchor didn't resolve — fall back to the coarse batch
+                # self_refs union (preserve recall) before the entity chunk-set.
+                coarse_refs = getattr(row, "self_refs", None) or []
+                if not coarse_refs and precise_anchor:
+                    coarse_refs = [precise_anchor]
+                resolved, _ = _resolve_mention_chunks(
+                    coarse_refs, element_uid_chunk_map, identity_map,
+                )
+            if not resolved:
+                # Final fallback: the entity's resolved chunk-set (precise, never
+                # all-document). Stays None when the entity also doesn't resolve.
+                resolved = entity_chunks
+            if resolved:
+                row.chunk_id = resolved[0]
+                if getattr(row, "page", None) is None:
+                    pg = chunk_page_map.get(resolved[0])
+                    if pg is not None:
+                        row.page = pg
+
+
+def _flatten_pages_to_sorted_unique_ints(raw) -> list[int]:
+    """Recursively flatten an arbitrarily-nested page-number value into a sorted,
+    de-duplicated list of ints.
+
+    LLM provenance ``page_numbers`` can arrive as a nested list-of-lists (e.g.
+    ``[[6, 7]]``) which, if written straight onto an edge, produces a malformed
+    ``source_pages`` nested list. This collapses any nesting to flat ints,
+    dropping non-int / non-coercible members (never raises). Used as the
+    relationship ``source_pages`` FALLBACK when resolved chunks yield no pages,
+    and reused for the field-evidence page write so both paths stay flat-int.
+    """
+    out: set[int] = set()
+
+    def _walk(val):
+        if isinstance(val, bool):
+            return  # bool is an int subclass; never a page number
+        if isinstance(val, int):
+            out.add(val)
+            return
+        if isinstance(val, str):
+            try:
+                out.add(int(val.strip()))
+            except (ValueError, TypeError):
+                pass
+            return
+        if isinstance(val, (list, tuple, set)):
+            for item in val:
+                _walk(item)
+            return
+        # Any other scalar that coerces cleanly to int (e.g. float page label).
+        try:
+            out.add(int(val))
+        except (ValueError, TypeError):
+            pass
+
+    _walk(raw)
+    return sorted(out)
+
+
+# Relationship types whose direction is SEMANTICALLY symmetric: the edge
+# A--rel-->B asserts the SAME fact as B--rel-->A. The extractor sometimes emits
+# BOTH directional edges but a relationship_provenance row for only ONE
+# direction (e.g. ``1D --ASSOCIATED_WITH--> SNR-75`` is committed with NULL
+# source_chunk_ids while the reverse ``SNR-75 --ASSOCIATED_WITH--> 1D`` carries
+# the full 19-chunk provenance). For symmetric types the reverse direction's
+# provenance LEGITIMATELY applies to the forward edge, so we back-fill it
+# (at LOWER precedence than an exact-direction match — see
+# ``_build_relationship_records``).
+#
+# DIRECTIONAL types (CUES = directional target handoff, LAUNCHES, INSTALLED_ON,
+# GUIDES, ...) are DELIBERATELY EXCLUDED: their reverse direction is a DIFFERENT
+# assertion, so reverse provenance must NOT bleed across direction.
+#
+# No machine-readable symmetry flag exists on the ontology RelationshipMetadata
+# (only name/label/description/source_type/target_type/cardinality); the
+# descriptions distinguish symmetric ("System association radar↔missile") from
+# directional ("Directional handoff") in PROSE only. Hence this documented
+# allowlist. To extend: add the rel_type string here (and, ideally, follow up by
+# adding a real ``symmetric: bool`` to RelationshipMetadata in docling-graph so
+# this can derive from ontology metadata instead of a hardcoded set).
+_SYMMETRIC_REL_TYPES: frozenset[str] = frozenset({"ASSOCIATED_WITH"})
+
+
+def _build_relationship_records(
+    edges,
+    relationship_provenance_rows,
+    entity_provenance_rows,
+    element_uid_chunk_map,
+    identity_map,
+    upstream_refs=None,
+    identity_aliases=None,
+    chunk_page_map=None,
+):
+    """Build the RelationshipRecord list, attaching per-edge provenance AND
+    resolved source-chunk lineage onto ``record.properties``.
+
+    Pure (no graph mutation, no DB) so it is directly unit-testable. Each rel
+    provenance row is bucketed under a PRECISE ``(from_identity, rel_type,
+    to_identity)`` composite key so two edges of the same rel_type each receive
+    ONLY their own source chunks (no coarse fan-out smear):
+
+      * DTO ``from_ref_id`` / ``to_ref_id`` rows (system_links et al.) resolve
+        BOTH refs through ``upstream_refs`` (ref_id → LogicalIdentity, the SAME
+        map ``_resolve_relationship`` uses) to a precise triple. ``upstream_refs``
+        holds the RAW pre-canonicalization identities, while each committed edge's
+        ``from_identity``/``to_identity`` were ALIAS-CANONICALIZED in
+        ``_resolve_relationship`` via ``_resolve_identity_alias``. So the resolved
+        src/tgt are canonicalized with the SAME ``identity_aliases`` map BEFORE the
+        precise key is formed — otherwise an aliased endpoint (e.g. designation
+        alias ``PAC-3`` → canonical ``MIM-104F``) would key on the pre-alias
+        identity, miss the canonicalized edge key, and silently orphan the edge.
+      * Typed-edge passes resolve ``source/target_instance_id`` through
+        ``_instance_to_identity_map`` (unchanged path).
+
+    The precise anchor is each row's per-edge ``evidence_ids`` (granular); the
+    coarse batch-context ``self_refs`` is the fallback anchor. Both are carried
+    in the bucket; resolution favors evidence_ids. Resolved chunks are written:
+      * ``source_chunk_ids``  — resolved concrete chunk ids (precise, no fan-out)
+      * ``source_pages``      — the pages of the RESOLVED source_chunk_ids
+        (sorted unique ints via ``chunk_page_map``), CONSISTENT with the chunk
+        lineage; only when the resolved chunks yield no pages does it fall back
+        to a flattened + de-duped + sorted form of the raw provenance
+        page_numbers (never the malformed nested raw value)
+      * ``source_self_refs``  — the anchor refs that resolved
+    A rel with no resolvable anchor gets NO source_chunk_ids property (never
+    fabricated). The upsert injects record.properties on both create+update
+    branches (arcadedb_graph.py), so no SQL change is needed.
+
+    A row that cannot resolve a precise triple (no ref / ref not in
+    ``upstream_refs`` / no resolvable instance ids) lands in the
+    ``__rel_type_fallback__`` bucket keyed on rel_type alone and emits a WARN
+    (previously silent) so the coarse smear is observable.
+    """
+    from app.services.extraction_merge import _resolve_identity_alias
+    from app.services.graph_store import RelationshipRecord
+
+    upstream_refs = upstream_refs or {}
+    identity_aliases = identity_aliases or {}
+    chunk_page_map = chunk_page_map or {}
+    id_to_identity = _instance_to_identity_map(entity_provenance_rows)
+    _FALLBACK = "__rel_type_fallback__"
+
+    provenance_by_triple: dict[tuple, dict] = {}
+    # Symmetric back-fill: for SYMMETRIC rel types we ALSO register each row's
+    # bucket under the REVERSED triple key (to_identity, rel_type, from_identity)
+    # in this SEPARATE map. The per-edge lookup consults it only AFTER the exact
+    # provenance_by_triple miss, so an exact-direction match always wins (no
+    # clobber) and DIRECTIONAL types never get a reversed bucket at all.
+    provenance_by_reversed_triple: dict[tuple, dict] = {}
+    for row in (relationship_provenance_rows or []):
+        rt = getattr(row, "relationship_type", None)
+        if not rt:
+            continue
+
+        # PRECISE-triple resolution. Two independent paths feed the SAME
+        # (from_identity, rel_type, to_identity) key:
+        #   (1) DTO ref ids resolved through upstream_refs (system_links et al.)
+        #   (2) per-instance UUIDs resolved through entity provenance.
+        from_ref_id = getattr(row, "from_ref_id", None)
+        to_ref_id = getattr(row, "to_ref_id", None)
+        src_identity = None
+        tgt_identity = None
+        if from_ref_id is not None or to_ref_id is not None:
+            # DTO ref-id row: resolve BOTH refs through upstream_refs.
+            if (
+                from_ref_id in upstream_refs
+                and to_ref_id in upstream_refs
+            ):
+                src_identity = upstream_refs[from_ref_id]
+                tgt_identity = upstream_refs[to_ref_id]
+            else:
+                logger.warning(
+                    "_build_relationship_records: rel_type=%s row carries "
+                    "from_ref_id=%r / to_ref_id=%r not resolvable via "
+                    "upstream_refs (%d refs) — falling back to coarse "
+                    "__rel_type_fallback__ bucket (shared lineage smear).",
+                    rt, from_ref_id, to_ref_id, len(upstream_refs),
+                )
+        else:
+            # Typed-edge row: resolve per-instance UUIDs (unchanged path).
+            src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
+            tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
+            src_identity = id_to_identity.get(src_id_str)
+            tgt_identity = id_to_identity.get(tgt_id_str)
+            if src_identity is None or tgt_identity is None:
+                logger.warning(
+                    "_build_relationship_records: rel_type=%s row has no "
+                    "resolvable endpoint identity (no from_ref_id/to_ref_id; "
+                    "instance ids src=%r tgt=%r) — falling back to coarse "
+                    "__rel_type_fallback__ bucket (shared lineage smear).",
+                    rt, src_id_str or None, tgt_id_str or None,
+                )
+
+        reversed_key: tuple | None = None
+        if src_identity is not None and tgt_identity is not None:
+            # Both upstream_refs values (DTO ref path) and id_to_identity values
+            # (typed-edge path) are RAW pre-canonicalization identities, whereas
+            # each MergedEdgeRecord.from_identity/to_identity was already
+            # alias-canonicalized in _resolve_relationship. Canonicalize BOTH
+            # endpoints with the SAME identity_aliases map so the precise triple
+            # key matches the committed edge key (no-op when no aliases exist).
+            src_identity = _resolve_identity_alias(src_identity, identity_aliases)
+            tgt_identity = _resolve_identity_alias(tgt_identity, identity_aliases)
+            key: tuple = (src_identity, rt, tgt_identity)
+            # SYMMETRIC back-fill: register the SAME evidence under the reversed
+            # triple too (lower-precedence map). DIRECTIONAL rel types get no
+            # reversed key, so their reverse edges never back-fill.
+            if rt in _SYMMETRIC_REL_TYPES:
+                reversed_key = (tgt_identity, rt, src_identity)
+        else:
+            key = (_FALLBACK, rt)
+
+        def _accumulate(target: dict, src_row) -> None:
+            target["evidence_ids"] = sorted(set(
+                target["evidence_ids"] + list(getattr(src_row, "evidence_ids", []) or [])
+            ))
+            target["self_refs"] = sorted(set(
+                target["self_refs"] + list(getattr(src_row, "self_refs", []) or [])
+            ))
+            # Flatten defensively: a row's page_numbers can arrive as a nested
+            # list-of-lists (e.g. [[6,7]]) which is both unhashable for set() and
+            # malformed for source_pages. Collapse to flat ints, merge with the
+            # bucket, keep sorted-unique.
+            target["page_numbers"] = _flatten_pages_to_sorted_unique_ints(
+                target["page_numbers"] + [getattr(src_row, "page_numbers", None)]
+            )
+
+        bucket = provenance_by_triple.setdefault(key, {
+            "evidence_ids": [],
+            "self_refs": [],
+            "page_numbers": [],
+        })
+        _accumulate(bucket, row)
+
+        if reversed_key is not None:
+            reversed_bucket = provenance_by_reversed_triple.setdefault(reversed_key, {
+                "evidence_ids": [],
+                "self_refs": [],
+                "page_numbers": [],
+            })
+            _accumulate(reversed_bucket, row)
+
+    rel_records = []
+    for e in edges:
+        triple_key = (e.from_identity, e.rel_type, e.to_identity)
+        fallback_key = (_FALLBACK, e.rel_type)
+        # Lookup precedence: exact direction → (symmetric only) reversed direction
+        # back-fill → coarse rel-type fallback. The reversed map is consulted ONLY
+        # for symmetric rel types (it's never populated for directional ones) and
+        # ONLY on an exact-direction miss, so an exact match is never clobbered.
+        rel_prov = provenance_by_triple.get(triple_key)
+        if rel_prov is None and e.rel_type in _SYMMETRIC_REL_TYPES:
+            rel_prov = provenance_by_reversed_triple.get(triple_key)
+        if rel_prov is None:
+            rel_prov = provenance_by_triple.get(fallback_key)
+
+        props: dict[str, Any] = {}
+        if rel_prov:
+            # Favor the precise per-edge evidence_ids anchor; fall back to the
+            # coarse batch self_refs only when evidence_ids resolve to nothing.
+            rel_evidence_ids = rel_prov.get("evidence_ids") or []
+            rel_self_refs = rel_prov.get("self_refs") or []
+            resolved_chunks, _ = _resolve_mention_chunks(
+                rel_evidence_ids, element_uid_chunk_map, identity_map,
+            )
+            anchor_refs = rel_evidence_ids
+            if not resolved_chunks:
+                resolved_chunks, _ = _resolve_mention_chunks(
+                    rel_self_refs, element_uid_chunk_map, identity_map,
+                )
+                anchor_refs = rel_self_refs
+            if resolved_chunks:
+                props["source_chunk_ids"] = resolved_chunks
+                props["source_self_refs"] = list(anchor_refs)
+                # source_pages must be CONSISTENT with the resolved chunks:
+                # derive it from the page of each RESOLVED source_chunk_id via
+                # the chunk_id->page map (the same map field/entity lineage uses
+                # for page back-fill), as a sorted list of unique ints. Only
+                # when the resolved chunks yield NO pages do we fall back to a
+                # recursively-flattened + de-duped + sorted version of the raw
+                # provenance page_numbers (which can itself be a nested list).
+                # Never emit a nested list, never the inconsistent raw prov pages.
+                chunk_pages = sorted({
+                    pg
+                    for cid in resolved_chunks
+                    if (pg := chunk_page_map.get(cid)) is not None
+                })
+                if chunk_pages:
+                    props["source_pages"] = chunk_pages
+                else:
+                    flat_pages = _flatten_pages_to_sorted_unique_ints(
+                        rel_prov.get("page_numbers")
+                    )
+                    if flat_pages:
+                        props["source_pages"] = flat_pages
+
+        rel_records.append(RelationshipRecord(
+            from_type=e.from_identity.entity_type,
+            from_identity=e.from_identity.as_upsert_identity_dict(),
+            to_type=e.to_identity.entity_type,
+            to_identity=e.to_identity.as_upsert_identity_dict(),
+            rel_type=e.rel_type,
+            properties=props,
+            extraction_confidence=e.confidence,
+            provenance=rel_prov or None,
+        ))
+    return rel_records
+
+
+def _warn_on_null_relationship_lineage(
+    rel_records, relationship_provenance_rows, document_id,
+) -> None:
+    """Fix M — surface GENUINE relationship lineage-NULL outcomes (loud).
+
+    HARD lineage requirement: a committed relationship edge that has provenance
+    rows should carry resolved ``source_chunk_ids``. This guard is tied to the
+    ACTUAL post-resolution outcome — it fires only when relationship provenance
+    rows WERE present yet EVERY built record carries an EMPTY ``source_chunk_ids``
+    (a true NULL-lineage commit). It does NOT fire merely because ``identity_map``
+    is empty: after Fix F seeds the raw ``#/...`` self_ref keys directly into
+    ``element_uid_chunk_map``, prose/table refs resolve on the DIRECT ``.get(ref)``
+    hop with an empty ``identity_map``, so an empty-identity_map alarm is a false
+    positive. With no provenance rows there is nothing to bridge, so it is silent.
+    """
+    prov_count = len(relationship_provenance_rows or [])
+    if not prov_count:
+        return
+    any_resolved = any(
+        (rec.properties or {}).get("source_chunk_ids")
+        for rec in (rel_records or [])
+    )
+    if any_resolved:
+        return
+    logger.warning(
+        "_import_graph_phase_domain_edges: %d relationship_provenance row(s) "
+        "present for document_id=%s but ZERO committed relationship edges "
+        "resolved any source chunk — every edge carries NULL source_chunk_ids. "
+        "This is a real lineage failure (likely a MinIO miss / missing "
+        "docling_document.json _enrichments AND an unseeded self_ref bridge), "
+        "NOT just an empty identity_map.",
+        prov_count, document_id,
+    )
+
+
+def _load_identity_map(document_id: str) -> dict[str, str]:
+    """self_ref -> element_uid map persisted at ingest in docling_document.json
+    _enrichments.identity_map. {} on any miss/parse error — never raises (degrades
+    to the mention's precise/empty chunk-set in _resolve_mention_chunks, never
+    all-document)."""
+    try:
+        doc_json = _build_docling_document_json(document_id)
+        if isinstance(doc_json, dict):
+            enr = doc_json.get("_enrichments") or {}
+            im = enr.get("identity_map") or {}
+            if isinstance(im, dict):
+                return {k: v for k, v in im.items() if isinstance(k, str) and isinstance(v, str)}
+    except Exception as exc:
+        logger.warning("derive_structure_links: identity_map load failed for %s: %s",
+                       document_id, exc)
+    return {}
+
+
 def _load_chunks_for_derivation(document_id: str) -> list:
     """Load TextChunk vertices from ArcadeDB and convert to ChunkForDerivation DTOs.
 
@@ -1627,6 +2709,14 @@ def _ensure_structural_document_vertex(document_id: str) -> str:
         doc = db.get(_Document, uuid.UUID(document_id))
         filename = doc.filename if doc else document_id
         source_id = str(doc.source_id) if doc and doc.source_id else None
+        # Human-readable collection name off the doc.source relationship (must be
+        # read while the session is open). None-safe.
+        source_name = None
+        try:
+            if doc is not None and doc.source is not None:
+                source_name = doc.source.name
+        except Exception:
+            source_name = None
     finally:
         db.close()
 
@@ -1635,12 +2725,19 @@ def _ensure_structural_document_vertex(document_id: str) -> str:
     props: dict[str, Any] = {"title": filename}
     if source_id:
         props["source_id"] = source_id
-    return graph_store.upsert_node_sync(_NR(
+    if source_name:
+        props["source_name"] = source_name
+    doc_rid = graph_store.upsert_node_sync(_NR(
         entity_type="Document",
         identity_fields={"document_id": document_id},
         name=filename,
         properties=props,
     ))
+    # First-class Collection vertex + Document -BELONGS_TO-> Collection
+    # (idempotent; no-op when source_id unknown). Mirrors derive_structure_links
+    # so the graph_only path also gets the Collection.
+    graph_store.upsert_collection_and_link_sync(doc_rid, source_id, source_name)
+    return doc_rid
 
 
 def _upsert_document_graph_extraction(
@@ -3337,12 +4434,28 @@ def _write_stage_run(
 def _build_extract_pass_request(
     *, bundle_key: str, pass_def, doc_json: dict,
     upstream_refs: dict | None, document_id: str,
+    selected_chunks: list[dict] | None = None,
+    field_subset: list[str] | None = None,
+    pipeline_run_id: str | None = None,
 ) -> dict:
     """Assemble the POST body for /extract-pass.
 
     document_id is always included so the service can log and attribute
     extraction runs to a specific document (useful when correlating
     salvage warnings and timeout retries across the batch).
+
+    C2: if pass_def.execution is present, its non-None fields are threaded
+    onto the body so the docling-graph service applies them for this pass.
+    Fields that are None in the execution block are omitted, leaving the
+    service to fall back to its env-var defaults (spec Q3: no top-level
+    default in the manifest).
+
+    Phase 2 Task 11: when ``selected_chunks`` is non-empty, forward it as
+    a first-class field so docling-graph bypasses its own HybridChunker
+    and uses the router-selected chunk text byte-identically (Task 0b
+    receiver-side wired this branch). docling-graph's SelectedChunkInput
+    declares ``extra="ignore"`` so any worker-only fields (e.g. chunk_key)
+    are silently dropped server-side; no worker-side strip required.
     """
     body: dict = {
         "bundle_key": bundle_key,
@@ -3350,6 +4463,33 @@ def _build_extract_pass_request(
         "document_id": document_id,
         "docling_document_json": doc_json,
     }
+
+    # R2: thread the pipeline run UUID so docling-graph can key a progress
+    # registry by (run_id, pass_name). Omit when None so the body is
+    # byte-identical to today when the feature is off (default).
+    if pipeline_run_id:
+        body["pipeline_run_id"] = pipeline_run_id
+
+    if selected_chunks:
+        body["selected_chunks"] = selected_chunks
+
+    # Tasks F2+F4: include field_subset only when non-empty so the request
+    # body shape is byte-identical to today when the feature is off (default).
+    if field_subset:
+        body["field_subset"] = field_subset
+
+    # C2: plumb per-pass execution profile onto the request body.
+    execution = getattr(pass_def, "execution", None)
+    if execution is not None:
+        if getattr(execution, "llm_batch_token_size", None) is not None:
+            body["llm_batch_token_size"] = execution.llm_batch_token_size
+        if getattr(execution, "temperature", None) is not None:
+            body["temperature"] = execution.temperature
+        if getattr(execution, "max_tokens", None) is not None:
+            body["max_tokens"] = execution.max_tokens
+        if getattr(execution, "chunk_max_tokens", None) is not None:
+            body["chunk_max_tokens"] = execution.chunk_max_tokens
+
     if upstream_refs:
         entities: list[dict] = []
         for ref_id, ref in upstream_refs.items():
@@ -3375,6 +4515,109 @@ def _build_extract_pass_request(
             entities.append(entry)
         body["upstream_entities"] = entities
     return body
+
+
+# Quality-gate reasons that mean "the LLM ran cleanly across every batch but
+# emitted nothing schema-matching" — i.e. a LEGITIMATE empty extraction (the
+# pass is off-domain for this document). At temp≈0 a retry reproduces the same
+# empty result, so these are NOT worth retrying.
+_CLEAN_EMPTY_GATE_REASONS = frozenset({"empty_output", "missing_root_instance"})
+
+# Captured-library-log substrings that mark a REAL (transient/hard) failure —
+# JSON-parse drift, truncation, a batch watchdog timeout, or a backend retry
+# loop. If any of these fired, the empty output is NOT a clean off-domain miss
+# and a retry can genuinely recover it. Keep this conservative: when in doubt,
+# retry (the pre-existing behavior).
+_HARD_FAILURE_LOG_SIGNATURES = (
+    "No valid JSON returned from LLM",
+    "Structured output failed",
+    "BATCH_HARD_TIMEOUT",
+    "falling back to direct",
+    "LiteLLMClient returned empty",
+    "retrying legacy",
+)
+
+# pipeline_error type/message substrings that mark the upstream library's
+# "raise on empty extraction" path (ExtractionError before the quality gate).
+# When one of these is the ONLY signal (zero yield, no batch_errors, no hard-
+# failure log marker, no quality-gate reasons), the empty is legitimate.
+_EMPTY_EXTRACTION_PIPELINE_ERROR_SIGNATURES = (
+    "ExtractionError",
+    "Failed to extract data from DoclingDocument",
+)
+
+_QUALITY_GATE_LOG_RE = re.compile(r"Quality gate failed:\s*([^|\n]+)")
+
+
+def _quality_gate_reasons(diagnostics: dict) -> set[str]:
+    """Extract the delta quality-gate reasons from a service response's
+    diagnostics. Prefers the structured ``quality_gate.reasons`` list; falls
+    back to parsing the always-present captured ``library_log`` line
+    (``Quality gate failed: a, b | ...``) when the structured field is absent
+    (delta_trace.json not surfaced on some raise paths). Returns an empty set
+    when no quality-gate signal is present at all.
+    """
+    qg = diagnostics.get("quality_gate")
+    if isinstance(qg, dict):
+        reasons = qg.get("reasons")
+        if isinstance(reasons, list) and reasons:
+            return {str(r).strip() for r in reasons if str(r).strip()}
+    log = diagnostics.get("library_log")
+    if isinstance(log, str) and log:
+        m = _QUALITY_GATE_LOG_RE.search(log)
+        if m:
+            return {r.strip() for r in m.group(1).split(",") if r.strip()}
+    return set()
+
+
+def _is_clean_empty_pipeline_error(diagnostics: dict, metadata: dict) -> bool:
+    """True iff a service ``pipeline_error`` stub represents a LEGITIMATE empty
+    extraction (an off-domain pass: the LLM ran cleanly on every batch and
+    found no schema-matching content) rather than a transient/hard failure a
+    retry could fix.
+
+    The upstream library raises ``ExtractionError`` on *any* empty extraction
+    (stages.py: ``if not extracted_model: raise``), so off-domain empties reach
+    the worker as pipeline_error stubs indistinguishable — by exception type
+    alone — from real failures. This classifier recovers the distinction from
+    the diagnostics so the off-domain case can take the ZERO_YIELD path
+    (COMPLETE/EMPTY, no retry) instead of burning ``pass_max_retries``
+    deterministic full-document re-scans.
+
+    Conservative by design: returns True ONLY on positive confirmation. Any
+    ambiguity — nonzero yield, a batch error, a hard-failure log signature, or
+    no quality-gate empty signal at all — falls through to the retry path.
+    """
+    node_count = (metadata or {}).get("node_count", 0) or 0
+    edge_count = (metadata or {}).get("edge_count", 0) or 0
+    # node_count == 1 is the empty Pass-wrapper ROOT node (no record children);
+    # real records make node_count >= 2 (wrapper + N). edge_count > 0 means the
+    # pass produced relationships (e.g. system_links: node_count=1 + edge_count=2).
+    # Either of those = produced real output → not an empty extraction.
+    if node_count > 1 or edge_count > 0:
+        return False  # produced real records/edges — not an empty extraction
+    if diagnostics.get("batch_errors"):
+        return False  # a batch genuinely failed → retryable
+    log = diagnostics.get("library_log")
+    if isinstance(log, str):
+        if any(sig in log for sig in _HARD_FAILURE_LOG_SIGNATURES):
+            return False  # transient/hard failure marker → retryable
+    reasons = _quality_gate_reasons(diagnostics)
+    if reasons:
+        return reasons.issubset(_CLEAN_EMPTY_GATE_REASONS)
+    # No quality-gate reasons surfaced. This is the "raised-on-empty" path: the
+    # upstream library raises ExtractionError when the LLM produced no schema-
+    # matching records, BEFORE the delta quality gate runs, so the "Quality gate
+    # failed: ..." line never reaches library_log. We've already ruled out every
+    # transient marker above (nonzero yield, batch_errors, hard-failure log
+    # signatures). An ExtractionError stub with zero yield and no transient
+    # marker is a legitimate off-domain empty → ZERO_YIELD, not a retry. Other
+    # (unrecognized) internal errors keep the conservative retry behavior.
+    pe = diagnostics.get("pipeline_error") or {}
+    pe_blob = f"{pe.get('type', '')} {pe.get('message', '')}"
+    if any(sig in pe_blob for sig in _EMPTY_EXTRACTION_PIPELINE_ERROR_SIGNATURES):
+        return True
+    return False
 
 
 def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
@@ -3417,18 +4660,37 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     pass_name = request_body.get("pass_name", "?")
     document_id = request_body.get("document_id", "?")
     if pipeline_err:
-        logger.error(
-            "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
-            "error_type=%s error_msg=%s — service stubbed the response; "
-            "raising PassRetryable so the worker can retry instead of "
-            "silently treating it as success.",
-            bundle_key, pass_name, document_id,
-            pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
-        )
-        raise PassRetryable(
-            f"service pipeline_error: type={pipeline_err.get('type', '?')} "
-            f"msg={pipeline_err.get('message', '?')[:200]}"
-        )
+        if _is_clean_empty_pipeline_error(diagnostics, metadata):
+            # The library raised on an empty extraction, but every batch ran
+            # clean (no batch errors, no hard-failure log marker) and the
+            # quality gate failed only for off-domain emptiness. This pass is
+            # legitimately empty for this document — a retry at temp≈0 would
+            # deterministically reproduce the same empty result. Treat it as a
+            # ZERO_YIELD (COMPLETE/EMPTY) instead of FAILED-after-N-retries.
+            logger.error(
+                "EXTRACT_PASS_CLEAN_EMPTY bundle=%s pass=%s document_id=%s "
+                "error_type=%s quality_gate_reasons=%s — library raised on an "
+                "empty extraction but all batches ran clean; treating as a "
+                "legitimate off-domain ZERO_YIELD (COMPLETE/EMPTY), not "
+                "retrying a deterministic empty.",
+                bundle_key, pass_name, document_id,
+                pipeline_err.get("type", "?"),
+                sorted(_quality_gate_reasons(diagnostics)),
+            )
+            # Fall through to the ZERO_YIELD log + ``return payload`` below.
+        else:
+            logger.error(
+                "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
+                "error_type=%s error_msg=%s — service stubbed the response; "
+                "raising PassRetryable so the worker can retry instead of "
+                "silently treating it as success.",
+                bundle_key, pass_name, document_id,
+                pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
+            )
+            raise PassRetryable(
+                f"service pipeline_error: type={pipeline_err.get('type', '?')} "
+                f"msg={pipeline_err.get('message', '?')[:200]}"
+            )
     if node_count == 0 and edge_count == 0:
         logger.error(
             "EXTRACT_PASS_ZERO_YIELD bundle=%s pass=%s document_id=%s "
@@ -3516,6 +4778,26 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         evidence_text = raw.get("evidence_text")
         if evidence_text is not None and not isinstance(evidence_text, str):
             evidence_text = None
+        # Task 3: carry the POSITIONAL lineage LISTS. The docling-graph
+        # service (Task 2) now emits self_refs/chunk_indexes/cited_refs.
+        # BACK-COMPAT: an older scalar-only response (no self_refs key)
+        # derives self_refs from element_uid and chunk_indexes from the
+        # scalar chunk_index.
+        if "self_refs" in raw:
+            self_refs = raw.get("self_refs") or []
+            if not isinstance(self_refs, list):
+                self_refs = []
+        else:
+            self_refs = [element_uid] if element_uid else []
+        if "chunk_indexes" in raw:
+            chunk_indexes = raw.get("chunk_indexes") or []
+            if not isinstance(chunk_indexes, list):
+                chunk_indexes = []
+        else:
+            chunk_indexes = [chunk_index] if chunk_index is not None else []
+        cited_refs = raw.get("cited_refs") or []
+        if not isinstance(cited_refs, list):
+            cited_refs = []
         provenance_rows.append(ExtractionProvenance(
             instance_id=instance_id,
             ontology_name=ontology_name,
@@ -3526,6 +4808,9 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             evidence_ids=evidence_ids,
             page_numbers=page_numbers,
             evidence_text=evidence_text,
+            self_refs=self_refs,
+            chunk_indexes=chunk_indexes,
+            cited_refs=cited_refs,
         ))
 
     # Phase 3 task 32: parse field_provenance rows from the response
@@ -3543,9 +4828,19 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         instance_id = raw.get("instance_id")
         field_name = raw.get("field_name")
         snippet = raw.get("supporting_snippet") or ""
+        # Field lineage is CHUNK lineage (element_uid → chunk), not prose.
+        # A row with a resolvable chunk anchor (element_uid or self_refs) is
+        # USEFUL even with an empty supporting_snippet — the service emits
+        # such rows in real runs. Only drop a row when it carries NEITHER a
+        # snippet NOR any chunk anchor (truly useless). instance_id +
+        # field_name remain genuinely required.
+        raw_element_uid = raw.get("element_uid")
+        has_element_uid = isinstance(raw_element_uid, str) and bool(raw_element_uid)
+        raw_self_refs = raw.get("self_refs")
+        has_self_refs = isinstance(raw_self_refs, list) and bool(raw_self_refs)
         if not (isinstance(instance_id, str) and instance_id
                 and isinstance(field_name, str) and field_name
-                and snippet):
+                and (snippet or has_element_uid or has_self_refs)):
             logger.warning(
                 "_parse_pass_response: dropping field_provenance row missing required fields: %r",
                 raw,
@@ -3563,6 +4858,25 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         fe_document_id = raw.get("document_id")
         if fe_document_id is not None and not isinstance(fe_document_id, str):
             fe_document_id = None
+        # Task 3: carry the POSITIONAL lineage LISTS on field evidence.
+        # BACK-COMPAT mirrors the entity-provenance path: when the
+        # response is scalar-only, derive self_refs from element_uid and
+        # chunk_indexes from the scalar chunk_index (if present).
+        fe_chunk_index = raw.get("chunk_index")
+        if fe_chunk_index is not None and not isinstance(fe_chunk_index, int):
+            fe_chunk_index = None
+        if "self_refs" in raw:
+            fe_self_refs = raw.get("self_refs") or []
+            if not isinstance(fe_self_refs, list):
+                fe_self_refs = []
+        else:
+            fe_self_refs = [element_uid] if element_uid else []
+        if "chunk_indexes" in raw:
+            fe_chunk_indexes = raw.get("chunk_indexes") or []
+            if not isinstance(fe_chunk_indexes, list):
+                fe_chunk_indexes = []
+        else:
+            fe_chunk_indexes = [fe_chunk_index] if fe_chunk_index is not None else []
         row = FieldEvidenceRow(
             chunk_id=None,  # resolved later from element_uid → chunk vertex
             snippet=snippet,
@@ -3571,6 +4885,8 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             evidence_id=evidence_id,
             page=fe_page,
             document_id=fe_document_id,
+            self_refs=fe_self_refs,
+            chunk_indexes=fe_chunk_indexes,
         )
         field_evidence.setdefault(instance_id, {}).setdefault(field_name, []).append(row)
 
@@ -3619,10 +4935,18 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         rp_snippet = raw.get("supporting_snippet")
         if rp_snippet is not None and not isinstance(rp_snippet, str):
             rp_snippet = None
+        rp_from_ref_id = raw.get("from_ref_id")
+        if rp_from_ref_id is not None and not isinstance(rp_from_ref_id, str):
+            rp_from_ref_id = None
+        rp_to_ref_id = raw.get("to_ref_id")
+        if rp_to_ref_id is not None and not isinstance(rp_to_ref_id, str):
+            rp_to_ref_id = None
         relationship_provenance_rows.append(ExtractionRelationshipProvenance(
             relationship_type=rel_type,
             source_instance_id=raw.get("source_instance_id"),
             target_instance_id=raw.get("target_instance_id"),
+            from_ref_id=rp_from_ref_id,
+            to_ref_id=rp_to_ref_id,
             evidence_ids=rp_evidence_ids,
             self_refs=rp_self_refs,
             page_numbers=rp_page_numbers,
@@ -4009,6 +5333,39 @@ def _endpoint_types_for_rel_types(
             if tgt:
                 endpoint_types.add(tgt)
     return endpoint_types
+
+
+def _build_upstream_refs_for_pass_result(
+    pass_def,
+    selected_refs: dict,
+    ontology: dict,
+    document_id: str,
+) -> dict:
+    """Build the LogicalIdentity dict for ``PassResult.upstream_refs``.
+
+    Keyed by the original ``ref_id`` (e.g. ``E001``) — matches what the
+    prompt's ``REF=E001`` anchors told the LLM. The merge resolver then
+    translates these pre-merge identities to their post-canonicalization
+    identities via the ``identity_aliases`` map built in
+    ``merge_and_resolve`` (handles cross-pass identity rewriting cleanly).
+
+    Used by both ``_execute_pass_attempt`` (live request path) and
+    ``_rehydrate_pass_result`` (merge-time rehydrate path) so both produce
+    identical upstream_refs.
+    """
+    from app.services.extraction_merge import logical_identity_from_dict
+
+    result: dict = {}
+    for ref_id, ref in selected_refs.items():
+        identity = logical_identity_from_dict(
+            ref.entity_type,
+            ref.identity_values or {},
+            ontology,
+            document_id,
+        )
+        if identity is not None:
+            result[ref_id] = identity
+    return result
 
 
 def _select_upstream_refs_for_pass(
@@ -5540,6 +6897,49 @@ def _build_native_chunk_meta(
     }
 
 
+def _build_native_text_chunk_record(
+    meta: dict,
+    text: str,
+    document_id: str,
+    doc_classification,
+    embedding,
+):
+    """Build the ArcadeDB ``TextChunkRecord`` for a native-HybridChunker chunk.
+
+    Extracted from the inline writer so the property set (notably ``chunk_index``
+    — Fix L) is unit-testable in isolation. The ``chunk_index`` MUST be persisted
+    into the vertex properties so the ``self_ref → chunk_id`` bridge's
+    ``ORDER BY chunk_index`` / lowest-index scalar selection works on freshly
+    ingested vertices (pre-Fix-L vertices have NULL chunk_index; see
+    ``_build_self_ref_chunk_map`` for the chunk_id determinism tiebreak that
+    covers them in the interim).
+    """
+    from app.services.graph_store import TextChunkRecord as _TCR
+
+    return _TCR(
+        chunk_id=str(meta["chunk_id"]),
+        text=text,
+        document_id=document_id,
+        properties={
+            "artifact_id": None,
+            # Fix L: persist chunk_index onto the vertex (was NULL on every
+            # existing vertex, making the chunk_index sort a no-op).
+            "chunk_index": meta["chunk_index"],
+            "modality": meta["modality"],
+            "page_number": meta["page_number"],
+            "classification": doc_classification,
+            "page_numbers": meta["page_numbers"],
+            "self_refs": meta["self_refs"],
+            "evidence_ids": meta["evidence_ids"],
+            "section_path": meta.get("section_path"),
+            "headings": meta.get("headings", []),
+            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
+            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
+        },
+        embedding=embedding,
+    )
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
@@ -5728,23 +7128,11 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     )
                     db.execute(stmt)
 
-                    text_chunk_records.append(_TCR(
-                        chunk_id=str(meta["chunk_id"]),
+                    text_chunk_records.append(_build_native_text_chunk_record(
+                        meta=meta,
                         text=text,
                         document_id=document_id,
-                        properties={
-                            "artifact_id": None,
-                            "modality": meta["modality"],
-                            "page_number": meta["page_number"],
-                            "classification": doc_classification,
-                            "page_numbers": meta["page_numbers"],
-                            "self_refs": meta["self_refs"],
-                            "evidence_ids": meta["evidence_ids"],
-                            "section_path": meta.get("section_path"),
-                            "headings": meta.get("headings", []),
-                            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
-                            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
-                        },
+                        doc_classification=doc_classification,
                         embedding=embedding,
                     ))
                     chunks_created += 1
@@ -6629,6 +8017,8 @@ def _save_terminal_pass_output(
     outcome: "PassAttemptOutcome",
     override_status: str | None = None,
     override_diagnostics_extra: dict | None = None,
+    router_diagnostics: dict | None = None,  # VR C.4: rev 8 M7 — merged under diagnostics_json.router
+    chunk_scope: dict | None = None,         # VR C.4: for chunk_scope_applied flag
 ) -> None:
     """Write the single terminal ``pipeline_pass_outputs`` row for this pass.
 
@@ -6640,15 +8030,53 @@ def _save_terminal_pass_output(
     ``outcome.execution_status`` says otherwise (used for retry-exhaustion).
     ``override_diagnostics_extra`` is merged into the diagnostics dict pulled
     from ``raw_response_payload``; used to add ``{"retry_exhausted": True}``.
+    ``router_diagnostics`` is the VR router's raw decision dict; merged into
+    ``diagnostics_json["router"]`` for operator visibility (rev 8 M7 / C4).
 
     IMPORTANT: counts keys from ``_count_pass_output`` are:
       ``primary_entities_extracted``, ``bridge_entities_extracted``,
       ``relationships_extracted``, ``relationships_rejected``
     NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
     """
-    diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
-    if override_diagnostics_extra:
-        diagnostics = {**diagnostics, **override_diagnostics_extra}
+    # P6 success-path payload trim: drop library_log from the persisted
+    # response on COMPLETE outcomes. Saves disk + makes system_links's
+    # _rehydrate_upstream_refs_from_persisted_passes faster. Forensic data
+    # (library_log) is preserved on FAILED / SKIPPED rows. Trimming yields
+    # a shallow-copied payload — outcome.raw_response_payload itself is
+    # untouched, so the post-save logging in main.py still sees the full log.
+    trimmed_payload = _trim_response_for_persistence(outcome)
+    # _build_pass_diagnostics_dict reads from outcome.raw_response_payload —
+    # construct a stand-in outcome view so the diagnostics column also lands
+    # without library_log on COMPLETE. (FAILED/SKIPPED still carry it.)
+    _diag_source_outcome = outcome
+    if trimmed_payload is not outcome.raw_response_payload:
+        # We trimmed; build a minimal proxy carrying only the fields the
+        # helper reads.
+        _diag_source_outcome = type(outcome)(
+            execution_status=outcome.execution_status,
+            skip_reason=outcome.skip_reason,
+            yield_status=outcome.yield_status,
+            pass_result=None,  # not read by _build_pass_diagnostics_dict
+            raw_response_payload=trimmed_payload,
+            counts=None,
+            error=outcome.error,
+            worker_diagnostics=outcome.worker_diagnostics,
+        )
+    diagnostics = _build_pass_diagnostics_dict(
+        _diag_source_outcome, override_extra=override_diagnostics_extra,
+    )
+    # VR C.4 (rev 8 M7): merge router_diagnostics into diagnostics_json.router.
+    # Persists the raw router decision (mode, scores, refs, fallback_reason, …)
+    # for operator visibility.  Backward-compat: when router_diagnostics is None
+    # (identity/required/relationship passes, disabled mode), the "router" key is
+    # omitted entirely so existing callers see no change.
+    if router_diagnostics is not None:
+        router_block = dict(router_diagnostics)
+        router_block["chunk_scope_applied"] = bool(
+            chunk_scope is not None and chunk_scope.get("mode") == "selected_refs"
+        )
+        diagnostics["router"] = router_block
+
     save_pass_output(
         db,
         pipeline_run_id=run_id,
@@ -6658,7 +8086,7 @@ def _save_terminal_pass_output(
         execution_status=override_status or outcome.execution_status,
         skip_reason=outcome.skip_reason,
         yield_status=outcome.yield_status,
-        extract_pass_response=outcome.raw_response_payload or {},
+        extract_pass_response=trimmed_payload or {},
         primary_entities_extracted=(outcome.counts or {}).get("primary_entities_extracted", 0),
         bridge_entities_extracted=(outcome.counts or {}).get("bridge_entities_extracted", 0),
         relationships_extracted=(outcome.counts or {}).get("relationships_extracted", 0),
@@ -6808,22 +8236,89 @@ def _update_summary_stage_run(
         row.error_message = error
 
 
+def _next_entity_pass_to_dispatch(
+    identity_names: list[str],
+    field_names: list[str],
+    terminal_names,
+    in_flight_names,
+) -> str | None:
+    """Pick the next entity pass to dispatch under identity-first, field-gated ordering.
+
+    Selection rule (C8 anchor-channel fix): IDENTITY passes are dispatched first;
+    a FIELD-GROUP pass is only eligible once *every* identity pass is terminal.
+    This guarantees that by the time any field_group pass dispatches, the committed
+    identity-entity names exist in ``pipeline_pass_outputs`` so
+    ``_collect_committed_identity_anchors`` can populate the C8 anchor channel
+    (which is otherwise inert when a field pass dispatches concurrently with an
+    identity pass, before any identity entity is committed).
+
+    Terminality is FAIL-OPEN: ``terminal_names`` is derived from
+    ``mark_phase_terminal`` (state=='completed'), which covers SUCCEEDED +
+    FAILED + SKIPPED.  A FAILED-optional identity pass therefore counts as
+    terminal and does NOT block field passes from proceeding.
+
+    Edge cases:
+      - Zero identity passes → ``all(... for p in [])`` is True → field passes
+        are immediately eligible (no deadlock for identity-less bundles).
+      - All passes terminal/in-flight → returns None (caller dispatches nothing).
+
+    Args:
+        identity_names: identity-phase pass names, in manifest order.
+        field_names: field_group-phase pass names, in manifest order.
+        terminal_names: container of pass names already terminal (membership-tested).
+        in_flight_names: container of pass names currently claimed/dispatched.
+
+    Returns:
+        The next pass name to dispatch (identity preferred, field gated on all
+        identity terminal), or None when nothing is eligible.
+    """
+    identity_all_terminal = all(p in terminal_names for p in identity_names)
+    candidates = (identity_names + field_names) if identity_all_terminal else identity_names
+    return next(
+        (p for p in candidates
+         if p not in terminal_names and p not in in_flight_names),
+        None,
+    )
+
+
 def _try_advance_phase(db, document_id: str, run_id: str) -> None:
-    """Decide whether to dispatch the next entity pass, system_links, or merge.
+    """Dispatch the next pass based on phase ordering (C1.6r — concurrent entity dispatch).
 
     Called by each finishing pass (COMPLETE / SKIPPED / FAILED-optional) so
     the fan-in automatically advances to the next stage without a separate
     coordinator task.
 
+    Phases are declared on each ``PassManifest`` (``phase: identity |
+    field_group | relationship``).  C1.6r removes the strict identity-first
+    serialization that was the C4a roster-dependency requirement.  C4a is
+    deferred indefinitely (rev 5 Q4); VR uses schema-derived queries that do
+    not require identity-pass output as an input.  Removing the hard gate
+    lets identity and field_group passes share the per-document concurrency
+    budget without serialization overhead.
+
     Three mutually exclusive branches (return after the first successful
     dispatch so we do exactly one dispatch per finisher):
 
-    1. If in-flight entity passes < concurrency cap → dispatch the next
-       not-yet-dispatched entity pass.
-    2. If all entity passes resolved AND the bundle defines system_links AND
-       system_links not yet dispatched → dispatch system_links.
-    3. If system_links resolved (or bundle has no system_links and all entity
-       passes are terminal) AND merge not yet dispatched → dispatch merge.
+    1. **Entity (identity + field_group)** — while in-flight entity passes <
+       cap AND any identity or field_group pass not yet dispatched/terminal:
+       dispatch the next un-started entity pass.  Identity passes appear
+       before field_group in ``all_entity_passes`` (manifest order is
+       preserved), so identity slots are filled first when cap space is
+       available, but identity completion is NOT a hard gate on field_group
+       dispatch.
+       If no field_group passes exist in the bundle, identity-only bundles
+       work unchanged (back-compat).
+    2. **Relationship / system_links** — ONLY after ALL entity passes
+       (identity ∪ field_group) terminalize.  Dispatch system_links if
+       present and not yet dispatched.  system_links is never narrowed by the
+       vector router regardless of VECTOR_ROUTER_MODE (explicit short-circuit
+       in _claim_and_dispatch_pass, preserved from rev 9 H1).
+    3. **Merge** — ONLY after system_links terminalizes (or after all entity
+       passes if no system_links exists).  Dispatch merge via
+       ``celery_app.send_task`` (forward-reference safe).
+
+    ``_claim_and_dispatch_pass`` remains the single dispatch chokepoint for
+    all per-pass Celery dispatches.
 
     Forward reference: ``derive_ontology_graph_merge`` is defined later in
     this module (Task 6).  We use ``celery_app.send_task(...)`` with the
@@ -6851,57 +8346,135 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     db.refresh(run, ["dispatched_phases"])
 
     manifest = load_bundle_manifest(run.ontology_bundle_key)
-    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
 
-    # Branch 1: dispatch next entity pass if cap allows.
-    in_flight = sum(
-        1 for k, v in (run.dispatched_phases or {}).items()
-        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    # Partition passes by explicit phase field (C1.6).
+    identity_passes = [p.name for p in manifest.passes if p.phase == "identity"]
+    field_group_passes = [p.name for p in manifest.passes if p.phase == "field_group"]
+    has_system_links = any(
+        p.name == "system_links" and p.phase == "relationship"
+        for p in manifest.passes
     )
-    if in_flight < settings.pass_concurrency_per_document:
-        completed_or_terminal = {
-            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
-            if k.startswith("entity_pass_") and v.get("state") == "completed"
-        }
-        in_flight_names = {
-            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
-            if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
-        }
-        next_pass = next(
-            (p for p in entity_passes
-             if p not in completed_or_terminal and p not in in_flight_names),
-            None,
-        )
-        if next_pass is not None:
-            _claim_and_dispatch_pass(db, document_id, run_id, next_pass)
-            return  # one dispatch per finisher
 
-    # Branch 2: dispatch system_links if all entity passes resolved AND
-    # the bundle defines a system_links pass (not all bundles do — guard
-    # against StopIteration in the per-pass task body).
-    n_resolved = count_terminal_passes(db, run_id, entity_passes)
-    has_system_links = any(p.name == "system_links" for p in manifest.passes)
-    if n_resolved >= len(entity_passes) and has_system_links:
+    # Build a pass_name → PassManifest lookup for VR wiring in _claim_and_dispatch_pass.
+    _pass_def_by_name = {p.name: p for p in manifest.passes}
+
+    # Combined entity passes: identity first (manifest order), then field_group.
+    # Identity entries appear before field_group in the list.  C8 anchor fix:
+    # field_group dispatch is now HARD-GATED on ALL identity passes being
+    # terminal (see _next_entity_pass_to_dispatch) so the committed-identity
+    # anchor channel is live by the time any field pass dispatches.
+    all_entity_passes = identity_passes + field_group_passes
+
+    # Shared helper: names of all entity passes (identity + field_group) that are
+    # TERMINAL or in-flight, derived from dispatched_phases. "terminal" here means
+    # mark_phase_terminal was called — covers SUCCEEDED + FAILED + SKIPPED, because
+    # mark_phase_terminal always writes state='completed' regardless of `result`.
+    # See run_phase_dispatch.py:mark_phase_terminal.
+    dp = run.dispatched_phases or {}
+    terminal_entity_names = {
+        k.removeprefix("entity_pass_") for k, v in dp.items()
+        if k.startswith("entity_pass_") and v.get("state") == "completed"
+    }
+    in_flight_entity_names = {
+        k.removeprefix("entity_pass_") for k, v in dp.items()
+        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    }
+    in_flight = len(in_flight_entity_names)
+
+    # ------------------------------------------------------------------
+    # Branch 1 — Entity (identity + field_group): dispatch next un-started
+    # entity pass within the per-document concurrency budget.
+    # Identity passes are dispatched first; a field_group pass is only eligible
+    # once ALL identity passes are terminal (C8 anchor-channel fix — see
+    # _next_entity_pass_to_dispatch).  FAIL-OPEN: a FAILED identity pass is in
+    # terminal_entity_names (mark_phase_terminal writes state='completed') so it
+    # still unblocks field passes.  Zero identity passes → field eligible at once.
+    # ------------------------------------------------------------------
+    # Loop-dispatch up to the per-document concurrency cap.  (Was: one dispatch
+    # per finisher — which collapsed field-pass concurrency to 1.  Once the
+    # identity gate opened, only the LAST identity finisher dispatched a single
+    # field pass and the freed cap slots were never refilled, so the field
+    # passes ran strictly serially.)  Filling the cap restores cap-wide
+    # concurrency for BOTH the identity wave and the field passes.  The gate is
+    # UNCHANGED: _next_entity_pass_to_dispatch still withholds every field pass
+    # until ALL identity passes are terminal, so both identity passes finish
+    # before any field pass starts.  Mirrors the initial-wave loop in the
+    # dispatcher.  claim_phase makes each dispatch atomic (lost claims no-op), so
+    # concurrent finishers cannot exceed the cap.
+    _local_in_flight = set(in_flight_entity_names)
+    _dispatched_any = False
+    while len(_local_in_flight) < settings.pass_concurrency_per_document:
+        next_entity = _next_entity_pass_to_dispatch(
+            identity_passes,
+            field_group_passes,
+            terminal_entity_names,
+            _local_in_flight,
+        )
+        if next_entity is None:
+            break
+        # IMPORTANT #1 (rev 18): read vr_index_built from PipelineRun.metrics to
+        # propagate the build result to _claim_and_dispatch_pass.  Refresh metrics
+        # from DB (may have been written by the initial dispatcher on a different
+        # session).  Default True (build succeeded) when absent — safe fail-open:
+        # if the endpoint is unavailable the HTTP call fail-opens via
+        # _call_chunk_scope_endpoint's try/except.
+        db.expire(run, ["metrics"])
+        db.refresh(run, ["metrics"])
+        _vr_index_built = (run.metrics or {}).get("vr_index_built", True)
+        _claim_and_dispatch_pass(
+            db, document_id, run_id, next_entity,
+            pass_def=_pass_def_by_name.get(next_entity),
+            bundle_key=run.ontology_bundle_key,
+            build_index_failed=not _vr_index_built,
+        )
+        _local_in_flight.add(next_entity)
+        _dispatched_any = True
+    if _dispatched_any:
+        return  # dispatched to fill the cap
+
+    # Guard: ALL entity passes (identity ∪ field_group) must be terminal
+    # (any of SUCCEEDED/FAILED/SKIPPED) before relationship dispatch.
+    # terminal_entity_names captures all three — mark_phase_terminal writes
+    # state='completed' for each.  A FAILED-optional entity pass (any phase)
+    # counts as terminal and does NOT block Branch 2.
+    # (Required identity-pass failures raise IngestFailed before
+    # _try_advance_phase is called, so the FAILED-required path is not
+    # exercised here.)
+    entity_all_terminal = all(p in terminal_entity_names for p in all_entity_passes)
+    if not entity_all_terminal:
+        return  # entity passes still in-flight or undispatched; hold branches 2/3
+
+    # ------------------------------------------------------------------
+    # Branch 2 — Relationship / system_links (only after ALL entity passes —
+    # identity ∪ field_group — terminalize).
+    # system_links is never narrowed by the vector router regardless of
+    # VECTOR_ROUTER_MODE (see rev 9 H1 architecture; short-circuit preserved
+    # in _claim_and_dispatch_pass via phase != "field_group" short-circuit).
+    # ------------------------------------------------------------------
+    if has_system_links:
         sl_state = read_phase_state(db, run_id, "system_links")
         if sl_state is None:
             _claim_and_dispatch_pass(db, document_id, run_id, "system_links")
             return
 
-    # Branch 3: dispatch merge if (a) system_links is resolved, OR
-    # (b) the bundle has no system_links and all entity passes are terminal.
+    # ------------------------------------------------------------------
+    # Branch 3 — Merge: dispatch after system_links terminalizes.
     # send_task is used (not .delay) because derive_ontology_graph_merge is
     # defined later in this same file (forward reference). queue="graph" is
     # MANDATORY: without it the message routes to the default "celery" queue
     # where any subscribed worker may grab it. Stale celery processes (e.g.
     # workers started before per-pass-fanin commits) ack-drop with KeyError
     # on the unregistered task name, silently losing the merge dispatch.
+    # ------------------------------------------------------------------
     if has_system_links:
         sl_pass = load_pass_output(db, run_id, "system_links")
         sl_resolved = sl_pass is not None and sl_pass.execution_status in (
             "COMPLETE", "SKIPPED", "FAILED"
         )
     else:
-        sl_resolved = (n_resolved >= len(entity_passes))
+        # No system_links in bundle: resolved when all entity passes terminal.
+        n_all_terminal = count_terminal_passes(db, run_id, all_entity_passes)
+        sl_resolved = (n_all_terminal >= len(all_entity_passes))
 
     if sl_resolved:
         merge_state = read_phase_state(db, run_id, "merge")
@@ -6916,23 +8489,394 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
-def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> None:
+def _collect_committed_identity_anchors(
+    *,
+    db,
+    run_id: str,
+    manifest,
+    ontology: dict,
+    document_id: str,
+) -> list[str]:
+    """Return committed identity-entity NAMES (+ aliases) for the C8 anchor channel.
+
+    Why this exists (C8 wiring gap): during field_group pass dispatch the graph
+    store holds ZERO entity vertices for this run — the ArcadeDB commit happens
+    only in the terminal MERGE phase (``_import_graph_phase_nodes``), AFTER all
+    entity passes terminalize.  So the endpoint's store-side
+    ``identity_anchor_queries`` (``SELECT name FROM <type> WHERE
+    pipeline_run_id``) finds nothing and ``identity_anchor_count`` is always 0.
+    The identity passes DO persist their extracted entities to Postgres
+    (``pipeline_pass_outputs``) the moment they complete, so the worker reads
+    them from there and hands the names to the endpoint as ``identity_anchors``.
+
+    Generalization (guardrail): identity scope is driven entirely off
+    ``phase == "identity"`` passes and their ``primary_entity_types`` (via the
+    same ``_extend_upstream_refs`` walk the relationship pass uses) — NO
+    hardcoded type names or equipment designations.
+
+    Opportunistic + non-blocking: ANY failure (missing/incomplete row, parse
+    error, walk error) is swallowed and contributes nothing; an empty result is
+    the clean no-op that leaves the routing request byte-identical to today.
+
+    Returns a deduplicated list of names; empty when nothing is committed yet.
+    """
+    try:
+        identity_pass_defs = [
+            p for p in manifest.passes
+            if getattr(p, "phase", None) == "identity"
+        ]
+    except Exception:
+        return []
+    if not identity_pass_defs:
+        return []
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name) -> None:
+        if name and isinstance(name, str):
+            key = name.strip()
+            if key and key not in seen:
+                seen.add(key)
+                anchors.append(key)
+
+    for id_pass in identity_pass_defs:
+        try:
+            row = load_pass_output(db, run_id, id_pass.name)
+            if row is None or getattr(row, "execution_status", None) != "COMPLETE":
+                continue
+            pass_result = _parse_pass_response(
+                row.extract_pass_response_json, id_pass, manifest
+            )
+            pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+                pass_result, id_pass, ontology, document_id,
+            )
+            refs: dict = {}
+            _extend_upstream_refs(refs, pass_result, id_pass, ontology)
+            for ref in refs.values():
+                _add(getattr(ref, "display_label", None))
+                for alias in (getattr(ref, "aliases", None) or []):
+                    _add(alias)
+        except Exception as exc:
+            logger.debug(
+                "C8 anchors: collecting identity names from pass=%s run=%s "
+                "raised %r — skipping pass",
+                getattr(id_pass, "name", "?"), run_id, exc,
+            )
+            continue
+
+    return anchors
+
+
+def _call_chunk_scope_endpoint(
+    pipeline_run_id: str,
+    bundle_key: str,
+    pass_name: str,
+    internal_api_base_url: str,
+    identity_anchors: list[str] | None = None,
+) -> dict | None:
+    """HTTP POST /v1/extraction/chunk-scope — sync call from worker via httpx.
+
+    Returns the parsed JSON response dict on success, or None on any error
+    (timeout, connection refused, HTTP 4xx/5xx).  Errors are logged at WARNING.
+    The caller applies fail-open semantics on None.
+
+    Timeout: configurable via VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S (default 10s).
+    The endpoint embeds a query and runs rerank; 10s is generous for a single
+    pass but not so long it stalls the dispatch loop.
+
+    ``identity_anchors`` (C8): committed identity-entity names the worker fetched
+    for this run.  Forwarded ONLY when non-empty so the request body stays
+    byte-identical to the pre-C8 shape when there are no anchors.
+    """
+    url = f"{internal_api_base_url.rstrip('/')}/v1/extraction/chunk-scope"
+    request_body = {
+        "pipeline_run_id": pipeline_run_id,
+        "bundle_key": bundle_key,
+        "pass_name": pass_name,
+    }
+    # Only include identity_anchors when we actually have some — keeps the body
+    # unchanged for passes/runs with no upstream identities (clean no-op).
+    if identity_anchors:
+        request_body["identity_anchors"] = identity_anchors
+    try:
+        with httpx.Client(timeout=settings.vector_router_chunk_scope_timeout_s) as client:
+            response = client.post(url, json=request_body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        logger.warning(
+            "VR: chunk-scope endpoint failed for run=%s pass=%s: %r "
+            "— falling back to RUN_FULL",
+            pipeline_run_id, pass_name, exc,
+        )
+        return None
+
+
+def _compute_effective_chunk_scope(
+    router_response: dict | None,
+    mode: str,
+) -> tuple[dict | None, dict]:
+    """Compute (effective_chunk_scope, router_diagnostics) per rev 10 H2.
+
+    ``router_response`` is the parsed /v1/extraction/chunk-scope JSON, or None
+    when the endpoint call failed (HTTP error, timeout, etc.).
+
+    Returns:
+      effective_chunk_scope: dict passed to the per-pass Celery task, or None
+        (worker applies full doc when None).
+      router_diagnostics: dict merged into pipeline_pass_outputs.diagnostics_json
+        for operator visibility.
+    """
+    if router_response is None:
+        # HTTP error / timeout path
+        return None, {"http_error": "endpoint_unavailable", "fallback_reason": "endpoint_unavailable"}
+
+    # Flatten diagnostics from the response envelope
+    diag = dict(router_response.get("diagnostics") or {})
+    resp_mode = router_response.get("mode", "full")
+    self_refs = router_response.get("self_refs") or []
+    raw_text_by_ref = router_response.get("text_by_ref") or {}
+    text_by_ref = (
+        {k: v for k, v in raw_text_by_ref.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_text_by_ref, dict)
+        else {}
+    )
+
+    if mode == "disabled":
+        effective_chunk_scope = None
+    elif mode == "shadow":
+        # NEVER narrow in shadow — always full-doc dispatch
+        effective_chunk_scope = None
+        diag["shadow_skipped_narrowing"] = (resp_mode == "selected_refs")
+    elif mode == "narrow_only":
+        if resp_mode == "empty_selection":
+            # absolute_union true chunk selection returned 0 chunks. This is a
+            # LEGITIMATE zero (no appropriate content) — extract nothing for this
+            # pass (-> ZERO_YIELD in finalization), NEVER full-doc. Wins over the
+            # degraded/small-doc fall-opens below: the user requires that 0 stays 0
+            # even on small docs ("true chunk selection").
+            effective_chunk_scope = {"mode": "empty_selection", "self_refs": []}
+            diag["empty_selection"] = True
+        elif diag.get("fallback_level") == "degraded":
+            # Recall-safety guard (2026-06-21): the E2 fallback ladder exhausted all
+            # rungs and proceeded with a STARVED pool (coverage low, no gate floor —
+            # gate_unit_keeps=0). Narrowing to those self_refs drops recall, because
+            # the gates can't protect positives that never made it into the starved
+            # pool (observed on small docs: V-75 1866 tokens → 3-chunk/81-token pool →
+            # missile_guidance 6->1, radar_power_rf failed). Fall open to full-doc;
+            # small docs are cheap to run whole and the recall floor is preserved.
+            # The endpoint still reports mode=selected_refs + fallback_level=degraded
+            # for A/B analytics — only the worker's extraction SCOPE falls open.
+            effective_chunk_scope = None
+            diag["fail_open_reason"] = "degraded_fallback_no_gate_floor"
+        elif (
+            resp_mode == "selected_refs"
+            and self_refs
+            and settings.narrow_min_doc_tokens
+            and isinstance(diag.get("full_doc_token_estimate"), (int, float))
+            and diag["full_doc_token_estimate"] < settings.narrow_min_doc_tokens
+        ):
+            # Recall-safety gate (2026-06-21): narrowing only earns wall-time on
+            # LARGE documents. A small doc is cheap to extract whole, so narrowing
+            # it is all recall-risk for negligible savings. Observed: NMUSAF
+            # (3,459 tokens, a mostly-image museum page) lost 33% recall when
+            # narrowed (24->16 entities) — its sparse text spread entities across
+            # chunks the narrowed set dropped, and one pass hard-FAILED on an
+            # empty narrowed pool; SA-2/SR-71 (7,118 tokens) held recall. Fall open
+            # to full-doc below settings.narrow_min_doc_tokens. The endpoint still
+            # reports mode=selected_refs for A/B analytics — only the worker's
+            # extraction SCOPE falls open. (degraded is checked first above, so it
+            # keeps its own reason when both apply.)
+            effective_chunk_scope = None
+            diag["fail_open_reason"] = "small_doc_no_narrow_benefit"
+            diag["narrow_min_doc_tokens"] = settings.narrow_min_doc_tokens
+        elif resp_mode == "selected_refs" and self_refs:
+            effective_chunk_scope = {
+                "mode": "selected_refs",
+                "self_refs": self_refs,
+            }
+            if text_by_ref:
+                effective_chunk_scope["text_by_ref"] = {
+                    ref: text_by_ref[ref]
+                    for ref in self_refs
+                    if ref in text_by_ref
+                }
+            # Phase 2 Task 11: forward router's merged chunks verbatim when
+            # merged-mode is active and the router returned them. docling-graph
+            # bypasses its own chunker when selected_chunks is present in the
+            # request (Task 0b receiver-side), giving byte-identical chunk text
+            # from index → router → LLM.
+            if settings.extraction_index_mode == "merged":
+                if not settings.worker_forward_selected_chunks:
+                    # Phase 2 kill-switch (worker_forward_selected_chunks=False):
+                    # do NOT forward verbatim merged chunks. The worker falls
+                    # back to the scoped-document path so docling-graph runs its
+                    # pass-aware sanitize + table-normalization + re-chunking
+                    # (main.py:658/717) — recovers recall on table-heavy docs.
+                    # self_refs above still narrow the scope.
+                    diag["selected_chunks_forwarded"] = False
+                    diag["selected_chunks_forwarded_count"] = 0
+                    diag["selected_chunks_forward_disabled"] = True
+                else:
+                    resp_selected_chunks = router_response.get("selected_chunks")
+                    if isinstance(resp_selected_chunks, list) and resp_selected_chunks:
+                        effective_chunk_scope["selected_chunks"] = resp_selected_chunks
+                        diag["selected_chunks_forwarded"] = True
+                        diag["selected_chunks_forwarded_count"] = len(resp_selected_chunks)
+                    else:
+                        diag["selected_chunks_forwarded"] = False
+                        diag["selected_chunks_forwarded_count"] = 0
+
+            # Tasks F2+F4: forward field_subset from the router response.
+            # NOT gated by WORKER_FORWARD_SELECTED_CHUNKS — this is a separate
+            # feature. Forward whenever the response carries a non-empty list.
+            # When None or empty → omit from chunk_scope (no-op default).
+            _resp_field_subset = router_response.get("field_subset")
+            if isinstance(_resp_field_subset, list) and _resp_field_subset:
+                effective_chunk_scope["field_subset"] = _resp_field_subset
+        else:
+            effective_chunk_scope = None
+            if resp_mode == "would_skip":
+                diag["fail_open_reason"] = "would_skip_in_narrow_only_mode"
+    else:
+        # Unknown mode (should not happen — config validation guards this)
+        effective_chunk_scope = None
+
+    return effective_chunk_scope, diag
+
+
+def _claim_and_dispatch_pass(
+    db,
+    document_id: str,
+    run_id: str,
+    pass_name: str,
+    queued_counter: dict[str, int] | None = None,
+    # VR C.4: per-pass vector-router state passed from the dispatcher
+    pass_def=None,             # PassManifest entry — needed for phase check
+    bundle_key: str | None = None,  # needed for endpoint call
+    build_index_failed: bool = False,  # when True, skip router for this run
+) -> bool:
     """Claim a phase slot and dispatch the corresponding Celery task.
 
     Used by both the initial dispatcher (Task 8) and the follow-up dispatch in
     ``_try_advance_phase``.  Pattern: claim_phase → .delay() → mark_phase_dispatched.
     If the claim fails (another worker won), returns without dispatching.
 
+    Returns True when dispatched, False when the claim race was lost to another
+    worker.  The dispatcher (derive_ontology_graph) passes a mutable
+    ``queued_counter`` dict; the counter is incremented immediately after
+    ``.delay()`` returns and BEFORE the bookkeeping writes.  This ensures that
+    if bookkeeping raises the caller's except handler still sees the correct
+    queued count and does NOT terminalize the pipeline_run (Fix 1, C1.5 review).
+    The advance-phase callers (``_try_advance_phase``) pass no counter
+    (default None) — a race loss there is not a problem since the winning worker
+    will dispatch.
+
+    VR C.4 (rev 10 H2): when pass_def is provided and the index was built
+    successfully, calls the /v1/extraction/chunk-scope endpoint for field_group
+    passes and computes effective_chunk_scope per VECTOR_ROUTER_MODE.
+    Identity, required, and relationship passes are short-circuited (no HTTP
+    call; effective_chunk_scope=None always).
+
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
     stale-claim threshold (``phase_claim_stale_seconds``).
     """
+    # --- VR C.4: compute effective_chunk_scope for this pass ---
+    effective_chunk_scope: dict | None = None
+    router_diagnostics: dict | None = None
+
+    if pass_def is not None and bundle_key:
+        _vr_mode = settings.vector_router_mode
+        _is_routable = (
+            not build_index_failed
+            and _vr_mode != "disabled"
+            and getattr(pass_def, "phase", None) == "field_group"
+            and not getattr(pass_def, "required", False)
+        )
+
+        if _is_routable:
+            # C8: fetch committed identity-entity names for this run and deliver
+            # them as anchors so the endpoint's identity-anchor channel fires.
+            # (The graph store has no entity vertices yet — merge runs later —
+            # so the endpoint's own store query would find nothing; the names
+            # live in the identity passes' persisted Postgres outputs.)
+            # Driven off identity-phase passes via the manifest (generalized).
+            # Wrapped so a fetch failure never blocks dispatch.
+            _identity_anchors: list[str] = []
+            try:
+                _vr_manifest = load_bundle_manifest(bundle_key)
+                _vr_ontology = load_ontology(bundle_key=bundle_key)
+                _identity_anchors = _collect_committed_identity_anchors(
+                    db=db,
+                    run_id=run_id,
+                    manifest=_vr_manifest,
+                    ontology=_vr_ontology,
+                    document_id=document_id,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "C8 anchors: pre-dispatch fetch failed for run=%s pass=%s: %r "
+                    "— routing without anchors",
+                    run_id, pass_name, exc,
+                )
+                _identity_anchors = []
+
+            router_response = _call_chunk_scope_endpoint(
+                pipeline_run_id=run_id,
+                bundle_key=bundle_key,
+                pass_name=pass_name,
+                internal_api_base_url=settings.internal_api_base_url,
+                identity_anchors=_identity_anchors,
+            )
+            effective_chunk_scope, router_diagnostics = _compute_effective_chunk_scope(
+                router_response, _vr_mode
+            )
+            # Rev 10 M8 / MINOR #2: log WARNING when narrowing ratio > 80%.
+            # Warns when narrowing yields >80% of full-doc tokens — indicates the
+            # threshold is too generous OR the document is dominated by relevant
+            # content (normal for dense spec docs). Pass still dispatched with the
+            # narrowed scope regardless; this is diagnostic only.
+            if (
+                effective_chunk_scope is not None
+                and router_diagnostics is not None
+            ):
+                selected_tok = (router_diagnostics.get("selected_token_estimate") or 0)
+                full_tok = (router_diagnostics.get("full_doc_token_estimate") or 0)
+                if full_tok > 0 and selected_tok / full_tok > 0.80:
+                    logger.warning(
+                        "VR: narrowing INEFFECTIVE for run=%s pass=%s "
+                        "(selected_tokens=%d / full_doc_tokens=%d = %.0f%%); "
+                        "threshold may be too generous",
+                        run_id, pass_name, selected_tok, full_tok,
+                        100.0 * selected_tok / full_tok,
+                    )
+        else:
+            # Short-circuit: identity / relationship / disabled / build_failed
+            effective_chunk_scope = None
+            if build_index_failed and _vr_mode != "disabled":
+                router_diagnostics = {
+                    "fallback_reason": "index_build_failed",
+                    "skipped": True,
+                }
+    # --- end VR C.4 ---
+
     phase_key = _phase_key(pass_name)
     if not claim_phase(db, run_id, phase_key):
-        return  # another worker won the claim
-    async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
+        return False  # another worker won the claim
+    async_result = derive_ontology_graph_pass.delay(
+        document_id, run_id, pass_name,
+        chunk_scope=effective_chunk_scope,
+        router_diagnostics=router_diagnostics,
+    )
+    # Increment the counter BEFORE bookkeeping so a bookkeeping failure does not
+    # leave the caller thinking zero passes were queued (Fix 1).
+    if queued_counter is not None:
+        queued_counter["n"] = int(queued_counter.get("n", 0)) + 1
     mark_phase_dispatched(db, run_id, phase_key, async_result.id)
     db.commit()
+    return True
 
 
 @celery_app.task(
@@ -6945,7 +8889,12 @@ def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) 
 )
 @guard_stage_run("derive_ontology_graph_pass")
 def derive_ontology_graph_pass(
-    self, document_id: str, run_id: str, pass_name: str,
+    self,
+    document_id: str,
+    run_id: str,
+    pass_name: str,
+    chunk_scope: dict | None = None,       # VR C.4 rev 10 M7: backward-compat default=None
+    router_diagnostics: dict | None = None, # VR C.4 rev 8 M7: backward-compat default=None
 ) -> dict:
     """One Celery task per pass attempt. Celery is the retry boundary.
 
@@ -6996,7 +8945,90 @@ def derive_ontology_graph_pass(
         manifest = load_bundle_manifest(bundle_key)
         ontology = load_ontology(bundle_key=bundle_key)
         pass_def = next(p for p in manifest.passes if p.name == pass_name)
+        # C0 telemetry: measure docling_document.json MinIO load time. Owned by
+        # the caller (this scope) because _execute_pass_attempt receives the
+        # pre-loaded doc_json and can't see the load itself.
+        _doc_load_t0 = time.perf_counter()
         doc_json = _build_docling_document_json(document_id)
+        _doc_json_load_ms = (time.perf_counter() - _doc_load_t0) * 1000.0
+
+        # C.10: apply v2 quality filter to ALL passes (identity, field_group,
+        # system_links). The filter is idempotent — narrowed passes pre-process
+        # the same doc shape that was already filtered at index build time;
+        # non-narrowed passes see the filter for the first time here.
+        try:
+            from app.services.scoped_docling_document import filter_docling_document
+            doc_json, _filter_diag = filter_docling_document(doc_json)
+            logger.info(
+                "VR: filter_docling_document (per-pass) run=%s pass=%s texts_in=%d "
+                "blanked=%d (short=%d dedup=%d after_strip=%d) stripped_in_place=%d "
+                "protected_labels=%d",
+                run_id, pass_name,
+                _filter_diag.texts_in,
+                _filter_diag.blanked_short + _filter_diag.blanked_dedup + _filter_diag.blanked_after_strip,
+                _filter_diag.blanked_short,
+                _filter_diag.blanked_dedup,
+                _filter_diag.blanked_after_strip,
+                _filter_diag.stripped_in_place,
+                _filter_diag.protected_labels,
+            )
+            # Initialize router_diagnostics to {} if currently None so doc_filter
+            # always lands in DB diagnostics — identity and other non-narrowed
+            # passes have router_diagnostics=None by default (line 7354) and
+            # would otherwise lose this signal silently.
+            if router_diagnostics is None:
+                router_diagnostics = {}
+            else:
+                router_diagnostics = dict(router_diagnostics)
+            router_diagnostics["doc_filter"] = {
+                "texts_in": _filter_diag.texts_in,
+                "blanked_short": _filter_diag.blanked_short,
+                "blanked_dedup": _filter_diag.blanked_dedup,
+                "blanked_after_strip": _filter_diag.blanked_after_strip,
+                "stripped_in_place": _filter_diag.stripped_in_place,
+                "protected_labels": _filter_diag.protected_labels,
+            }
+        except Exception as exc:
+            # Fail-open: a malformed doc must not terminalize the pass.
+            # Proceed with the unfiltered doc.
+            logger.warning(
+                "VR: filter_docling_document (per-pass) FAILED run=%s pass=%s: %r "
+                "— proceeding with unfiltered doc",
+                run_id, pass_name, exc,
+            )
+            if router_diagnostics is None:
+                router_diagnostics = {}
+            else:
+                router_diagnostics = dict(router_diagnostics)
+            router_diagnostics["doc_filter"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # VR C.4 rev 9 H1 + rev 10 H2: apply chunk scope INSIDE the per-pass
+        # task body, AFTER loading the full doc from MinIO.  The scoped doc is
+        # built worker-side; only the small chunk_scope dict (kilobytes) crosses
+        # the Celery broker.  Old tasks queued before this commit arrive with
+        # chunk_scope=None → full-doc path (backward-compat, rev 10 M7).
+        if chunk_scope is not None and chunk_scope.get("mode") == "selected_refs":
+            try:
+                from app.services.scoped_docling_document import apply_chunk_scope
+                doc_json = apply_chunk_scope(doc_json, chunk_scope)
+                logger.info(
+                    "VR: applied chunk_scope for run=%s pass=%s — %d selected refs",
+                    run_id, pass_name, len(chunk_scope.get("self_refs") or []),
+                )
+            except Exception as exc:
+                # apply_chunk_scope failure is non-retryable at this layer —
+                # fall back to full doc and log WARNING so the operator sees it.
+                logger.warning(
+                    "VR: apply_chunk_scope FAILED for run=%s pass=%s: %r "
+                    "— proceeding with full doc",
+                    run_id, pass_name, exc,
+                )
+                if router_diagnostics is not None:
+                    router_diagnostics = dict(router_diagnostics)
+                    router_diagnostics["apply_chunk_scope_error"] = str(exc)
+                else:
+                    router_diagnostics = {"apply_chunk_scope_error": str(exc)}
+
         upstream_refs = _rehydrate_upstream_refs_from_persisted_passes(
             db, run_id, pass_def, manifest, ontology, document_id,
         )
@@ -7011,6 +9043,8 @@ def derive_ontology_graph_pass(
             doc_json=doc_json,
             upstream_refs=upstream_refs,
             document_id=document_id,
+            caller_worker_diag={"doc_json_load_ms": _doc_json_load_ms},
+            chunk_scope=chunk_scope,  # Phase 2 Task 11: forward router's selected_chunks
         )
 
         # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).
@@ -7044,6 +9078,8 @@ def derive_ontology_graph_pass(
                 pass_name=pass_name,
                 attempt=attempt_n,
                 outcome=outcome,
+                router_diagnostics=router_diagnostics,  # VR C.4
+                chunk_scope=chunk_scope,                 # VR C.4
             )
             db.commit()
             mark_phase_terminal(
@@ -7088,6 +9124,8 @@ def derive_ontology_graph_pass(
             outcome=outcome,
             override_status="FAILED",
             override_diagnostics_extra={"retry_exhausted": is_retryable},
+            router_diagnostics=router_diagnostics,  # VR C.4
+            chunk_scope=chunk_scope,                 # VR C.4
         )
         db.commit()
         mark_phase_terminal(db, run_id, _phase_key(pass_name), result="failed")
@@ -7161,6 +9199,9 @@ def _assert_stage_run_pass_output_consistency(db, run_id) -> None:
 
 def _rehydrate_pass_result(
     row: "PipelinePassOutput", manifest, ontology, document_id: str,
+    *,
+    db=None,
+    run_id: str | None = None,
 ):
     """Rebuild a PassResult from a persisted pipeline_pass_outputs row.
 
@@ -7168,6 +9209,20 @@ def _rehydrate_pass_result(
     rehydrated PassResult is structurally identical to one built in-process.
     Then attaches pre_merge_walk via _build_pre_merge_walk_summary so
     classify_yield and merge_and_resolve work as if the pass had just run.
+
+    For ``document_plus_entity_refs`` passes (system_links et al.),
+    ``upstream_refs`` MUST be rehydrated so merge_and_resolve can resolve
+    ``from_ref_id`` / ``to_ref_id`` against ``PassResult.upstream_refs``.
+    Without this, every cross-pass relationship rejects with UNKNOWN_REF_ID
+    (bug #59 — silently dropped every system_links commit from at least
+    2026-05-23 onward). When ``db`` is provided, this function calls
+    ``_rehydrate_upstream_refs_from_persisted_passes`` + the same
+    ``_build_upstream_refs_for_pass_result`` helper that
+    ``_execute_pass_attempt`` uses, producing identical upstream_refs on
+    both the live-request and rehydrate paths.
+
+    Pass ``db=None`` when the caller knows the pass is document_only or
+    when wiring is being tested without a live session.
 
     If _parse_pass_response raises PassTerminal (corrupt persisted JSON), let
     it propagate — the merge task's outer except handler catches it before
@@ -7178,12 +9233,18 @@ def _rehydrate_pass_result(
     pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
         pass_result, pass_def, ontology, document_id,
     )
-    # Note: for document_plus_entity_refs passes, upstream_refs is intentionally
-    # not re-attached here — merge_and_resolve does not require it (it resolves
-    # refs by identity_dict / ref_id lookup against pass_result entities). If a
-    # future merge path needs upstream_refs to be present on rehydrated PassResults,
-    # rehydrate them via _select_upstream_refs_for_pass + logical_identity_from_dict
-    # the same way _execute_pass_attempt does.
+    if (
+        db is not None
+        and getattr(pass_def, "input_mode", None) == "document_plus_entity_refs"
+    ):
+        effective_run_id = run_id or str(row.pipeline_run_id)
+        upstream_refs_raw = _rehydrate_upstream_refs_from_persisted_passes(
+            db, effective_run_id, pass_def, manifest, ontology, document_id,
+        )
+        selected = _select_upstream_refs_for_pass(pass_def, upstream_refs_raw, ontology)
+        pass_result.upstream_refs = _build_upstream_refs_for_pass_result(
+            pass_def, selected, ontology, document_id,
+        )
     return pass_result
 
 
@@ -7235,7 +9296,9 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
 
         completed_outputs = load_completed_pass_outputs(db, run_id)
         rehydrated = {
-            row.pass_name: _rehydrate_pass_result(row, manifest, ontology, document_id)
+            row.pass_name: _rehydrate_pass_result(
+                row, manifest, ontology, document_id, db=db, run_id=run_id,
+            )
             for row in completed_outputs.values()
         }
 
@@ -7243,14 +9306,25 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             pass_results=rehydrated, manifest=manifest, ontology=ontology,
             document_id=document_id, pipeline_run_id=run_id,
         )
+        # STRICT lineage gate (Task 2 / spec Component 2C): drop any entity
+        # lacking a resolvable Docling anchor (element_uid + page) and prune
+        # edges that referenced it. Runs RIGHT AFTER merge so yield updates,
+        # metrics, the provenance envelope, and all node/edge import phases
+        # operate on the filtered `merged` — never committing a lineage-less
+        # entity nor leaking it into audit serialization.
+        _lineage_rejected = _partition_entities_by_lineage(merged)
         _apply_post_merge_yield_updates(run_id, merged, manifest)
         _write_pipeline_run_metrics(run_id, merged, manifest)
+        if _lineage_rejected:
+            # AFTER metrics: _write_pipeline_run_metrics REPLACES run.metrics
+            # wholesale, so the rejection signal must be merged in afterward.
+            _record_lineage_rejection(run_id, _lineage_rejected)
 
         provenance_envelope = _build_provenance_envelope(
             document_id, run_id, merged.entities, db,
         )
         identity_to_rid = _import_graph_phase_nodes(
-            merged, ontology, document_id, tracker, provenance_envelope,
+            merged, ontology, document_id, tracker, provenance_envelope, db=db,
         )
         # Collect relationship + entity provenance from all rehydrated pass results.
         # entity_provenance_rows is used by _import_graph_phase_domain_edges to build
@@ -7266,10 +9340,49 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
             for pr in rehydrated.values()
             for row in (getattr(pr, "provenance", None) or [])
         ]
+        # Merge per-pass PassResult.upstream_refs (ref_id → LogicalIdentity,
+        # already rehydrated by _rehydrate_pass_result for the
+        # document_plus_entity_refs passes via the SAME helper the live request
+        # path uses) into one dict. This lets _build_relationship_records resolve
+        # each DTO rel provenance row's from_ref_id/to_ref_id through the SAME
+        # mapping merge_and_resolve used, keying each edge to its OWN precise
+        # (from_identity, rel_type, to_identity) triple instead of the coarse
+        # __rel_type_fallback__ smear. Distinct passes assign disjoint ref_ids
+        # within a run, so this union is collision-free in practice; a conflict
+        # (same ref_id → different identity) is logged but does not raise.
+        merged_upstream_refs: dict = {}
+        for pr in rehydrated.values():
+            for ref_id, identity in (getattr(pr, "upstream_refs", None) or {}).items():
+                existing = merged_upstream_refs.get(ref_id)
+                if existing is not None and existing != identity:
+                    logger.warning(
+                        "derive_ontology_graph_merge: upstream_refs ref_id=%r "
+                        "maps to conflicting identities across passes "
+                        "(%r vs %r); keeping first.", ref_id, existing, identity,
+                    )
+                    continue
+                merged_upstream_refs[ref_id] = identity
+        # Fix N: retract THIS document's prior domain relationship edges BEFORE
+        # re-committing the run's domain edges. _import_graph_phase_domain_edges is
+        # find-or-create — it only re-touches edges this run re-emits, so any prior
+        # edge NOT re-emitted this run would keep its stale lineage and the doc
+        # would re-accumulate stale global edges across narrowed re-runs, breaking
+        # the doc-scoped fail-closed lineage gate. Retracting here makes the
+        # post-run domain-edge population == exactly this run's extraction (every
+        # committed edge re-emitted with fresh lineage on the CREATE branch).
+        _retract_document_domain_edges(merged, ontology, document_id, tracker)
         _import_graph_phase_domain_edges(
             merged, ontology, tracker, provenance_envelope,
             relationship_provenance_rows=all_rel_provenance,
             entity_provenance_rows=all_entity_provenance,
+            db=db, document_id=document_id,
+            upstream_refs=merged_upstream_refs,
+            # identity_aliases is the SAME canonicalization map merge_and_resolve
+            # used to rewrite each MergedEdgeRecord's from/to identities. The
+            # upstream_refs above are the RAW pre-alias identities, so the
+            # per-edge lineage builder must canonicalize them with this map to
+            # match the committed (already-canonicalized) edge keys.
+            identity_aliases=merged.identity_aliases,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(
@@ -7462,6 +9575,27 @@ def _has_pending_retry_for_pass(
     return row.finished_at > cutoff
 
 
+def is_dispatched_phase_progressing(progress_entry: dict | None, now_ts: float, no_progress_s: float) -> bool:
+    """R2: True iff ``progress_entry`` is a dict whose numeric ``updated_at``
+    advanced within no_progress_s of now_ts (i.e. the pass is still making
+    progress).  False otherwise — None / non-dict / missing / non-numeric
+    updated_at — so the caller falls back to absolute age.
+
+    ``progress_entry`` is the per-pass entry the caller extracts from the
+    SUMMARY row's ``metrics['progress'][<pass_name>]``.  Progress is stored on
+    the summary row (pass_name IS NULL) keyed by pass_name because the per-pass
+    StageRun row does NOT exist while a pass is running (it is created only at
+    pass completion by _write_stage_run, from derive_ontology_graph_pass step 5);
+    two concurrent passes share the one summary row, so per-pass keying is
+    required."""
+    if not isinstance(progress_entry, dict):
+        return False
+    updated_at = progress_entry.get("updated_at")
+    if not isinstance(updated_at, (int, float)):
+        return False
+    return (now_ts - float(updated_at)) < no_progress_s
+
+
 @celery_app.task(
     bind=True, queue="graph",
     soft_time_limit=120,
@@ -7483,6 +9617,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
         "promoted_to_terminal": [...],
         "stuck_advances": [...],
         "skipped_pending_retry": [...],
+        "skipped_making_progress": [...],
     }
     """
     from datetime import datetime, timezone, timedelta  # local; matches file's style
@@ -7490,7 +9625,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
     from app.services.run_phase_dispatch import reclaim_stale_phase
 
     stale_claimed_threshold_s = settings.phase_claim_stale_seconds
-    stale_dispatched_threshold_s = 2 * settings.pass_soft_time_limit
+    stale_dispatched_threshold_s = settings.reconciler_stale_dispatched_s
 
     summary: dict = {
         "scanned_runs": 0,
@@ -7499,6 +9634,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
         "promoted_to_terminal": [],
         "stuck_advances": [],
         "skipped_pending_retry": [],
+        "skipped_making_progress": [],
     }
 
     db = _get_db()
@@ -7528,48 +9664,29 @@ def reconcile_ontology_graph_runs(self) -> dict:
                 )
                 continue
 
-            entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+            # C1.6: use explicit phase to partition passes (replaces old
+            # ``not p.depends_on`` heuristic — identity + field_group are
+            # the entity passes; relationship passes are system_links).
+            entity_passes = [
+                p.name for p in manifest.passes if p.phase in ("identity", "field_group")
+            ]
 
             dispatched_phases = run.dispatched_phases or {}
 
             # ----------------------------------------------------------------
-            # Branch 4: stuck-without-advance check (fast path)
-            # All entity passes have terminal pass-output rows but no system_links
-            # or merge phase has been started yet (finisher crashed between
-            # saving the pass-output and calling _try_advance_phase).
-            # ----------------------------------------------------------------
-            n_terminal = count_terminal_passes(db, run_id, entity_passes)
-            if n_terminal >= len(entity_passes) and entity_passes:
-                # Check if merge or system_links has not been started / is still running.
-                merge_absent = "merge" not in dispatched_phases
-                sl_entry = dispatched_phases.get("system_links")
-                # sl_blocking is True only when system_links is in-progress (claimed
-                # or dispatched). A completed system_links is NOT blocking — it means
-                # we should proceed to dispatch merge.  An absent system_links is also
-                # not blocking — _try_advance_phase will dispatch it first.
-                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
-                # Only advance if no follow-up is already in progress.
-                # _try_advance_phase has its own idempotency via claim_phase.
-                if merge_absent and not sl_blocking:
-                    logger.info(
-                        "reconcile_ontology_graph_runs: stuck-without-advance "
-                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
-                        run_id, len(entity_passes),
-                    )
-                    try:
-                        _try_advance_phase(db, document_id, run_id)
-                        db.commit()
-                        summary["stuck_advances"].append(run_id)
-                    except Exception:
-                        logger.warning(
-                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
-                            "run_id=%s", run_id, exc_info=True,
-                        )
-                        db.rollback()
-                    continue
-
-            # ----------------------------------------------------------------
             # Per-phase inspection: iterate every entry in dispatched_phases.
+            # MUST run BEFORE the Branch 4 stuck-without-advance fast path so
+            # that dispatched_phases entries with terminal pass_output rows are
+            # promoted to 'completed' before _try_advance_phase reads them.
+            #
+            # Fix 1 (C1.6 review): previously Branch 4 ran first, called
+            # _try_advance_phase, then `continue`d — skipping this loop.
+            # _try_advance_phase's identity-terminal gate reads dispatched_phases
+            # (not pipeline_pass_outputs), so if a task wrote its pass_output row
+            # but crashed before mark_phase_terminal, identity_all_terminal was
+            # False, _try_advance_phase returned without advancing, and the
+            # reconciler looped forever.  Reordering so this promotion loop runs
+            # first ensures dispatched_phases is consistent before Branch 4 fires.
             # ----------------------------------------------------------------
             for phase_key, phase_entry in dispatched_phases.items():
                 state = (phase_entry or {}).get("state")
@@ -7696,6 +9813,46 @@ def reconcile_ontology_graph_runs(self) -> dict:
                         summary["skipped_pending_retry"].append(phase_key)
                         continue
 
+                    if settings.reconciler_progress_aware:
+                        try:
+                            # Progress lives on the SUMMARY row (pass_name IS
+                            # NULL) keyed by pass_name — the per-pass StageRun
+                            # row does NOT exist while the pass is running (it is
+                            # created only at completion by _write_stage_run), so
+                            # querying pass_name == pass_name always missed and
+                            # the progress gate was a no-op.
+                            from sqlalchemy import select as _select
+                            from app.models.ingest import StageRun as _SR
+                            _summary = db.execute(
+                                _select(_SR).where(
+                                    _SR.pipeline_run_id == uuid.UUID(str(run_id)),
+                                    _SR.stage_name == "derive_ontology_graph",
+                                    _SR.pass_name.is_(None),
+                                ).order_by(_SR.attempt.desc()).limit(1)
+                            ).scalars().first()
+                            _prog_map = (
+                                (_summary.metrics or {}).get("progress") or {}
+                                if _summary is not None else {}
+                            )
+                            _entry = _prog_map.get(pass_name) if isinstance(_prog_map, dict) else None
+                        except Exception:
+                            logger.warning(
+                                "reconcile_ontology_graph_runs: progress-metrics read "
+                                "failed for run_id=%s pass=%s; falling back to absolute age",
+                                run_id, pass_name, exc_info=True,
+                            )
+                            _entry = None
+                        if is_dispatched_phase_progressing(
+                            _entry, time.time(), settings.reconciler_no_progress_threshold_s
+                        ):
+                            logger.info(
+                                "reconcile_ontology_graph_runs: dispatched phase "
+                                "run_id=%s phase=%s age=%.0fs still making progress "
+                                "— skipping reclaim", run_id, phase_key, age_s,
+                            )
+                            summary["skipped_making_progress"].append(phase_key)
+                            continue
+
                     logger.info(
                         "reconcile_ontology_graph_runs: stale dispatched phase "
                         "run_id=%s phase=%s age=%.0fs — revoking + reclaiming",
@@ -7721,6 +9878,53 @@ def reconcile_ontology_graph_runs(self) -> dict:
                         )
                         db.rollback()
 
+            # ----------------------------------------------------------------
+            # Branch 4: stuck-without-advance check (fast path)
+            # Runs AFTER the per-phase promotion loop above so that any
+            # dispatched_phases entries that needed promotion are already
+            # 'completed' before _try_advance_phase reads them.
+            #
+            # All entity passes have terminal pass-output rows but no system_links
+            # or merge phase has been started yet (finisher crashed between
+            # saving the pass-output and calling _try_advance_phase).
+            # ----------------------------------------------------------------
+            # Re-read dispatched_phases from the run object in case the
+            # per-phase loop committed promotions that changed the DB state.
+            # The DB session's identity-map cache may be stale after the
+            # jsonb_set UPDATEs above; expire + refresh to get current state.
+            db.expire(run, ["dispatched_phases"])
+            db.refresh(run, ["dispatched_phases"])
+            dispatched_phases = run.dispatched_phases or {}
+
+            n_terminal = count_terminal_passes(db, run_id, entity_passes)
+            if n_terminal >= len(entity_passes) and entity_passes:
+                # Check if merge or system_links has not been started / is still running.
+                merge_absent = "merge" not in dispatched_phases
+                sl_entry = dispatched_phases.get("system_links")
+                # sl_blocking is True only when system_links is in-progress (claimed
+                # or dispatched). A completed system_links is NOT blocking — it means
+                # we should proceed to dispatch merge.  An absent system_links is also
+                # not blocking — _try_advance_phase will dispatch it first.
+                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
+                # Only advance if no follow-up is already in progress.
+                # _try_advance_phase has its own idempotency via claim_phase.
+                if merge_absent and not sl_blocking:
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stuck-without-advance "
+                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
+                        run_id, len(entity_passes),
+                    )
+                    try:
+                        _try_advance_phase(db, document_id, run_id)
+                        db.commit()
+                        summary["stuck_advances"].append(run_id)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
+                            "run_id=%s", run_id, exc_info=True,
+                        )
+                        db.rollback()
+
         no_actions = (
             summary["scanned_runs"] == 0
             or not any([
@@ -7729,19 +9933,21 @@ def reconcile_ontology_graph_runs(self) -> dict:
                 summary["promoted_to_terminal"],
                 summary["stuck_advances"],
                 summary["skipped_pending_retry"],
+                summary["skipped_making_progress"],
             ])
         )
         log_method = logger.debug if no_actions else logger.info
         log_method(
             "reconcile_ontology_graph_runs: scan complete — "
             "scanned=%d stale_claimed=%d stale_dispatched=%d promoted=%d "
-            "stuck=%d skipped=%d",
+            "stuck=%d skipped=%d skipped_progressing=%d",
             summary["scanned_runs"],
             len(summary["stale_claimed_reclaimed"]),
             len(summary["stale_dispatched_reclaimed"]),
             len(summary["promoted_to_terminal"]),
             len(summary["stuck_advances"]),
             len(summary["skipped_pending_retry"]),
+            len(summary["skipped_making_progress"]),
         )
         return summary
     except Exception:
@@ -7750,6 +9956,58 @@ def reconcile_ontology_graph_runs(self) -> dict:
         raise
     finally:
         db.close()
+
+
+@celery_app.task(bind=True, queue="graph", soft_time_limit=60,
+                 name="app.workers.pipeline.poll_extraction_progress")
+def poll_extraction_progress(self) -> dict:
+    """R2: bridge docling-graph /progress -> stage_runs.metrics['progress'].
+    Flag-gated (default off) + fail-open. Read-only on DG; merges only the
+    'progress' sub-key into the latest StageRun.metrics for each (run, pass)."""
+    if not settings.dg_progress_poller_enabled:
+        return {"status": "disabled"}
+    from app.models.ingest import StageRun
+    url = f"{settings.docling_graph_base_url}/progress"
+    try:
+        with httpx.Client(timeout=settings.vector_router_chunk_scope_timeout_s) as c:
+            passes = (c.get(url).json() or {}).get("passes", [])
+    except Exception:
+        logger.warning("poll_extraction_progress: GET %s failed", url, exc_info=True)
+        return {"status": "poll_failed"}
+    # Group the /progress passes by run_id. Progress is stored on the SUMMARY
+    # StageRun (pass_name IS NULL) keyed by pass_name — the per-pass StageRun
+    # row does NOT exist while a pass is running (it is created only at pass
+    # completion by _write_stage_run, from derive_ontology_graph_pass step 5),
+    # so writing to a per-pass row silently wrote nothing. Two concurrent passes share the one
+    # summary row, so per-pass keying is REQUIRED (a flat shape would clobber).
+    by_run: dict = {}
+    for p in passes:
+        by_run.setdefault(p["run_id"], []).append(p)
+
+    written = 0
+    with get_sync_session() as session:
+        for run_id, run_passes in by_run.items():
+            row = (session.query(StageRun)
+                   .filter(StageRun.pipeline_run_id == run_id,
+                           StageRun.stage_name == "derive_ontology_graph",
+                           StageRun.pass_name.is_(None))
+                   .order_by(StageRun.attempt.desc()).first())
+            if row is None:
+                continue
+            # Copy-mutate-reassign: metrics JSONB is NOT mutation-tracked in
+            # place, so we must reassign the column to flush the change.
+            m = dict(row.metrics or {})
+            prog = dict(m.get("progress") or {})
+            for p in run_passes:
+                prog[p["pass_name"]] = {
+                    "done": p.get("done"), "total": p.get("total"),
+                    "phase": p.get("phase"), "updated_at": p.get("updated_at"),
+                }
+                written += 1
+            m["progress"] = prog
+            row.metrics = m
+        session.commit()
+    return {"status": "ok", "written": written}
 
 
 # CHANGED 2026-05-06 (Task 8): replaced monolithic ~225-line helper
@@ -7779,7 +10037,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     1. Resolve run_id + PipelineRun (orphaned-run safety net).
     2. Create the derive_ontology_graph summary StageRun with status=RUNNING
        so finalize_document's REQUIRED_STAGES gate sees this stage as in-flight.
-    3. Load the manifest; identify entity passes (p.depends_on empty).
+    3. Load the manifest; identify identity passes (p.phase == "identity").
     4. Dispatch the first pass_concurrency_per_document entity passes via
        claim_phase → .delay → mark_phase_dispatched (same flow used by
        _try_advance_phase follow-ups in derive_ontology_graph_pass).
@@ -7872,17 +10130,41 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             markdown_chars = _get_markdown_chars(db, run_id, document_id)
         else:
             markdown_chars = -1  # not consulted
-        if (
+        _is_empty_anchor_skip = (
             anchors_metrics
             and text_blocks == 0 and tables == 0 and figures == 0
             and markdown_chars < 5000
-        ):
+        )
+        if _is_empty_anchor_skip:
             logger.warning(
                 "derive_ontology_graph: skipping extraction dispatch for %s "
                 "(text_blocks=0, tables=0, figures=0, markdown=%d chars) — "
                 "synthesizing required pass StageRuns and dispatching merge",
                 document_id, markdown_chars,
             )
+
+        db.commit()
+    finally:
+        db.close()
+
+    # C1.5: track how many per-pass tasks are queued before any exception so the
+    # except handler can decide whether to terminalize the pipeline_run.
+    # Pre-Only semantic: terminalize pipeline_run=FAILED only when _passes_queued==0
+    # (no partial work to preserve).  If ≥1 passes were already queued, leave
+    # pipeline_run in PROCESSING so queued passes can complete; the reconciler
+    # will terminalize based on their outcomes.
+    # Background: is_run_cancelled() (run_phase_dispatch.py:438) treats
+    # status='FAILED' as cancelled — unilaterally setting pipeline_run=FAILED
+    # after any pass has been queued would cause those pass tasks to bail at their
+    # next cancel-check, discarding partial work.
+    #
+    # Fix 2 (C1.5 review): the empty-anchor skip path is now INSIDE this
+    # try/except so that any failure in load_bundle_manifest, _write_stage_run,
+    # or the COMPLETE UPDATE properly marks the dispatcher stage_run FAILED and
+    # terminalizes the pipeline_run (pre-queue semantic: _passes_queued==0).
+    queued_counter: dict[str, int] = {"n": 0}
+    try:
+        if _is_empty_anchor_skip:
             # Required passes per the manifest gate. Each needs ONE StageRun
             # row whose execution_status='SKIPPED' and skip_reason is
             # authorized so the gate accepts it.
@@ -7907,25 +10189,29 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     counts={"metrics": skip_metrics},
                     error=None,
                 )
-            db.execute(
-                sa.text(
-                    "UPDATE ingest.stage_runs "
-                    "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
-                    "    finished_at = NOW(), "
-                    "    metrics = COALESCE(metrics, '{}'::jsonb) || CAST(:metrics AS jsonb) "
-                    "WHERE pipeline_run_id = :run_id "
-                    "  AND stage_name = 'derive_ontology_graph' "
-                    "  AND pass_name IS NULL"
-                ),
-                {
-                    "run_id": str(run_id),
-                    "metrics": json.dumps({
-                        "skipped": True,
-                        "reason": "empty_anchor_set",
-                    }),
-                },
-            )
-            db.commit()
+            db3 = _get_db()
+            try:
+                db3.execute(
+                    sa.text(
+                        "UPDATE ingest.stage_runs "
+                        "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
+                        "    finished_at = NOW(), "
+                        "    metrics = COALESCE(metrics, '{}'::jsonb) || CAST(:metrics AS jsonb) "
+                        "WHERE pipeline_run_id = :run_id "
+                        "  AND stage_name = 'derive_ontology_graph' "
+                        "  AND pass_name IS NULL"
+                    ),
+                    {
+                        "run_id": str(run_id),
+                        "metrics": json.dumps({
+                            "skipped": True,
+                            "reason": "empty_anchor_set",
+                        }),
+                    },
+                )
+                db3.commit()
+            finally:
+                db3.close()
             derive_ontology_graph_merge.si(document_id, str(run_id)).apply_async()
             return {
                 "stage": "derive_ontology_graph",
@@ -7934,29 +10220,215 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 "required_passes_synthesized": len(required_passes),
             }
 
-        db.commit()
-    finally:
-        db.close()
+        manifest = load_bundle_manifest(bundle_key)
+        # C8 anchor fix: the initial wave is IDENTITY-passes-only.  field_group
+        # passes flow in later via _try_advance_phase once ALL identity passes
+        # terminalize, so the committed-identity anchor channel is live before
+        # any field pass dispatches (a field pass racing the identity pass in the
+        # first wave finds an empty anchor set).  Selection reuses the shared
+        # _next_entity_pass_to_dispatch helper (Site A == Site B): at cold start
+        # (no terminal, no in-flight) it only ever yields identity passes, never
+        # a field pass, because identity is never all-terminal mid-wave.
+        _identity_pass_names = [p.name for p in manifest.passes if p.phase == "identity"]
+        _field_group_pass_names = [
+            p.name for p in manifest.passes if p.phase == "field_group"
+        ]
+        _pass_def_by_name = {p.name: p for p in manifest.passes}
 
-    manifest = load_bundle_manifest(bundle_key)
-    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+        # VR C.4 (rev 14 caller contract + rev 6 M5): load doc_json and build
+        # the ExtractionChunk index BEFORE dispatching any field_group passes.
+        # Wrapped in its OWN try/except (NOT the outer C1.5 handler) — failure
+        # disables VR for this run but does NOT terminalize the pipeline_run.
+        # field_group passes still run with full-doc semantics (fail-open).
+        _build_index_failed: bool = False
+        if settings.vector_router_mode != "disabled":
+            try:
+                from app.services.extraction_chunk_index import build_extraction_index
+                from app.services.scoped_docling_document import filter_docling_document
+                doc_json_for_index = _build_docling_document_json(document_id)
+                try:
+                    doc_json_for_index, filter_diag_idx = filter_docling_document(doc_json_for_index)
+                    logger.info(
+                        "VR: filter_docling_document (index path) run=%s texts_in=%d blanked=%d "
+                        "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d protected_labels=%d",
+                        run_id,
+                        filter_diag_idx.texts_in,
+                        filter_diag_idx.blanked_short + filter_diag_idx.blanked_dedup + filter_diag_idx.blanked_after_strip,
+                        filter_diag_idx.blanked_short,
+                        filter_diag_idx.blanked_dedup,
+                        filter_diag_idx.blanked_after_strip,
+                        filter_diag_idx.stripped_in_place,
+                        filter_diag_idx.protected_labels,
+                    )
+                except Exception as exc:
+                    # Fail-open: a malformed doc must not terminalize the pipeline_run.
+                    # Proceed to build_extraction_index with the unfiltered doc; the
+                    # existing in-loop filter inside build_extraction_index will still
+                    # apply its texts[]-level filter as a second layer.
+                    logger.warning(
+                        "VR: filter_docling_document (index path) FAILED run=%s: %r "
+                        "— proceeding with unfiltered doc",
+                        run_id, exc,
+                    )
+                store_for_index = get_graph_store()
+                # Merged-chunk routing Phase 1: branch on the
+                # EXTRACTION_INDEX_MODE flag. The value is read at call time
+                # (NOT at module import) so tests can flip it via
+                # monkeypatch.setattr on the worker's ``settings`` module-
+                # level binding. ``per_element`` preserves the legacy
+                # behaviour exactly; ``merged`` routes through the shared
+                # HybridChunker helper (Task 3).
+                if settings.extraction_index_mode == "merged":
+                    from app.services.extraction_chunk_index import (
+                        build_extraction_index_hybrid,
+                    )
+                    build_diag = build_extraction_index_hybrid(
+                        doc_json_for_index,
+                        str(run_id),
+                        document_id,
+                        store=store_for_index,
+                    )
+                else:
+                    build_diag = build_extraction_index(
+                        doc_json=doc_json_for_index,
+                        pipeline_run_id=str(run_id),
+                        document_id=document_id,
+                        store=store_for_index,
+                    )
+                logger.info(
+                    "VR: built ExtractionChunk index for run=%s "
+                    "— inserted=%d skipped=%d embed_ms=%d insert_ms=%d",
+                    run_id,
+                    build_diag.chunks_inserted,
+                    build_diag.chunks_skipped,
+                    build_diag.embed_ms,
+                    build_diag.insert_ms,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "VR: build_extraction_index FAILED for run=%s: %r "
+                    "— falling back to RUN_FULL for all passes",
+                    run_id, exc,
+                )
+                _build_index_failed = True
+        # If mode is "disabled", skip the index build entirely;
+        # _build_index_failed stays False but the router won't be called anyway.
 
-    # Second session: _claim_and_dispatch_pass commits phase records
-    # independently. Using a single session would interleave the RUNNING
-    # StageRun commit with phase claim commits and risk dirty reads.
-    db2 = _get_db()
-    try:
-        for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
-            _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name)
-    finally:
-        db2.close()
+        # IMPORTANT #1 (rev 18): persist vr_index_built on PipelineRun.metrics so
+        # _try_advance_phase (called by per-pass finishers) can read the build result
+        # and forward the correct build_index_failed value to _claim_and_dispatch_pass.
+        # Uses PipelineRun.metrics (the available JSONB column on PipelineRun) rather
+        # than a non-existent diagnostics_json column.
+        from app.models.ingest import PipelineRun as _PipelineRun
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+        _db_vr = _get_db()
+        try:
+            _pr = _db_vr.get(_PipelineRun, uuid.UUID(str(run_id)))
+            if _pr is not None:
+                _pr.metrics = dict(_pr.metrics or {})
+                _pr.metrics["vr_index_built"] = not _build_index_failed
+                _flag_modified(_pr, "metrics")
+                _db_vr.commit()
+        except Exception as _vr_persist_exc:
+            logger.warning(
+                "VR: failed to persist vr_index_built for run=%s: %r — "
+                "_try_advance_phase will default to build_index_failed=False",
+                run_id, _vr_persist_exc,
+            )
+        finally:
+            _db_vr.close()
+
+        # Second session: _claim_and_dispatch_pass commits phase records
+        # independently. Using a single session would interleave the RUNNING
+        # StageRun commit with phase claim commits and risk dirty reads.
+        # Fix 1 (C1.5 review): queued_counter["n"] is incremented by
+        # _claim_and_dispatch_pass immediately after .delay() returns and
+        # BEFORE the bookkeeping writes.  Reading from the counter (not from a
+        # return-value-driven local) ensures that a bookkeeping failure still
+        # reports the correct queued count in the except handler below.
+        db2 = _get_db()
+        try:
+            # Build the initial wave via the shared selector.  At cold start the
+            # terminal set is empty, so _next_entity_pass_to_dispatch only yields
+            # identity passes (field passes are gated on all-identity-terminal),
+            # giving an identity-only first wave up to the concurrency cap.  As
+            # each pass is dispatched we add it to _initial_in_flight so the next
+            # call advances to the following identity pass.  When there are no
+            # identity passes the selector immediately yields field passes, so
+            # identity-less bundles still fan out (no deadlock).
+            _initial_in_flight: set[str] = set()
+            for _ in range(settings.pass_concurrency_per_document):
+                next_name = _next_entity_pass_to_dispatch(
+                    _identity_pass_names,
+                    _field_group_pass_names,
+                    set(),  # cold start: nothing terminal yet
+                    _initial_in_flight,
+                )
+                if next_name is None:
+                    break
+                _initial_in_flight.add(next_name)
+                _claim_and_dispatch_pass(
+                    db2, document_id, str(run_id), next_name,
+                    queued_counter=queued_counter,
+                    pass_def=_pass_def_by_name.get(next_name),
+                    bundle_key=bundle_key,
+                    build_index_failed=_build_index_failed,
+                )
+        finally:
+            db2.close()
+
+    except Exception as exc:
+        # Mark the dispatcher summary stage_run FAILED so the reconciler and
+        # status API see a terminal row instead of a forever-RUNNING ghost.
+        # Fix 1: read _passes_queued from queued_counter["n"], NOT from the
+        # (now-removed) return-value-driven local counter.
+        _passes_queued = queued_counter["n"]
+        err_msg = (
+            f"dispatcher failed after queuing {_passes_queued} pass(es): {exc!r}"
+        )
+        logger.exception(
+            "derive_ontology_graph: dispatch-time exception for run_id=%s "
+            "(passes_queued=%d); marking stage_run FAILED",
+            run_id, _passes_queued,
+        )
+        db_fail = _get_db()
+        try:
+            db_fail.execute(
+                sa.text(
+                    "UPDATE ingest.stage_runs "
+                    "SET status = 'FAILED', "
+                    "    execution_status = 'FAILED', "
+                    "    error_message = :error_message, "
+                    "    finished_at = :finished_at "
+                    "WHERE pipeline_run_id = :run_id "
+                    "  AND stage_name = 'derive_ontology_graph' "
+                    "  AND pass_name IS NULL"
+                ),
+                {
+                    "error_message": err_msg,
+                    "finished_at": datetime.now(timezone.utc),
+                    "run_id": str(run_id),
+                },
+            )
+            db_fail.commit()
+        except Exception:
+            logger.exception(
+                "derive_ontology_graph: stage_run FAILED update itself failed "
+                "for run_id=%s", run_id,
+            )
+        finally:
+            db_fail.close()
+
+        if _passes_queued == 0:
+            # Pre-queue failure: no work was started, safe to terminalize the run.
+            _terminalize_doc_and_run(document_id, run_id, "FAILED")
+
+        raise  # re-raise so Celery sees the failure for retry-counting
 
     return {
         "stage": "derive_ontology_graph",
         "status": "dispatched",
-        "entity_passes_dispatched": min(
-            len(entity_passes), settings.pass_concurrency_per_document
-        ),
+        "entity_passes_dispatched": queued_counter["n"],
     }
 
 
@@ -8140,8 +10612,23 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         graph_store = get_graph_store()
         graph_store.ensure_ready_sync()
 
+        # Collection ("source") identity. source_name is the human-readable
+        # collection name off the doc.source relationship (same relationship
+        # reingest_graph_only reads .default_ontology_bundle_key from); None-safe
+        # — a missing source/name leaves source_name unset and skips the
+        # Collection wiring below without crashing.
+        source_id = str(doc.source_id) if doc.source_id else None
+        source_name = None
+        try:
+            if doc.source is not None:
+                source_name = doc.source.name
+        except Exception:
+            source_name = None
+
         # Include document metadata as properties
         doc_node_props: dict[str, Any] = {"source_id": str(doc.source_id), "title": doc.filename}
+        if source_name:
+            doc_node_props["source_name"] = source_name
         if doc.document_metadata and isinstance(doc.document_metadata, dict):
             if doc.document_metadata.get("document_summary"):
                 doc_node_props["summary"] = doc.document_metadata["document_summary"]
@@ -8160,6 +10647,12 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             name=doc.filename,
             properties=doc_node_props,
         ))
+
+        # First-class Collection vertex + Document -BELONGS_TO-> Collection.
+        # Idempotent (find-or-create on source_id; edge guarded on existence) so
+        # re-ingest / graph_only re-runs don't duplicate. No-op when source_id
+        # is unknown.
+        graph_store.upsert_collection_and_link_sync(doc_rid, source_id, source_name)
 
         # Provenance envelope re-used across every structural edge below so
         # get_document_edges_sync (which filters on the edge's document_id
@@ -8284,21 +10777,15 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # Build element_uid → chunk_ids map (via artifact_id).
         # Include BOTH text_chunks AND image_chunks so entities grounded
         # in images/schematics get linked to the corresponding ImageChunk.
-        element_uid_chunk_map: dict[str, list[str]] = {}
-        artifact_id_to_element_uid: dict[str, str] = {}
-        for elem in elements:
-            if elem.artifact_id and elem.element_uid:
-                artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
-        for tc in text_chunks:
-            if tc.artifact_id:
-                euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
-                if euid:
-                    element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
-        for ic in image_chunks:
-            if ic.artifact_id:
-                euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
-                if euid:
-                    element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
+        # Shared with the merge phase via _build_element_uid_chunk_map so the
+        # field/rel lineage and EXTRACTED_FROM lineage stay byte-identical.
+        element_uid_chunk_map = _build_element_uid_chunk_map(
+            elements, text_chunks, image_chunks,
+        )
+
+        # PARITY with the merge phase: seed prose/table self_refs from the
+        # ArcadeDB bridge so entity EXTRACTED_FROM lineage resolves them too.
+        _augment_element_uid_chunk_map_from_arcadedb(element_uid_chunk_map, document_id)
 
         # Try graph_json mentions path first (new pipeline)
         from app.models.ingest import DocumentGraphExtraction
@@ -8338,81 +10825,82 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     node.get("rid"),
                 )
 
-            # Fallback pool for mentions whose element_uid doesn't resolve
-            # through element_uid_chunk_map. The docling-graph service's
-            # provenance synthesizer emits Docling-internal self_refs
-            # (e.g. "#/pictures/1") as element_uid when the library's
-            # salvage path strips the per-node element-tracking attrs,
-            # but DocumentElement.element_uid is stored as
-            # "{page}-{order}-{type}-{hash}" — the two namespaces don't
-            # overlap. Without a fallback, those mentions produce zero
-            # EXTRACTED_FROM edges and the entity becomes unreachable
-            # from Document via the chunk traversal. Fan out across all
-            # TextChunks of this document as a coarse-but-valid anchor.
-            all_text_chunk_ids = [str(tc.id) for tc in text_chunks]
+            # Part C / Task 4: resolve each mention's self_refs to its CONCRETE
+            # source chunk(s). The docling-graph service's provenance synthesizer
+            # emits Docling-internal self_refs ("#/texts/N", "#/pictures/1") that
+            # live in a different namespace than DocumentElement.element_uid
+            # ("{page}-{order}-{type}-{hash}"); the identity_map persisted at
+            # ingest bridges the two. Loaded once; {} on miss so resolution
+            # degrades to the mention's precise/empty chunk-set (never
+            # all-document).
+            #
+            # There is NO all-document / all-artifact fan-out: a mention links
+            # only to its own resolvable source chunks, and links to nothing
+            # (with a WARNING) if none of its self_refs resolve.
+            identity_map = _load_identity_map(document_id)
 
             for mention in graph_extraction.graph_json.get("mentions", []):
                 eid = mention.get("entity_id")
                 name = mention.get("entity_name", "")
                 etype = mention.get("entity_type", "UNKNOWN")
-                euid = mention.get("element_uid", "")
                 src_rid = mention.get("rid")
-                resolved_chunks = element_uid_chunk_map.get(euid, [])
-                if not resolved_chunks and isinstance(euid, str) and euid.startswith("#/"):
-                    # Synthesizer-anchored self_ref couldn't resolve to a
-                    # concrete DocumentElement. Attach to every text chunk
-                    # in the document.
-                    resolved_chunks = all_text_chunk_ids
+                # Prefer the positional self_refs LIST (Task 3); fall back to the
+                # legacy scalar element_uid for back-compat audit blobs.
+                self_refs = mention.get("self_refs")
+                if not isinstance(self_refs, list) or not self_refs:
+                    legacy_uid = mention.get("element_uid", "")
+                    self_refs = [legacy_uid] if legacy_uid else []
+                resolved_chunks, is_coarse = _resolve_mention_chunks(
+                    self_refs, element_uid_chunk_map, identity_map,
+                )
+                if is_coarse:
+                    logger.warning(
+                        "derive_structure_links: mention self_refs %r unresolved; "
+                        "emitting NO EXTRACTED_FROM edge (entity=%s, entity_id=%s)",
+                        self_refs, name, eid,
+                    )
                 for chunk_id in resolved_chunks:
                     edge_records.append((name, etype, chunk_id, eid, src_rid))
                     if eid:
                         mentioned_entity_ids.add(eid)
 
-        # Fallback — fan the entity out across its artifact's chunks when
-        # the primary mention path yielded zero links. Keyed by entity_id
-        # so same-name same-type siblings with different identity tuples
-        # are tracked independently (T53b correctness fix).
+        # Task 4: the legacy artifact-metadata fallback is GATED OFF. It used to
+        # fan each metadata-derived entity across ALL chunks of its artifact —
+        # an all-artifact coarse-lineage fan-out we must not reintroduce. It is
+        # ALSO inert for the delta pipeline: it reads docling_graph_data /
+        # extracted_entities from Artifact.content_metadata, but the delta
+        # ingest path stores chunking metadata (self_ref/ext/...) in
+        # content_metadata (see persist ~line 2521), never those keys — so it
+        # produced zero edge_records here regardless. The primary mention path
+        # above (precise self_ref resolution, no fan-out) is the sole
+        # EXTRACTED_FROM source. If a future ingest path ever repopulates those keys,
+        # this WARNING fires so we route them through the precise self_ref
+        # resolver instead of resurrecting the fan-out.
         entity_ids_needing_fallback = [
             eid for eid in node_by_entity_id if eid not in mentioned_entity_ids
         ]
         if entity_ids_needing_fallback or not mentioned_entity_ids:
-            artifact_chunk_map: dict[str, list[str]] = {}
-            for tc in text_chunks:
-                artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
-            for ic in image_chunks:
-                artifact_chunk_map.setdefault(str(ic.artifact_id), []).append(str(ic.id))
-
-            artifacts_with_entities = db.execute(
+            legacy_artifacts_with_entities = db.execute(
                 select(Artifact).where(
                     Artifact.document_id == uuid.UUID(document_id),
                     Artifact.content_metadata.isnot(None),
                 )
             ).scalars().all()
-
-            # Legacy fallback: artifact_metadata-derived entities (no
-            # entity_id / source_rid available from that path — writer
-            # falls back to the name+type subquery with a WARNING).
-            for artifact in artifacts_with_entities:
-                metadata = artifact.content_metadata or {}
-                chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
-                if not chunk_ids:
-                    continue
-
-                entities_list: list[tuple[str, str]] = []
-                graph_data = metadata.get("docling_graph_data")
-                if graph_data:
-                    for node in graph_data.get("nodes", []):
-                        entities_list.append((
-                            node.get("name", node.get("id", "")),
-                            node.get("entity_type", "UNKNOWN"),
-                        ))
-                else:
-                    for ent in metadata.get("extracted_entities", []):
-                        entities_list.append((ent["name"], ent["entity_type"]))
-
-                for (name, etype) in entities_list:
-                    for chunk_id in chunk_ids:
-                        edge_records.append((name, etype, chunk_id, None, None))
+            legacy_metadata_entities = sum(
+                len((a.content_metadata or {}).get("docling_graph_data", {}).get("nodes", []))
+                + len((a.content_metadata or {}).get("extracted_entities", []))
+                for a in legacy_artifacts_with_entities
+            )
+            if legacy_metadata_entities:
+                logger.warning(
+                    "derive_structure_links: legacy artifact-metadata entity "
+                    "fallback is gated off but found %d metadata entities for %s "
+                    "(%d entity_ids unmentioned); these are NOT linked via the "
+                    "removed all-artifact fan-out — route them through the "
+                    "self_ref resolver instead.",
+                    legacy_metadata_entities, document_id,
+                    len(entity_ids_needing_fallback),
+                )
 
         # Batch-create EXTRACTED_FROM edges in one sqlscript call.
         from app.services.graph_store import EntityChunkEdge as _ECE
@@ -8750,3 +11238,210 @@ def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
             "post-ingest community detection trigger failed for %s: %s",
             document_id, exc,
         )
+
+
+# ---------------------------------------------------------------------------
+# VR C.4 — Hourly janitor task (rev 9 H3 + rev 10 H3)
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="vr.purge_terminated_extraction_chunks", queue="graph")
+def purge_terminated_extraction_chunks() -> dict:
+    """Cross-store janitor — defense-in-depth for runs where
+    _terminalize_doc_and_run cleanup failed or for orphan ExtractionChunk rows.
+
+    Algorithm (rev 9 H3 + rev 10 H3):
+      1. ArcadeDB: SELECT DISTINCT pipeline_run_id WHERE created_at < NOW - 24h
+      2. Postgres: batched SELECT pipeline_runs.status WHERE id IN (...)
+      3. Compute purge_set = terminal IDs (COMPLETE/FAILED/PARTIAL_COMPLETE)
+                            ∪ orphan IDs (no Postgres row)
+      4. ArcadeDB: DELETE FROM ExtractionChunk WHERE pipeline_run_id IN purge_set
+
+    NEVER expressed as a single cross-DB SQL — ArcadeDB cannot read Postgres
+    state; Postgres cannot issue ArcadeDB DELETE commands.
+
+    Terminal statuses for Postgres lookup:
+      COMPLETE, FAILED, PARTIAL_COMPLETE  (matches _terminalize_doc_and_run contract)
+
+    Orphan rows: any run_id that appears in ArcadeDB ExtractionChunk but has NO
+    matching row in Postgres pipeline_runs. These arise when:
+      - A pipeline_run was hard-deleted (e.g. via the /cancel endpoint).
+      - A run was created but the Postgres row was never persisted (race/crash).
+
+    Returns a summary dict:  {
+        "old_run_ids_found": N,
+        "postgres_statuses_found": M,
+        "purge_set_size": K,
+        "purged_chunks": P,
+        "error": None | "...",
+    }
+    """
+    _TERMINAL_RUN_STATUSES = frozenset({"COMPLETE", "FAILED", "PARTIAL_COMPLETE"})
+    # Batch size for Postgres status lookups — prevents enormous IN(...) clauses.
+    _PG_BATCH_SIZE = 200
+
+    result: dict = {
+        "old_run_ids_found": 0,
+        "postgres_statuses_found": 0,
+        "purge_set_size": 0,
+        "purged_chunks": 0,
+        "error": None,
+    }
+
+    try:
+        store = get_graph_store()
+
+        # ------------------------------------------------------------------
+        # Step 1: ArcadeDB — find distinct pipeline_run_ids with old chunks.
+        # ------------------------------------------------------------------
+        # NOTE: ArcadeDB's sysdate() returns the current timestamp; we compare
+        # created_at against (current time - 24 hours).  ArcadeDB SQL datetime
+        # arithmetic: sysdate() - duration('PT24H').
+        try:
+            rows = store._client.query_sync(
+                store._database,
+                "sql",
+                "SELECT DISTINCT pipeline_run_id FROM ExtractionChunk "
+                "WHERE created_at < sysdate() - duration('PT24H')",
+                {},
+            )
+        except Exception as exc:
+            logger.warning(
+                "janitor: ArcadeDB query for old ExtractionChunk run_ids failed: %r",
+                exc,
+            )
+            result["error"] = f"arcadedb_query: {exc!r}"
+            return result
+
+        old_run_ids: list[str] = []
+        for row in (rows or []):
+            rid = row.get("pipeline_run_id")
+            if rid and isinstance(rid, str):
+                old_run_ids.append(rid)
+
+        result["old_run_ids_found"] = len(old_run_ids)
+
+        if not old_run_ids:
+            logger.info("janitor: no ExtractionChunk rows older than 24h found")
+            return result
+
+        # ------------------------------------------------------------------
+        # Step 2: Postgres — batched status lookup for all old run_ids.
+        # ------------------------------------------------------------------
+        import sqlalchemy as _sa
+        db = _get_db()
+        try:
+            pg_statuses: dict[str, str] = {}  # run_id → status
+            try:
+                for batch_start in range(0, len(old_run_ids), _PG_BATCH_SIZE):
+                    batch = old_run_ids[batch_start: batch_start + _PG_BATCH_SIZE]
+                    batch_uuids = []
+                    for r in batch:
+                        try:
+                            batch_uuids.append(uuid.UUID(str(r)))
+                        except ValueError:
+                            # Non-UUID pipeline_run_id — treat as orphan
+                            pg_statuses[r] = "__invalid_uuid__"
+
+                    if not batch_uuids:
+                        continue
+
+                    rows_pg = db.execute(
+                        _sa.text(
+                            "SELECT id::text, status FROM ingest.pipeline_runs "
+                            "WHERE id = ANY(:ids)"
+                        ),
+                        {"ids": batch_uuids},
+                    ).fetchall()
+
+                    for row_pg in rows_pg:
+                        # LOW #6 (rev 19): normalize Postgres-returned ID to
+                        # lowercase canonical form, symmetric with ArcadeDB-side
+                        # normalization.  Postgres uuid::text is always lowercase
+                        # today, but explicit normalization defends against future
+                        # driver or schema changes.
+                        try:
+                            pg_id_normalized = str(uuid.UUID(str(row_pg[0]))).lower()
+                        except (ValueError, TypeError):
+                            pg_id_normalized = str(row_pg[0])
+                        pg_statuses[pg_id_normalized] = row_pg[1]
+
+                result["postgres_statuses_found"] = len(pg_statuses)
+
+            except Exception as exc:
+                logger.warning(
+                    "janitor: Postgres status lookup failed: %r — skipping purge",
+                    exc,
+                )
+                result["error"] = f"postgres_query: {exc!r}"
+                return result
+
+            # ------------------------------------------------------------------
+            # Step 3: Compute purge set = terminal ∪ orphan.
+            # IMPORTANT #4 (rev 18): normalize ArcadeDB-returned run_ids to
+            # lowercase before Postgres lookup. Postgres uuid::text is always
+            # lowercase; ArcadeDB stores whatever was inserted but an upstream
+            # code path could return non-canonical casing in future.
+            # Explicit normalization defends against the silent orphan-misclassification:
+            # without it, an uppercase ArcadeDB ID would fail the pg_statuses lookup
+            # (returning None) and be misidentified as an orphan — incorrectly purging
+            # PROCESSING runs.
+            # ------------------------------------------------------------------
+            to_purge: list[str] = []
+            for rid in old_run_ids:
+                # Normalize to lowercase canonical form for Postgres key lookup.
+                try:
+                    rid_normalized = str(uuid.UUID(rid)).lower()
+                except (ValueError, AttributeError, TypeError):
+                    rid_normalized = (rid or "").lower()
+                status = pg_statuses.get(rid_normalized)
+                if status is None:
+                    # Orphan: no Postgres row for this run_id
+                    to_purge.append(rid_normalized)
+                elif status in _TERMINAL_RUN_STATUSES or status == "__invalid_uuid__":
+                    to_purge.append(rid_normalized)
+                # else: status is PROCESSING or other active status → skip
+
+            result["purge_set_size"] = len(to_purge)
+
+            if not to_purge:
+                logger.info(
+                    "janitor: 0 runs in purge set "
+                    "(all %d old runs are still PROCESSING)",
+                    len(old_run_ids),
+                )
+                return result
+
+        finally:
+            db.close()
+
+        # ------------------------------------------------------------------
+        # Step 4: ArcadeDB — bulk DELETE.
+        # ------------------------------------------------------------------
+        total_deleted = 0
+        for rid in to_purge:
+            try:
+                from app.services.extraction_chunk_index import cleanup_extraction_index
+                deleted = cleanup_extraction_index(rid, store=store)
+                total_deleted += deleted
+            except Exception as exc:
+                logger.warning(
+                    "janitor: cleanup_extraction_index failed for run_id=%r: %r",
+                    rid, exc,
+                )
+
+        result["purged_chunks"] = total_deleted
+        logger.info(
+            "janitor: purged %d ExtractionChunk chunks across %d runs "
+            "(old_run_ids=%d, orphans+terminal=%d)",
+            total_deleted, len(to_purge),
+            len(old_run_ids), len(to_purge),
+        )
+        return result
+
+    except Exception as exc:
+        logger.exception(
+            "janitor: purge_terminated_extraction_chunks failed: %r", exc
+        )
+        result["error"] = f"unexpected: {exc!r}"
+        return result

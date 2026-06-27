@@ -1,0 +1,37 @@
+{
+  "fit_n": 1692,
+  "fit_n_used": 35,
+  "features": [
+    "cosine",
+    "rerank_norm",
+    "field_label_norm",
+    "pass_keyword_norm",
+    "anchor_text_norm",
+    "anchor_section_norm",
+    "section_norm",
+    "is_table",
+    "pattern_norm",
+    "negative_norm"
+  ],
+  "recall_floor": 1.0,
+  "fit_cv_auroc": 0.8603532819235509,
+  "learned_weights": {
+    "cosine": 1.4353229905649836,
+    "rerank_norm": 0.2711141051740361,
+    "field_label_norm": -0.5960715371029086,
+    "pass_keyword_norm": 0.2297302838825523,
+    "anchor_text_norm": -0.3158661305590549,
+    "anchor_section_norm": 0.3524131071693347,
+    "section_norm": 0.3524131071693347,
+    "is_table": 0.0,
+    "pattern_norm": 0.14453858385210008,
+    "negative_norm": 0.34983645182995476
+  },
+  "fit_threshold_point": {
+    "threshold": 4.3095358890442836e-05,
+    "kept": 1692,
+    "kept_frac": 1.0,
+    "recall": 1.0
+  },
+  "validation": {}
+}

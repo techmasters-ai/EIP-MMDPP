@@ -1,6 +1,6 @@
---- a/docling_graph/pipeline/stages.py	2026-04-30 17:59:02.267422910 -0500
-+++ b/docling_graph/pipeline/stages.py	2026-04-30 18:25:23.523627585 -0500
-@@ -756,33 +756,90 @@
+--- a/docling_graph/pipeline/stages.py	2026-05-27 17:56:52.734835593 -0500
++++ b/docling_graph/pipeline/stages.py	2026-05-31 23:11:50.537389299 -0500
+@@ -758,33 +758,95 @@
              )
  
          try:
@@ -61,6 +61,11 @@
 +                chunks, chunk_metadata = doc_processor.extract_chunks_with_metadata(
 +                    context.docling_document
 +                )
++                # PATCH 2026-05-31: publish chunk_metadata so app/main.py builds
++                # chunk_to_self_refs / chunk_to_page_numbers provenance maps.
++                # Mirrors strategy_ops.extract_delta_from_document / many_to_one.py:589.
++                # Empty maps -> element_uid="" -> rows dropped -> no EXTRACTED_FROM.
++                doc_processor.last_chunk_metadata = chunk_metadata
 +                if context.trace_data:
 +                    for cmeta, chunk_text in zip(chunk_metadata, chunks, strict=False):
 +                        context.trace_data.emit(

@@ -1,0 +1,93 @@
+diff --git a/docling_graph/core/extractors/strategies/many_to_one.py b/docling_graph/core/extractors/strategies/many_to_one.py
+index 85c0d63..694bc22 100644
+--- a/docling_graph/core/extractors/strategies/many_to_one.py
++++ b/docling_graph/core/extractors/strategies/many_to_one.py
+@@ -354,6 +354,7 @@ class ManyToOneStrategy(BaseExtractor):
+                         backend=backend,
+                         template=template,
+                         trace_data=self.trace_data if hasattr(self, "trace_data") else None,
++                        document=document,
+                     )
+                 else:
+                     model, extraction_time = extract_delta_from_document(
+@@ -532,12 +533,44 @@ class ManyToOneStrategy(BaseExtractor):
+                 )
+             return [], document
+ 
++    @staticmethod
++    def _pages_from_source_refs(
++        document: Any, self_refs: list[str]
++    ) -> list[int]:
++        """Resolve page numbers for a chunk's ``source_refs`` against the
++        DoclingDocument (fallback when the caller didn't supply
++        ``page_numbers``). Materializes each self_ref via
++        ``RefItem(cref=ref).resolve(document)`` — ``DoclingDocument`` has no
++        ``lookup`` method in the pinned docling-core, so resolution goes
++        through ``RefItem.resolve`` — then reads ``item.prov[].page_no``
++        (mirrors ``document_processor._evidence_units_for_chunk``). Returns a
++        sorted unique list; empty when nothing resolves (genuinely page-less
++        — never fabricated)."""
++        if document is None or not self_refs:
++            return []
++        from docling_core.types.doc.document import RefItem
++
++        pages: set[int] = set()
++        for ref in self_refs:
++            if not isinstance(ref, str) or not ref:
++                continue
++            try:
++                item = RefItem(cref=ref).resolve(document)
++            except Exception:
++                continue
++            for prov in getattr(item, "prov", None) or []:
++                page_no = getattr(prov, "page_no", None)
++                if isinstance(page_no, int):
++                    pages.add(page_no)
++        return sorted(pages)
++
+     def _extract_delta_from_pre_built_chunks(
+         self,
+         *,
+         backend: TextExtractionBackendProtocol,
+         template: Type[BaseModel],
+         trace_data: Any = None,
++        document: Any = None,
+     ) -> Tuple[BaseModel | None, float]:
+         """Run delta extraction against caller-supplied chunks.
+ 
+@@ -551,7 +584,14 @@ class ManyToOneStrategy(BaseExtractor):
+         ``chunk_id`` / ``self_refs`` / ``evidence_ids`` / ``token_count``
+         per row.
+ 
+-        Plan: 2026-05-27-merged-chunk-routing.md Phase 0 Task 0b.
++        Page lineage: prefer the caller-supplied ``entry["page_numbers"]``
++        (worker carries it from ``ExtractionChunk.page_number``); when empty,
++        fall back to resolving ``source_refs`` against ``document`` so the
++        synthesized provenance still emits a real page (data-lineage
++        requirement). Stays empty only when neither source has a page.
++
++        Plan: 2026-05-27-merged-chunk-routing.md Phase 0 Task 0b;
++        2026-05-30-element-uid-lineage-fix.md Task 1.
+         """
+         from ..contracts.delta.strategy_ops import _emit_chunk_created_traces
+ 
+@@ -561,11 +601,18 @@ class ManyToOneStrategy(BaseExtractor):
+         for entry in pre:
+             text = entry["text"]
+             self_refs = list(entry.get("source_refs") or [])
++            # Prefer the worker-supplied per-chunk pages; fall back to
++            # resolving source_refs against the DoclingDocument.
++            page_numbers = [
++                p for p in (entry.get("page_numbers") or []) if isinstance(p, int)
++            ]
++            if not page_numbers:
++                page_numbers = self._pages_from_source_refs(document, self_refs)
+             chunks.append(text)
+             chunk_metadata.append(
+                 {
+                     "chunk_id": int(entry.get("chunk_index", len(chunk_metadata))),
+-                    "page_numbers": [],  # caller didn't supply per-chunk pages
++                    "page_numbers": page_numbers,
+                     "token_count": int(entry.get("token_count", 0)),
+                     "chunk_kind": "graph_extraction",
+                     "self_refs": self_refs,

@@ -1,0 +1,49 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-30-element-uid-lineage-fix.md",
+  "tasks": [
+    {
+      "id": 20,
+      "subject": "Task 0: Two-config lineage diagnostic",
+      "status": "completed",
+      "userGate": true,
+      "description": "Two-config diagnostic (branch + production air_defense_v3/shadow): localize the entity-commit break (merge replay vs ArcadeDB committed count), the provenance-empty cause + delta route, and production scope. Output reports/collection/lineage_diagnostic_findings.md. scripts/diagnose_lineage_commit.py. USER-ORDERED GATE.\n\n```json:metadata\n{\"files\": [\"scripts/diagnose_lineage_commit.py\"], \"verifyCommand\": \"python3 scripts/diagnose_lineage_commit.py --run 9d48fc1e-62fd-4b03-a98c-98a35bda3b8e --doc ddaa9e36-2854-47c3-bc94-ff38d531dafd\", \"userGate\": true, \"tags\": [\"user-gate\"]}\n```"
+    },
+    {
+      "id": 21,
+      "subject": "Task 1: Lineage population (element_uid + page, both routes)",
+      "status": "completed",
+      "blockedBy": [20],
+      "description": "docling-graph: emit non-empty element_uid + resolved page on both delta routes. provenance.py synthesizer gains chunk_to_page_numbers; main.py builds+passes the map; patch 0005 for strategy_ops/many_to_one/document_processor. Tests: tests/unit/test_provenance_page_resolution.py.\n\n```json:metadata\n{\"files\": [\"docker/docling-graph/app/provenance.py\", \"docker/docling-graph/app/main.py\", \"docker/docling-graph/patches/0005-lineage-chunk-metadata.patch\", \"tests/unit/test_provenance_page_resolution.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_provenance_page_resolution.py -v\"}\n```"
+    },
+    {
+      "id": 22,
+      "subject": "Task 2: Strict lineage-required commit gate",
+      "status": "completed",
+      "blockedBy": [20],
+      "description": "Worker: _partition_entities_by_lineage(merged) runs in derive_ontology_graph_merge right after merge_and_resolve, BEFORE _build_provenance_envelope — filters merged.entities to lineage-complete (element_uid+page), prunes merged.edges referencing rejected identities (so domain/structural/audit paths never see rejects), records a hard run-level rejection signal. Strict, never silent. tests/unit/test_lineage_commit_gate.py.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_lineage_commit_gate.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_lineage_commit_gate.py -v\"}\n```"
+    },
+    {
+      "id": 23,
+      "subject": "Task 3: Entity-commit fix (from Task 0 findings)",
+      "status": "completed",
+      "blockedBy": [20],
+      "description": "Fix the specific post-merge commit break Task 0 localized; focused change + regression test. If Task 0 proves the only break was the empty-lineage drop, reduce to a pinning regression test. tests/unit/test_entity_commit_regression.py.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\", \"tests/unit/test_entity_commit_regression.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_entity_commit_regression.py -v\"}\n```"
+    },
+    {
+      "id": 24,
+      "subject": "Task 4: Deploy fix build + remove temp instrumentation",
+      "status": "completed",
+      "blockedBy": [21, 22, 23],
+      "description": "Rebuild docling-graph (patches 0001-0005 apply), recreate docling-graph + restart worker-graph from worktree, idle pool; remove Task-0 temp logging.\n\n```json:metadata\n{\"files\": [\"app/workers/pipeline.py\"], \"verifyCommand\": \"docker compose -p eip-mmdpp build docling-graph 2>&1 | grep -E 'Applying patch|Built'\"}\n```"
+    },
+    {
+      "id": 25,
+      "subject": "Task 5: End-to-end lineage verification gate",
+      "status": "completed",
+      "blockedBy": [24],
+      "userGate": true,
+      "description": "Prove on a fresh SA-2 graph_only run: entity vertices>0 consistent with merged count; zero provenance-drop + zero spurious gate rejects; EXTRACTED_FROM/MENTIONED_IN>0; one field value traced to chunk+document+page; empty-doc (cw_radar.jpg) yields 0 legitimately. scripts/verify_lineage_e2e.py. USER-ORDERED GATE.\n\n```json:metadata\n{\"files\": [\"scripts/verify_lineage_e2e.py\"], \"verifyCommand\": \"python3 scripts/verify_lineage_e2e.py --run <fixed_sa2_run_id>\", \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"entities-committed\", \"vertices>0\"], [\"field-traced\", \"page\"]]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-30T22:30:00Z"
+}

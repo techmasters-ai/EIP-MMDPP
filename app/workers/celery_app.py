@@ -99,10 +99,34 @@ celery_app.conf.update(
             "schedule": settings.reconciler_period_seconds,
             "options": {"queue": "graph"},
         },
+        "poll-extraction-progress": {
+            "task": "app.workers.pipeline.poll_extraction_progress",
+            "schedule": settings.extraction_progress_poll_seconds,
+            "options": {"queue": "graph"},
+        },
         "dispatch-pending-pipeline-stages": {
             "task": "app.workers.dispatcher.dispatch_pending_pipeline_stages",
             "schedule": 5.0,
             "options": {"queue": "celery"},
+        },
+        # VR C.4 (rev 9 H3 + rev 10 H3): hourly cross-store janitor that purges
+        # terminated + orphaned ExtractionChunk rows.  Defense-in-depth for runs
+        # where _terminalize_doc_and_run's inline cleanup failed.
+        #
+        # Merged-chunk routing Task 7 — pre-A/B sweep guidance (Task 10):
+        # Before kicking off the merged-mode A/B comparison, manually trigger
+        # this janitor (or run the equivalent ``cleanup_extraction_index``
+        # call) against ExtractionChunk to clear stale per-element rows from
+        # prior runs.  The janitor is run-id-scoped so it handles BOTH
+        # vertex_id formats (legacy ``f"{run_id}:{self_ref}"`` and merged
+        # ``f"{run_id}:chunk_{chunk_index}"``) in one DELETE.  After the
+        # sweep, verify ``SELECT count(*) FROM ExtractionChunk WHERE
+        # chunk_index = -1`` returns 0 — any non-zero result is a stale
+        # per-element row that would pollute the merged-mode index pool.
+        "vr-purge-terminated-extraction-chunks": {
+            "task": "vr.purge_terminated_extraction_chunks",
+            "schedule": timedelta(hours=1),
+            "options": {"queue": "graph"},
         },
     },
 )

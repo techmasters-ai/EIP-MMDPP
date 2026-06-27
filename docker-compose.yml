@@ -591,6 +591,10 @@ services:
         --loglevel=info
         --scheduler=celery.beat:PersistentScheduler
     volumes:
+      # Live app code (mirror the worker services) so beat picks up
+      # beat_schedule changes without an image rebuild. Without this, beat
+      # runs the baked image code and silently misses new periodic tasks.
+      - ./app:/app/app
       - celerybeat_data:/var/run/celery
       - watch_dirs:/watch
 

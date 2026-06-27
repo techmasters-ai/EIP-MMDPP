@@ -69,8 +69,85 @@ class EntityRef(BaseModel):
     )
 
 
+class SelectedChunkInput(BaseModel):
+    """One pre-built merged chunk supplied by the worker for chunked-mode
+    extraction. Receiver side of the merged-chunk routing wire contract
+    (Phase 0 Task 0b, plan 2026-05-27-merged-chunk-routing.md).
+
+    When ``ExtractPassRequest.selected_chunks`` is populated, docling-graph
+    SKIPS both ``_sanitize_docling_document`` and ``DocumentChunker`` —
+    these chunks ARE the LLM batches. Provenance flows back through
+    ``source_refs`` (DoclingDocument element self_refs covered by the
+    merged chunk).
+
+    ``model_config = ConfigDict(extra="ignore")``: pydantic v2 nested
+    config does NOT inherit, so this opt-out is local to the per-chunk
+    item. It exists so the worker can serialize its own ``SelectedChunk``
+    model (which carries an extra ``chunk_key`` field for forward-compat
+    payload pre-staging) directly without a per-callsite ``.exclude=``
+    strip. The parent ``ExtractPassRequest.extra='forbid'`` contract
+    above is unaffected.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    chunk_index: int = Field(
+        ..., description="Position of the chunk in HybridChunker output (0-indexed)."
+    )
+    text: str = Field(
+        ...,
+        description=(
+            "The merged chunk text (output of ``chunker.contextualize()``). "
+            "Used verbatim as the LLM batch input — no re-chunking, no "
+            "sanitize, no normalization downstream."
+        ),
+    )
+    source_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DoclingDocument element self_refs covered by this merged "
+            "chunk (e.g. ``['#/texts/35', '#/texts/36']``). Preserved "
+            "for downstream provenance — every extracted entity's "
+            "``evidence_units`` resolves back through these refs."
+        ),
+    )
+    page_numbers: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Source page number(s) covered by this merged chunk, supplied "
+            "by the worker from ``ExtractionChunk.page_number``. Read into "
+            "the pre-built-chunk metadata so synthesized provenance carries "
+            "a real page instead of None. Empty when the source row has no "
+            "page (e.g. text-only input). Falls back to resolving "
+            "``source_refs`` against the DoclingDocument when empty."
+        ),
+    )
+    token_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Token count of ``text`` per the worker-side tokenizer "
+            "(bge-m3). Diagnostic only — receiver does not enforce."
+        ),
+    )
+
+
 class ExtractPassRequest(BaseModel):
     """Request body for POST /extract-pass. Spec §5.9 wire contract."""
+
+    # C2 review fix: reject unknown keys so direct API / notebook callers can't
+    # silently typo an override field name (e.g. ``llm_batch_size_token`` vs
+    # the correct ``llm_batch_token_size``) and run with env defaults thinking
+    # they overrode it. Worker-produced requests are already protected by the
+    # manifest-side ExecutionProfile validator; this closes the same gap at the
+    # HTTP boundary for non-worker callers.
+    #
+    # NOTE: pydantic v2 nested-model ``model_config`` does NOT inherit. The
+    # nested ``SelectedChunkInput`` declares ``extra='ignore'`` locally so a
+    # worker-side ``SelectedChunk.model_dump()`` (which includes ``chunk_key``
+    # for forward-compat payload pre-staging) round-trips without rejection.
+    # This top-level forbid is preserved.
+    model_config = ConfigDict(extra="forbid")
+
     bundle_key: str = Field(..., description="Bundle identifier, e.g. 'air_defense_v3'")
     pass_name: str = Field(..., description="Pass name from the bundle manifest, e.g. 'radar_identity'")
     docling_document_json: dict[str, Any] = Field(
@@ -84,8 +161,14 @@ class ExtractPassRequest(BaseModel):
         default=None,
         description="UUID of the document being processed (for logging correlation)",
     )
+    pipeline_run_id: Optional[str] = Field(
+        default=None,
+        description="Pipeline run UUID for progress-registry correlation (R2).",
+    )
     temperature: Optional[float] = Field(
         default=None,
+        ge=0.0,
+        le=2.0,
         description=(
             "Per-request temperature override for the extraction LLM call. "
             "When None (default), uses the service-wide DOCLING_GRAPH_LLM_TEMPERATURE "
@@ -108,6 +191,7 @@ class ExtractPassRequest(BaseModel):
     )
     llm_batch_token_size: Optional[int] = Field(
         default=None,
+        gt=0,
         description=(
             "Per-request override for chunk_batches_by_token_limit's max_batch_tokens. "
             "When None (default), uses the service-wide DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE "
@@ -129,6 +213,56 @@ class ExtractPassRequest(BaseModel):
             "gpt-oss-class models). Used by the extraction_walkthrough notebook to "
             "A/B thinking-mode against the same input. Production worker callers "
             "omit this field and inherit the service default."
+        ),
+    )
+    # C2: per-pass execution profile knobs (new in C2 Iter 1).
+    chunk_max_tokens: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Per-request override for HybridChunker's max_tokens per chunk. "
+            "When None (default), uses the service-wide "
+            "DOCLING_GRAPH_CHUNK_MAX_TOKENS (currently 512). Sourced from "
+            "pass_def.execution.chunk_max_tokens when the manifest declares "
+            "an execution block; otherwise omitted."
+        ),
+    )
+    max_tokens: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Per-request override for the LLM's max_tokens generation cap. "
+            "When None (default), uses the service-wide "
+            "DOCLING_GRAPH_LLM_MAX_TOKENS (currently 4096). Applied via "
+            "OllamaChatClient.with_runtime_defaults(max_tokens=...) so it "
+            "reaches the actual outbound HTTP call, not just PipelineConfig. "
+            "Sourced from pass_def.execution.max_tokens when the manifest "
+            "declares an execution block; otherwise omitted."
+        ),
+    )
+    # Plan 2026-05-27-merged-chunk-routing.md Phase 0 Task 0b: chunked-mode
+    # routing. When populated, docling-graph SKIPS both
+    # ``_sanitize_docling_document`` and the internal ``DocumentChunker``;
+    # the chunks ride straight to the LLM batch loop. Absent / None keeps
+    # the existing per-element behavior.
+    selected_chunks: Optional[list[SelectedChunkInput]] = Field(
+        default=None,
+        description=(
+            "Pre-built merged chunks supplied by the worker. When set, "
+            "docling-graph treats these as the LLM batch inputs directly: "
+            "sanitize is skipped, the internal DocumentChunker is skipped, "
+            "and ``source_refs`` are preserved for downstream provenance. "
+            "Absent / null keeps the legacy per-element chunked path."
+        ),
+    )
+    field_subset: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Tasks F2+F4 (§9 subset-schema extraction): the active field names "
+            "to include in the LLM extraction prompt, forwarded from the worker's "
+            "chunk-scope router response. When None (the default), docling-graph "
+            "includes all schema fields — byte-identical to today's behavior. "
+            "F3 (applying the subset inside docling-graph) is a separate later task."
         ),
     )
 
@@ -210,6 +344,31 @@ class ExtractionProvenance(BaseModel):
             "snippet display."
         ),
     )
+    # Positional lineage carried from the delta-IR normalizer's per-node
+    # stamp (context._delta_merged_graph). The normalizer marks
+    # self_refs/chunk_indexes as the AUTHORITATIVE positional lineage of the
+    # batch every node spanned; cited_refs holds ONLY the LLM's explicit
+    # citations (possibly empty). element_uid == self_refs[0] when present.
+    # All additive / default-empty for backward compatibility.
+    self_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Authoritative positional DoclingDocument self_refs the entity's "
+            "source batch spanned. element_uid == self_refs[0] when present."
+        ),
+    )
+    chunk_indexes: list[int] = Field(
+        default_factory=list,
+        description="Library chunk indexes (0..N-1) the entity's batch spanned.",
+    )
+    cited_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DoclingDocument self_refs the LLM EXPLICITLY cited as evidence "
+            "for this entity. Subset of self_refs; empty when the LLM cited "
+            "nothing (positional self_refs still anchor the entity)."
+        ),
+    )
 
 
 class ExtractionFieldProvenance(BaseModel):
@@ -270,6 +429,20 @@ class ExtractionFieldProvenance(BaseModel):
             "(chunk_index → chunk_to_self_refs → first #/texts/N → bridge → cell_refs)."
         ),
     )
+    # Positional lineage carried from the parent entity node's delta-IR stamp
+    # (build_entity_provenance_from_delta_graph). Authoritative positional refs
+    # of the batch the entity spanned; additive / default-empty.
+    self_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Authoritative positional DoclingDocument self_refs carried from "
+            "the parent entity's delta-IR provenance stamp."
+        ),
+    )
+    chunk_indexes: list[int] = Field(
+        default_factory=list,
+        description="Library chunk indexes the parent entity's batch spanned.",
+    )
 
 
 class ExtractionRelationshipProvenance(BaseModel):
@@ -278,10 +451,21 @@ class ExtractionRelationshipProvenance(BaseModel):
 
     Built from delta-IR relationship.provenance (via context._delta_merged_graph),
     which the Pydantic-to-graph converter does NOT preserve on edges.
+
+    NOTE: hand-mirrored in app/services/extraction_merge.py::
+    ExtractionRelationshipProvenance — keep both field sets in sync.
     """
     relationship_type: str
     source_instance_id: Optional[str] = None
     target_instance_id: Optional[str] = None
+    # Cross-pass DTO ref ids (e.g. "E001"/"E041") carried from a DTO
+    # relationship node's properties.from_ref_id / to_ref_id. The worker
+    # resolves these through PassResult.upstream_refs to a precise
+    # (from_identity, rel_type, to_identity) triple so each edge keys to its
+    # OWN source chunks instead of the coarse __rel_type_fallback__ bucket.
+    # Distinct from source/target_instance_id (per-instance UUIDs) — additive.
+    from_ref_id: Optional[str] = None
+    to_ref_id: Optional[str] = None
     evidence_ids: list[str] = Field(default_factory=list)
     self_refs: list[str] = Field(default_factory=list)
     page_numbers: list[int] = Field(default_factory=list)
@@ -396,3 +580,5 @@ ExtractPassResponse.model_rebuild()
 TableFact.model_rebuild()
 CrossEntityHint.model_rebuild()
 TableOverlay.model_rebuild()
+SelectedChunkInput.model_rebuild()
+ExtractPassRequest.model_rebuild()
