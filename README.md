@@ -2,7 +2,9 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via bundle-based five-pass entity/relationship extraction (hand-authored fixed schemas, per-pass dispatch + merge-and-resolve + three-phase graph import) → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
+Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (SigLIP2 via OpenCLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via bundle-based multi-pass entity/relationship extraction (hand-authored fixed schemas; identity → field-group → relationship passes; schema-derived `absolute_union` chunk selection; per-pass dispatch + merge-and-resolve + lineage-gated graph import) → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
+
+> 📖 **For a complete, end-to-end description of every workflow and feature, see [`docs/SYSTEM-DESCRIPTION.md`](docs/SYSTEM-DESCRIPTION.md).** This README covers setup, operations, the API surface, and ontology/chunk-selector authoring.
 
 ## Architecture
 
@@ -13,11 +15,11 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
                     │         ArcadeDB Knowledge Graph          │
                     │   Document ←→ TextChunk / ImageChunk      │
                     │   Entity nodes (LLM + regex extracted)    │
-                    │   Ontology relations (50 predicates)      │
+                    │   Ontology relations (32 predicates)      │
                     │   Alias nodes (entity canonicalization)   │
                     │   Fulltext index (fuzzy entity search)    │
                     │   BGE 1024-dim text vectors (native)      │
-                    │   CLIP 512-dim image vectors (native)     │
+                    │   SigLIP2 1024-dim image vectors (native) │
                     └──────────┬───────────────┬────────────────┘
                                │               │
                     ┌──────────▼──────────────────────────────┐
@@ -46,31 +48,37 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | Database | PostgreSQL 16 (metadata, chunk_links, governance) |
 | Graph + Vector Database | ArcadeDB (knowledge graph, ontology, canonicalization, native vector search) |
 | Object Storage | MinIO |
-| Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim via Ollama `/v1/embeddings` API) |
-| Image Embeddings | OpenCLIP ViT-B-32 (512-dim, local CPU/GPU) |
+| Text Embeddings | `bge-m3` (1024-dim via Ollama `/v1/embeddings` API) |
+| Image Embeddings | OpenCLIP `ViT-L-16-SigLIP2-256` (`webli`, 1024-dim, local CPU/GPU) |
 | Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (GPU-accelerated) |
 | Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
 | Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
-| Graph Extraction | Docling-Graph service (bundle-based `/extract-pass` endpoint, 5 extraction passes with hand-authored Pydantic schemas, per-pass dispatch + retry + skip, merge-and-resolve, three-phase graph import, port 8002) |
+| Graph Extraction | Docling-Graph service (bundle-based `/extract-pass` endpoint; multi-pass identity/field-group/relationship extraction with hand-authored Pydantic schemas; schema-derived `absolute_union` chunk selection; per-pass dispatch + retry + skip; merge-and-resolve; lineage-gated graph import; port 8002) |
 | Community Detection | Louvain community detection over ArcadeDB graph + LLM-generated community summaries |
 | Trusted Data | ArcadeDB trusted_text collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
-### Docker Services (9 containers, 10 with split worker profile)
+### Docker Services (13 containers with the default split-worker profile)
 
 | Service | Purpose |
 |---|---|
 | `api` | FastAPI application server |
-| `worker` | Celery worker (ingest pipeline) |
-| `beat` | Celery Beat (periodic tasks, community detection) |
-| `postgres` | PostgreSQL 16 (metadata, chunk_links, governance) |
+| `worker-ingest` | Celery worker — `celery`/`ingest`/`extract` queues (split profile, **default**) |
+| `worker-embed` | Celery worker — `embed` queue (split profile) |
+| `worker-graph` | Celery worker — `graph`/`graph_extract` queues (split profile) |
+| `worker` | Single Celery worker, all queues (legacy `--start-mixed` mode only) |
+| `beat` | Celery Beat (dispatcher tick, reconciliation watchdog, directory watcher, community detection) |
+| `postgres` | PostgreSQL 16 (metadata, pipeline runs, pass outputs, chunk_links, governance) |
 | `redis` | Celery broker + result backend |
-| `minio` | S3-compatible object storage |
-| `docling` | Document conversion service (granite-docling-258M VLM) |
+| `minio` (+ `minio-init`) | S3-compatible object storage (raw + derived buckets) |
+| `docling` | Document conversion service (granite-docling VLM) |
 | `docling-graph` | Ontology-driven entity/relationship extraction service (port 8002) |
 | `arcadedb` | ArcadeDB (knowledge graph + native vector search, replaces Neo4j + Qdrant) |
+| `jupyter` | Analysis notebooks (dev) |
+
+> The **split-worker profile is the default** (`./manage.sh --start`): `worker-ingest`, `worker-embed`, and `worker-graph` replace the single `worker`. Use `--start-mixed` for the legacy single-worker layout.
 
 ## Quickstart
 
@@ -661,8 +669,8 @@ Image-modality results include an `image_url` served via the API proxy (`GET /v1
 
 Two searches run concurrently via `asyncio.gather`:
 
-- **BGE text search** — query embedded with `BAAI/bge-large-en-v1.5`, searched against `TextChunk` vertices in ArcadeDB (1024-dim cosine). Matches text chunks, table chunks, and **image description sections**. Over-fetches by 8× for diversity, filters below 0.25, content-deduplicates, reranks, returns top-k.
-- **CLIP image search** — query embedded with OpenCLIP ViT-B/32 text encoder, searched against `ImageChunk` vertices in ArcadeDB (512-dim cosine). Matches images by pixel similarity to the text concept. Scores are typically lower (0.1–0.3) because CLIP cross-modal alignment is loose.
+- **BGE text search** — query embedded with `bge-m3` (via Ollama), searched against `TextChunk` vertices in ArcadeDB (1024-dim cosine). Matches text chunks, table chunks, and **image description sections**. Over-fetches by 8× for diversity, filters below 0.25, content-deduplicates, reranks, returns top-k.
+- **Image search** — query embedded with the OpenCLIP `ViT-L-16-SigLIP2-256` text encoder, searched against `ImageChunk` vertices in ArcadeDB (1024-dim cosine). Matches images by similarity to the text concept. Scores are typically lower (0.1–0.3) because cross-modal alignment is loose.
 
 Seeds from both searches are merged (highest score per chunk_id kept).
 
@@ -740,7 +748,7 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 4. **Weapon / Missile / AAA** — Missiles, seekers, guidance, propulsion, artillery
 5. **Operational / Capability** — Capabilities, engagement timelines, performance measures
 
-46 entity types, 50 relationship predicates, enforced via validation matrix at graph write time. Entity resolution uses exact → alias → fuzzy match canonicalization.
+19 entity types, 32 relationship predicates, enforced via validation matrix at graph write time. Entity resolution uses exact → alias → fuzzy match canonicalization.
 
 See `ontology_bundles/air_defense_v3/ontology.yaml` for the full schema.
 
@@ -1612,7 +1620,7 @@ finalize_document
 Key features:
 - **Canonical element store** (`document_elements` table) — parse once, derive many
 - **Sequential 12-stage chain** — all stages run sequentially (the parallel chord was removed)
-- **Bundle-based graph extraction** — `derive_ontology_graph` dispatches 5 extraction passes via `/extract-pass`, merges results, resolves entities, and imports in three phases (nodes → domain edges → structural edges)
+- **Bundle-based graph extraction** — `derive_ontology_graph` dispatches the bundle's passes via `/extract-pass` in three phases (identity → field-group → relationship), narrows each pass with the schema-derived `absolute_union` chunk selector, merges results, resolves entities, applies a strict lineage gate, and imports (nodes → domain edges → structural edges). `air_defense_v3` ships 12 passes (2 identity + 9 field-group + 1 relationship).
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
 - **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
@@ -1647,7 +1655,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-pass` endpoint using a bundle-based architecture. The orchestrator in `derive_ontology_graph` dispatches 5 extraction passes (reference, radar_domain, missile_domain, other_systems, system_links) sequentially, each with its own hand-authored Pydantic schema from the active ontology bundle (`ontology_bundles/air_defense_v3/`). Each pass sends `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the Docling-Graph service, which returns extracted entities and relationships. After all required passes complete (with per-pass retry + skip logic and a required-pass gate), the merge-and-resolve layer collapses bridge entities across passes, resolves relationships by identity-dict or ref_id lookup, and tracks rejection reasons. The three-phase graph import writes nodes (with `tracker.mark()`), then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE edges are auto-created during node upsert. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. The `GraphWriteTracker` gates rollback on failure — failures before the first graph mutation skip rollback to avoid deleting data from a prior successful run. Per-field lineage is precise: each extracted field's source chunk is taken from the merge-time `__property_provenance` map (the chunk of the batch that emitted that field's value), so a spec value (e.g. "max range 50 km") is attributed to the chunk it physically appears in, not the chunk where the entity name first appears.
+Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-pass` endpoint using a bundle-based architecture. The orchestrator in `derive_ontology_graph` dispatches the bundle's passes in three time-ordered phases — **identity** (e.g. `radar_identity`, `missile_identity`; emit primary entities), **field-group** (e.g. `radar_power_rf`, `radar_antenna`, `missile_guidance`, `missile_propulsion`; emit property subsets onto those entities), and **relationship** (`system_links`; `input_mode=document_plus_entity_refs`, emits cross-entity edges via ref-ids) — each with its own hand-authored Pydantic schema from the active ontology bundle (`ontology_bundles/air_defense_v3/`, which ships 12 passes). Before dispatch, each pass is narrowed to relevant chunks by the schema-derived `absolute_union` selector (see "Adapting the Chunk Selector" below); a pass that legitimately matches no chunks finalizes as ZERO_YIELD/COMPLETE via the `empty_selection` contract. Each pass sends `{bundle_key, pass_name, docling_document_json, selected_chunks?, upstream_entities?, field_subset?}` to the Docling-Graph service, which returns extracted entities, relationships, and per-entity/field/relationship provenance. After all required passes complete (with per-pass retry + skip logic and a required-pass gate), the merge-and-resolve layer merges entities by `LogicalIdentity`, canonicalizes cross-pass aliases (table overlay / Mechanism A1), resolves relationships by identity-dict or ref_id lookup against `upstream_refs`, validates every edge against the bundle `VALIDATION_MATRIX`, and tracks rejection reasons. A strict **lineage gate** then drops any entity lacking an `element_uid`+page provenance row before import. The three-phase graph import writes nodes (with `tracker.mark()`), then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE edges are auto-created during node upsert. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. The `GraphWriteTracker` gates rollback on failure — failures before the first graph mutation skip rollback to avoid deleting data from a prior successful run. Per-field lineage is precise: each extracted field's source chunk is taken from the merge-time `__property_provenance` map (the chunk of the batch that emitted that field's value), so a spec value (e.g. "max range 50 km") is attributed to the chunk it physically appears in, not the chunk where the entity name first appears.
 
 ## Data Migration (from Neo4j + Qdrant to ArcadeDB)
 
