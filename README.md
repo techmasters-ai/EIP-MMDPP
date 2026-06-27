@@ -91,8 +91,8 @@ cp env.example .env
 ./manage.sh --start
 
 # 3. API + web UI
-#    Web UI:      http://localhost:8000/
-#    API docs:    http://localhost:8000/docs
+#    Web UI:      http://localhost:8005/
+#    API docs:    http://localhost:8005/docs
 #    ArcadeDB UI: http://localhost:2480/
 ```
 
@@ -367,7 +367,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 ```python
 import requests
 
-BASE = "http://localhost:8000/v1"
+BASE = "http://localhost:8005/v1"
 
 # Create source
 source = requests.post(f"{BASE}/sources", json={"name": "intel-reports", "description": "Field reports"}).json()
@@ -544,7 +544,7 @@ BGE vector search over text chunks in ArcadeDB. No LLM calls, no graph expansion
 ```python
 import requests
 
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_text": "radar signal processing specifications",
     "strategy": "basic",
     "top_k": 5,
@@ -563,7 +563,7 @@ Full pipeline: BGE text + CLIP image search → ArcadeDB graph expansion → ont
 import base64, requests
 
 # Text-only hybrid (searches text AND images)
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_text": "VHF radar internal components",
     "strategy": "hybrid",
     "modality_filter": "all",  # "all", "text", or "image"
@@ -573,12 +573,12 @@ data = resp.json()
 for item in data["results"]:
     print(f"[{item['score']:.3f}] {item['modality']}: {item['content_text'][:100]}")
     if item.get("image_url"):
-        print(f"  Image: http://localhost:8000{item['image_url']}")
+        print(f"  Image: http://localhost:8005{item['image_url']}")
 
 # Image-based search (base64-encoded)
 with open("photo.png", "rb") as f:
     image_b64 = base64.b64encode(f.read()).decode()
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_image": image_b64,
     "strategy": "hybrid",
     "modality_filter": "image",
@@ -586,7 +586,7 @@ resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
 })
 
 # Combined text + image search
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_text": "missile launcher diagram",
     "query_image": image_b64,
     "strategy": "hybrid",
@@ -602,7 +602,7 @@ Louvain community detection groups related entities in the ArcadeDB knowledge gr
 ```python
 import requests
 
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_text": "What are the major categories of air defense systems and how do they compare?",
     "strategy": "global",
     "top_k": 10,
@@ -625,7 +625,7 @@ All strategies support optional filters to narrow results:
 ```python
 import requests
 
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+resp = requests.post("http://localhost:8005/v1/retrieval/query", json={
     "query_text": "radar specifications",
     "strategy": "basic",
     "top_k": 10,
@@ -732,7 +732,7 @@ Returns `{query, strategy, modality_filter, total_results, context, sources}`. S
 
 ```python
 # LangGraph usage example
-resp = requests.get("http://localhost:8000/v1/agent/context",
+resp = requests.get("http://localhost:8005/v1/agent/context",
                     params={"query": "Patriot PAC-3 guidance", "strategy": "basic", "top_k": 10})
 data = resp.json()
 system_msg = f"Use this context:\n\n{data['context']}"
@@ -1140,7 +1140,7 @@ docker compose build worker docling-graph
 ./scripts/smoke_test_bundle_import.sh
 
 # Ingest a test document
-curl -X POST http://localhost:8000/v1/sources/{source_id}/documents \
+curl -X POST http://localhost:8005/v1/sources/{source_id}/documents \
   -F "file=@patient_record.pdf"
 ```
 
@@ -1375,7 +1375,7 @@ All query profile operations are available via REST API. Below are examples for 
 
 ```bash
 # Create and activate a registry
-curl -X POST http://localhost:8000/v1/query-profiles/registries \
+curl -X POST http://localhost:8005/v1/query-profiles/registries \
   -H "Content-Type: application/json" \
   -d '{
     "name": "My Custom Ontology",
@@ -1398,7 +1398,7 @@ curl -X POST http://localhost:8000/v1/query-profiles/registries \
 
 ```bash
 # Add a section profile to the active registry (replace REGISTRY_ID)
-curl -X POST http://localhost:8000/v1/query-profiles/registries/REGISTRY_ID/profiles \
+curl -X POST http://localhost:8005/v1/query-profiles/registries/REGISTRY_ID/profiles \
   -H "Content-Type: application/json" \
   -d '{
     "id": "platform_radars",
@@ -1421,7 +1421,7 @@ curl -X POST http://localhost:8000/v1/query-profiles/registries/REGISTRY_ID/prof
 
 ```bash
 # Search for radars associated with "Patriot"
-curl -X POST http://localhost:8000/v1/query-profiles/search/section \
+curl -X POST http://localhost:8005/v1/query-profiles/search/section \
   -H "Content-Type: application/json" \
   -d '{
     "profile_id": "platform_radars",
@@ -1437,7 +1437,7 @@ curl -X POST http://localhost:8000/v1/query-profiles/search/section \
 
 ```bash
 # Run a full system dossier (returns multiple sections)
-curl -X POST http://localhost:8000/v1/query-profiles/search/dossier \
+curl -X POST http://localhost:8005/v1/query-profiles/search/dossier \
   -H "Content-Type: application/json" \
   -d '{
     "profile_id": "system_dossier",
@@ -1451,7 +1451,7 @@ curl -X POST http://localhost:8000/v1/query-profiles/search/dossier \
 ```python
 import requests
 
-BASE = "http://localhost:8000/v1"
+BASE = "http://localhost:8005/v1"
 
 # 1. Create and activate a registry
 registry = requests.post(f"{BASE}/query-profiles/registries", json={
@@ -1502,13 +1502,13 @@ for item in result["items"]:
 **Get the starter template (pre-built profiles for the repository ontology):**
 
 ```bash
-curl http://localhost:8000/v1/query-profiles/default-template | python -m json.tool
+curl http://localhost:8005/v1/query-profiles/default-template | python -m json.tool
 ```
 
 **List exposed profiles for the active registry:**
 
 ```bash
-curl http://localhost:8000/v1/query-profiles
+curl http://localhost:8005/v1/query-profiles
 ```
 
 ### Limitations
