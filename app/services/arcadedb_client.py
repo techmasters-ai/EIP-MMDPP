@@ -10,6 +10,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# ArcadeDB raises ConcurrentModificationException (HTTP 503) under parallel
+# writes to the same page (MVCC version conflict). The transaction is rolled
+# back — nothing is committed — and the server explicitly asks the caller to
+# retry, so re-issuing the identical command is safe. Bounded exponential
+# backoff: 0.15, 0.30, 0.60, 1.20, 2.40s (~4.65s worst case before propagating).
+_CONCURRENT_MOD_MAX_RETRIES = 5
+_CONCURRENT_MOD_BACKOFF_BASE = 0.15
+
 
 class ArcadeDBError(Exception):
     """Base exception for ArcadeDB client errors."""
@@ -311,19 +319,29 @@ class ArcadeDBClient:
         body: dict[str, Any] = {"language": language, "command": command}
         if params:
             body["params"] = params
+        url = f"{self._base_url}/api/v1/command/{database}"
         t0 = time.monotonic()
-        resp = client.post(
-            f"{self._base_url}/api/v1/command/{database}",
-            json=body,
-            headers=self._auth_headers(),
-        )
+        resp = client.post(url, json=body, headers=self._auth_headers())
         if resp.status_code == 401:
             self._login_sync()
-            resp = client.post(
-                f"{self._base_url}/api/v1/command/{database}",
-                json=body,
-                headers=self._auth_headers(),
+            resp = client.post(url, json=body, headers=self._auth_headers())
+        # Retry transient MVCC write-conflicts (ConcurrentModificationException):
+        # the txn was rolled back, so re-issuing the command is safe.
+        for attempt in range(_CONCURRENT_MOD_MAX_RETRIES):
+            if not (resp.status_code == 503
+                    and "ConcurrentModification" in (resp.text or "")):
+                break
+            wait = _CONCURRENT_MOD_BACKOFF_BASE * (2 ** attempt)
+            logger.warning(
+                "ConcurrentModificationException on command_sync %s (attempt %d/%d) "
+                "— retrying in %.2fs: %s",
+                database, attempt + 1, _CONCURRENT_MOD_MAX_RETRIES, wait, command[:120],
             )
+            time.sleep(wait)
+            resp = client.post(url, json=body, headers=self._auth_headers())
+            if resp.status_code == 401:
+                self._login_sync()
+                resp = client.post(url, json=body, headers=self._auth_headers())
         elapsed = time.monotonic() - t0
         _raise_for_status_with_body(resp, f"command_sync {database} lang={language} cmd={command[:120]!r}")
         if elapsed > self._get_slow_threshold():

@@ -542,3 +542,68 @@ class TestClientLifecycle:
         await client.close()
 
         mock_aclient.aclose.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: command_sync retries transient ConcurrentModificationException (503)
+# ---------------------------------------------------------------------------
+
+class TestCommandSyncConcurrentModificationRetry:
+    """command_sync re-issues on ArcadeDB MVCC write-conflicts (503 CM)."""
+
+    @staticmethod
+    def _cm_503():
+        r = _make_response(503, {"error": "Cannot execute command"})
+        r.text = ('{"error":"Cannot execute command","detail":"Concurrent '
+                  'modification on page PageId(...) ... '
+                  'ConcurrentModificationException"}')
+        return r
+
+    def test_retries_then_succeeds(self):
+        from app.services.arcadedb_client import ArcadeDBClient
+
+        client = ArcadeDBClient("http://localhost:2480", "root", "pass")
+        ok = _make_response(200, {"result": [{"@rid": "#1:0"}]})
+        sync_post = MagicMock(side_effect=[
+            _login_response(),     # _ensure_auth_sync login
+            self._cm_503(),        # initial attempt -> 503 CM
+            self._cm_503(),        # retry 1 -> 503 CM
+            ok,                    # retry 2 -> success
+        ])
+        with patch.object(httpx.Client, "post", sync_post), \
+             patch("app.services.arcadedb_client.time.sleep") as mock_sleep:
+            result = client.command_sync(
+                "db", "sql", "CREATE EDGE HAS_IMAGE FROM #4:0 TO #13:0")
+
+        assert result == [{"@rid": "#1:0"}]
+        assert mock_sleep.call_count == 2       # slept before each retry
+        assert sync_post.call_count == 4        # login + 3 command attempts
+
+    def test_non_concurrent_503_raises_without_retry(self):
+        from app.services.arcadedb_client import ArcadeDBClient
+
+        client = ArcadeDBClient("http://localhost:2480", "root", "pass")
+        other = _make_response(503, {"error": "some other failure"})
+        other.text = '{"detail":"unrelated 503, not a write conflict"}'
+        sync_post = MagicMock(side_effect=[_login_response(), other])
+        with patch.object(httpx.Client, "post", sync_post), \
+             patch("app.services.arcadedb_client.time.sleep") as mock_sleep:
+            with pytest.raises(httpx.HTTPStatusError):
+                client.command_sync("db", "sql", "INSERT INTO V SET x=1")
+
+        assert mock_sleep.call_count == 0       # no retry for non-CM 503
+        assert sync_post.call_count == 2        # login + 1 attempt
+
+    def test_exhausts_retries_then_raises(self):
+        from app.services.arcadedb_client import ArcadeDBClient
+
+        client = ArcadeDBClient("http://localhost:2480", "root", "pass")
+        responses = [_login_response()] + [self._cm_503() for _ in range(6)]
+        sync_post = MagicMock(side_effect=responses)
+        with patch.object(httpx.Client, "post", sync_post), \
+             patch("app.services.arcadedb_client.time.sleep") as mock_sleep:
+            with pytest.raises(httpx.HTTPStatusError):
+                client.command_sync("db", "sql", "CREATE EDGE HAS_IMAGE ...")
+
+        assert mock_sleep.call_count == 5       # 5 bounded retries
+        assert sync_post.call_count == 7        # login + initial + 5 retries
