@@ -72,11 +72,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 COPY --from=fips-bypass /tmp/libfips_bypass.so /usr/local/lib/
 COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
 
+# Jammy's universe `python3.11` package is 3.11.0rc1 (a release candidate),
+# which LACKS sys.get_int_max_str_digits (added in FINAL 3.11.0). Modern torch
+# (>=2.12) references that API in torch._dynamo.polyfills.loader and crashes on
+# import via easyocr -> torchvision -> torch._dynamo. The docling-graph service
+# avoids this by running a final 3.11 (python:3.11-slim). Install a FINAL 3.11.x
+# here too via the deadsnakes PPA. Docling supports Python 3.10/3.11/3.12.
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3.11-dev python3-pip \
-    curl libgl1 libglib2.0-0 poppler-utils ninja-build \
-    ffmpeg \
+       software-properties-common gnupg ca-certificates \
+    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so add-apt-repository -y ppa:deadsnakes/ppa \
+    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
+    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
+       python3.11 python3.11-venv python3.11-dev python3-pip \
+       curl libgl1 libglib2.0-0 poppler-utils ninja-build ffmpeg \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
@@ -86,6 +95,21 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
 ENV LD_PRELOAD=/usr/local/lib/libfips_bypass.so
 
 WORKDIR /app
+
+# --- CUDA PyTorch (pinned, from the official PyTorch index) ---
+# Install torch/torchvision FIRST from the cu130 wheel index so the rest of the
+# deps resolve against an already-satisfied CUDA build (never the CPU wheel).
+# Pinned to docling-graph's proven pair; --index-url guarantees the CUDA build
+# per Docling's RTX GPU setup guide.
+RUN pip install --no-cache-dir torch==2.12.1 torchvision==0.27.1 \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# Modernize the build toolchain BEFORE building any sdists. Jammy's system
+# pip/setuptools (59.6.0) can't build openai-whisper's sdist (fails with
+# "Unknown distribution option: 'readme'" + flat-layout package discovery).
+# Placed after the torch layer to keep that ~532MB layer cached. setuptools is
+# pinned <82 because torch 2.12.1 requires setuptools<82.
+RUN pip install --no-cache-dir --upgrade pip "setuptools<82" wheel
 
 # --- Stable deps (cached normally) ---
 COPY requirements-stable.txt .
@@ -101,7 +125,10 @@ RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download
 # --- Updatable deps (cache-busted on every start) ---
 ARG CACHE_BUST
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+# only-if-needed keeps the pre-installed cu130 torch in place (docling accepts
+# it); --extra-index-url ensures any torch touch still resolves to a CUDA wheel.
+RUN pip install --no-cache-dir --upgrade --upgrade-strategy only-if-needed \
+    --extra-index-url https://download.pytorch.org/whl/cu130 -r requirements.txt
 
 # Pre-download EasyOCR models (craft detector + English recognizer). Without
 # this, the first PDF that triggers OCR downloads ~100MB at request time and

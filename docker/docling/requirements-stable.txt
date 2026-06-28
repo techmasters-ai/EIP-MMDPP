@@ -2,7 +2,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 transformers>=4.40.0
-torch>=2.5.0
+# NOTE: torch + torchvision are installed in the Dockerfile from the PyTorch
+# CUDA index (--index-url .../cu130), pinned to 2.12.1 / 0.27.1 — the proven
+# stack the docling-graph service runs. Using the dedicated index guarantees
+# the CUDA wheel (not the CPU build), per Docling's RTX GPU setup guide.
 huggingface-hub>=0.20.0
 Pillow>=11.0.0
 python-multipart>=0.0.20
