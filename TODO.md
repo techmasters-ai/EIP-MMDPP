@@ -432,8 +432,18 @@ docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_sanitizer
 ---
 
 **#82. Apply TCP keepalive + read-timeout-split hardening to the ArcadeDB httpx client**
-**Status:** Open (refs corrected 2026-06-29). Still valid — both clients use only a single flat `timeout=60.0` + httpx pool `keepalive_expiry` (connection reuse, NOT TCP SO_KEEPALIVE); no `socket_options`/split connect-read timeouts. (Note: the recently added 503 ConcurrentModification retry in `command_sync`, commit `6bdce99`, is a separate concern.)
-**Files:** `app/services/arcadedb_client.py:118-129` (`_async_client`), `:134-141` (`_sync_client`)
+**Status:** DONE + DEPLOYED 2026-06-29. New shared helper `app/services/_http_keepalive.py` (`keepalive_socket_options` + `build_keepalive_client` / `build_keepalive_async_client`) applies SO_KEEPALIVE + TCP_KEEPIDLE/INTVL/CNT (~150s dead-peer detection) and a split `httpx.Timeout(connect=10, read=60, write=60, pool=30)` on a custom transport (limits carried on the transport). `arcadedb_client.py` `_get_async_client`/`_get_sync_client` now use it (read cap stays 60s — ArcadeDB queries are sub-second). The Ollama pool clients keep their byte-identical inline copy (they cannot import this main-app module — the docling-graph mirror, enforced by `tests/test_pool_client_mirror.py`, lacks it). 7 unit tests in `tests/unit/test_http_keepalive.py` (green); workers+api restarted, in-container wiring + ArcadeDB reachability verified.
+**Files:** `app/services/_http_keepalive.py` (new), `app/services/arcadedb_client.py` (`_get_async_client`/`_get_sync_client`)
+
+**#86. Reconcile pre-existing `ollama_pool_client.py` mirror drift (`think:` per-call override)**
+**Status:** Open. Surfaced 2026-06-29 while running `tests/test_pool_client_mirror.py` for #82 (NOT caused by #82 — confirmed by stashing all #82 changes; the test fails on clean HEAD `f1627d9`).
+**Files:** `app/services/ollama_pool_client.py` (canonical), `docker/docling-graph/app/ollama_pool_client.py` (mirror).
+
+**Observation:** The mirror invariant test is RED at HEAD. The docling-graph mirror's shared section has a per-call `think: bool | str | None = None` parameter (and `think=think if think is not None else self._default_think`) that the main-app canonical lacks (`think=self._default_think`) — 3 differing lines. One side was updated without the other.
+
+**What needs to be done:** Decide which side is correct and sync the other. Likely the docling-graph extraction client legitimately needs the per-call `think` override (gpt-oss/thinking-model handling), in which case ADD it to the canonical `app/services/ollama_pool_client.py` (don't strip it from docling-graph — extraction may depend on it). Then `tests/test_pool_client_mirror.py::test_pool_client_mirror_in_sync` goes green. Verify no caller in the main app relies on the absence.
+
+**Why this matters:** the mirror test is a tripwire against the two LLM-client copies diverging silently; while it's red it can't catch NEW drift, and the two services may already invoke gemma4/gpt-oss with different think semantics. Small, contained (3 lines) but it's a live behavioral divergence on the critical extraction client.
 
 **Observation:**
 On 2026-04-30 a /extract-pass call hung 35+ minutes against a healthy Ollama because docling-graph's `httpx.Client` had no `SO_KEEPALIVE` set and a single 20-hour blanket timeout — when a NAT/firewall/conntrack table aged out the idle TCP state mid-generation, the kernel never noticed the connection was dead. The fix in `49c2e43` added `_build_keepalive_http_client()` (TCP_KEEPIDLE=60, KEEPINTVL=15, KEEPCNT=6 → ~150s dead-socket detection; `httpx.Timeout(connect=10s, read=min(timeout_s, 1800s), write=60s, pool=30s)`) to both `OllamaChatClient` and `OllamaEmbeddingClient`.

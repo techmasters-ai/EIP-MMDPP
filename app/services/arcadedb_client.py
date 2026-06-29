@@ -8,6 +8,23 @@ from typing import Any
 
 import httpx
 
+from app.services._http_keepalive import (
+    build_keepalive_async_client,
+    build_keepalive_client,
+)
+
+# TODO #82: ArcadeDB queries finish in well under a second, so the read cap
+# stays at the previous flat 60s; the split surfaces a dead connection fast
+# (connect=10s) and the shared transport adds TCP keepalive (~150s dead-peer
+# detection) so a silently-dropped socket becomes a retryable error instead
+# of hanging a worker with no signal.
+_ARCADEDB_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=30.0)
+_ARCADEDB_LIMITS = httpx.Limits(
+    max_keepalive_connections=10,
+    max_connections=20,
+    keepalive_expiry=30.0,
+)
+
 logger = logging.getLogger(__name__)
 
 # ArcadeDB raises ConcurrentModificationException (HTTP 503) under parallel
@@ -115,13 +132,8 @@ class ArcadeDBClient:
             or self._async_client.is_closed
             or self._async_client_loop is not current_loop
         ):
-            self._async_client = httpx.AsyncClient(
-                timeout=60.0,
-                limits=httpx.Limits(
-                    max_keepalive_connections=10,
-                    max_connections=20,
-                    keepalive_expiry=30.0,
-                ),
+            self._async_client = build_keepalive_async_client(
+                _ARCADEDB_TIMEOUT, _ARCADEDB_LIMITS,
             )
             self._async_client_loop = current_loop
             # Token was bound to the old client session; force re-login.
@@ -131,13 +143,8 @@ class ArcadeDBClient:
 
     def _get_sync_client(self) -> httpx.Client:
         if self._sync_client is None or self._sync_client.is_closed:
-            self._sync_client = httpx.Client(
-                timeout=60.0,
-                limits=httpx.Limits(
-                    max_keepalive_connections=10,
-                    max_connections=20,
-                    keepalive_expiry=30.0,
-                ),
+            self._sync_client = build_keepalive_client(
+                _ARCADEDB_TIMEOUT, _ARCADEDB_LIMITS,
             )
         return self._sync_client
 
