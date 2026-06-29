@@ -23,6 +23,15 @@ _LEGACY_SA2_FALLBACKS_ENABLED: bool = os.environ.get(
 
 _EVIDENCE_WS_RE = re.compile(r"\s+")
 _EVIDENCE_BOUNDARY_CLASS = r"A-Z0-9"
+# TODO #83 Tier A: separators that may differ between the LLM's emitted
+# identity and the document surface form (e.g. "SA-2 C" vs "SA-2C") are
+# treated as interchangeable/optional when matching the identity against
+# batch evidence. Whitespace, hyphen, underscore, slash, dot only.
+# Comma/semicolon/colon are deliberately EXCLUDED — they delimit list
+# items, and bridging them would glue distinct entities ("SA-2, C-300")
+# into a false match.
+_IDENTITY_FLEX_SEP_RE = re.compile(r"[\s\-_/.]+")
+_IDENTITY_FLEX_SEP_CLASS = r"[\s\-_/.]*"
 _EVIDENCE_STRING_KEYS = frozenset({"text", "orig", "content", "caption"})
 _STATUS_ALIASES = {
     "OPERATIONAL": ("OPERATIONAL",),
@@ -169,7 +178,19 @@ def identity_is_supported_by_batch_text(identity_value: Any, evidence_text: str)
     normalized = normalize_evidence_text(identity_value)
     if not normalized or not evidence_text:
         return False
-    pattern = rf"(?<![{_EVIDENCE_BOUNDARY_CLASS}]){re.escape(normalized)}(?:S)?(?![{_EVIDENCE_BOUNDARY_CLASS}])"
+    # TODO #83 Tier A: tolerate separator/spacing differences between the
+    # emitted identity and the evidence. Split the normalized identity on
+    # separator runs and rejoin with an optional-separator class, so
+    # "SA-2 C" matches "SA-2C" / "SA-2 C" / "SA 2 C" while the alphanumeric
+    # boundary lookarounds still prevent matching inside a larger token
+    # ("S-75" must not match "SA-75"), and commas are not bridged. A
+    # separator-free identity (e.g. "5YA23") reduces to the original
+    # escaped form, so its behavior is unchanged.
+    tokens = [re.escape(t) for t in _IDENTITY_FLEX_SEP_RE.split(normalized) if t]
+    if not tokens:
+        return False
+    core = _IDENTITY_FLEX_SEP_CLASS.join(tokens)
+    pattern = rf"(?<![{_EVIDENCE_BOUNDARY_CLASS}]){core}(?:S)?(?![{_EVIDENCE_BOUNDARY_CLASS}])"
     return re.search(pattern, evidence_text) is not None
 
 

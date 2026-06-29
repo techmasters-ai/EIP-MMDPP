@@ -604,6 +604,96 @@ def test_apply_bundle_postprocessing_dedupes_when_hint_matches_llm_edge():
     assert pass_output["relationships"][0]["rel_type"] == "CUES"
 
 
+# --- #83 Tier A: separator-tolerant identity gate -------------------------
+#
+# The post-extraction identity gate substring-matched the LLM's emitted
+# identity against the batch evidence text. At T>0 gemma4 emits real
+# entities with a different separator surface-form than the document —
+# e.g. it writes "SA-2 C" (space) while the doc has "SA-2C" (no space) —
+# and the literal match dropped them. Verified on the 2026-06-29 fresh
+# ingest: 17/19 distinct dropped missile names were recoverable real
+# entities, only 2 genuine hallucinations. Tier A tolerates separator/
+# spacing/case differences while preserving alphanumeric word boundaries
+# (no over-match) and NOT bridging list commas (no new false positives).
+
+def test_identity_gate_recovers_spacing_variant():
+    """The dominant failure: LLM 'SA-2 C' vs doc 'SA-2C' must now match."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "The SA-2C variant was deployed widely."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("SA-2 C", evidence) is True
+
+
+def test_identity_gate_recovers_hyphen_and_slash_variants():
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "Operators fielded the S-75 / SA-2 Guideline system."}]}
+    )
+    # emitted without the spaces around the slash
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("S-75/SA-2 Guideline", evidence) is True
+
+
+def test_identity_gate_exact_form_still_matches():
+    """Regression: forms that already matched must keep matching."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "The SA-2 C was an export variant."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("SA-2 C", evidence) is True
+
+
+def test_identity_gate_rejects_absent_hallucination():
+    """A name absent from the batch text (hallucination) is still dropped."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "The SA-2C and SA-2B variants are described here."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("HQ-2P", evidence) is False
+
+
+def test_identity_gate_boundary_no_overmatch():
+    """Flexible separators must not let a shorter id match inside a longer
+    alphanumeric token: 'S-75' must NOT match 'SA-75'."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "The SA-75 Dvina export designation."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("S-75", evidence) is False
+
+
+def test_identity_gate_separatorless_identity_unchanged():
+    """Identities with no separators behave exactly as before (bounded)."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "Designation 5YA23 appears in the table."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("5Ya23", evidence) is True
+    glued = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "token X5YA23Y not a standalone id."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("5Ya23", glued) is False
+
+
+def test_identity_gate_does_not_bridge_comma_list():
+    """A comma is a list delimiter, not a flexible separator: 'SA-2 C'
+    must NOT match across 'SA-2, C-300' (two distinct list items)."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "Inventory included SA-2, C-300, and others."}]}
+    )
+    assert _EVIDENCE_GATE.identity_is_supported_by_batch_text("SA-2 C", evidence) is False
+
+
+def test_filter_keeps_recoverable_variant_drops_hallucination():
+    """End-to-end through the filter: the spacing variant survives, the
+    hallucination is dropped."""
+    evidence = _EVIDENCE_GATE.collect_batch_evidence_text(
+        {"texts": [{"text": "The SA-2C and SA-2B export variants are documented."}]}
+    )
+    filtered, stats, _allowed = _EVIDENCE_GATE.filter_pass_output_by_batch_text(
+        {"missile_systems": [{"system_name": "SA-2 C"}, {"system_name": "HQ-2P"}]},
+        MissileDomainPass,
+        evidence,
+    )
+    kept = [row["system_name"] for row in filtered["missile_systems"]]
+    assert kept == ["SA-2 C"]
+    assert stats["dropped_entity_examples"]["missile_systems"] == ["HQ-2P"]
+
+
 def test_status_is_not_inferred_from_operation_or_in_use_language():
     evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
         """
