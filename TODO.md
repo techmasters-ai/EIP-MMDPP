@@ -249,7 +249,7 @@ Until then, the OllamaPool design serves the existing single-provider deployment
 ### Code Quality / Tech Debt (Deferred)
 
 **#76. Replace private `graph_store._client.command(...)` access with a public `GraphStore` method**
-**Status:** Open. Pre-existing tech debt surfaced during the OllamaPool refactor's code review (followups item #15). Not a bug — code works correctly today.
+**Status:** DONE + DEPLOYED 2026-06-29. Added a public escape hatch to the `GraphStore` Protocol + `ArcadeDBGraphStore` impl — `execute_query` / `execute_query_sync` / `execute_command` / `execute_command_sync` (the command pair takes `language="sql"`, accepting `"sqlscript"` for multi-statement scripts) — each hiding the backend client AND the database name. Migrated **all 13** external private-access sites (the audit had named 3): `arcadedb_community.py`, `trusted_data_tasks.py`, `api/v1/extraction_routing.py`, `extraction_chunk_search.py` (×3), `extraction_chunk_index.py` (×4), `pipeline.py` (×5 incl. the sqlscript structural-edge writer). Grep confirms **zero** remaining external `_client.(command|query|command_sync|query_sync)` access. 6 unit tests added; workers+api restarted, in-container imports verified. (`arcadedb_graph.py` internal `self._client.*` usage is the impl and stays.)
 
 **Observation:**
 `app/services/arcadedb_community.py:155-159` reaches through the private attributes `graph_store._client` and `graph_store._database` to execute raw SQL when cleaning up stale community reports:

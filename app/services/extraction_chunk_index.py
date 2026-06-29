@@ -1010,9 +1010,7 @@ def build_extraction_index(
             "page_number": int(page_no) if page_no is not None else None,
             "modality": modality,
         }
-        store._client.command_sync(
-            store._database,
-            "sql",
+        store.execute_command_sync(
             _INSERT_SQL,
             params,
         )
@@ -1137,9 +1135,7 @@ def _insert_merged_chunk_row(
     # legacy per-element ``_insert_chunk_row`` path is UNCHANGED — those
     # rows keep their real element refs (e.g. ``"#/texts/3"``).
     merged_self_ref = f"chunk_{chunk_index}"
-    store._client.command_sync(
-        store._database,
-        "sql",
+    store.execute_command_sync(
         _INSERT_MERGED_SQL,
         {
             "vertex_id": vertex_id,
@@ -1522,9 +1518,7 @@ def _delete_by_run_id(
         Count of deleted rows, or 0 on error in non-strict mode.
     """
     try:
-        result = store._client.command_sync(
-            store._database,
-            "sql",
+        result = store.execute_command_sync(
             _DELETE_SQL,
             {"run_id": pipeline_run_id},
         )
@@ -1567,9 +1561,7 @@ def cleanup_extraction_index(
         Number of rows deleted, or 0 on failure.
     """
     try:
-        result = store._client.command_sync(
-            store._database,
-            "sql",
+        result = store.execute_command_sync(
             _DELETE_SQL,
             {"run_id": pipeline_run_id},
         )

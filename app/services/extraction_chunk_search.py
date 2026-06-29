@@ -357,9 +357,7 @@ async def search_extraction_chunks_direct(
     # the columns; the accessors None/[]-coalesce.
     # TABLE signal: ``is_table`` projected (read via ``read_chunk_is_table``;
     # legacy rows False-coalesce).
-    rows = await store._client.query(
-        store._database,
-        "sql",
+    rows = await store.execute_query(
         (
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "
@@ -609,9 +607,7 @@ async def identity_anchor_queries(
             # the query rather than raise a parameterization error.
             continue
         try:
-            rows = await store._client.query(
-                store._database,
-                "sql",
+            rows = await store.execute_query(
                 (
                     "SELECT name, entity_type "
                     f"FROM {identity_type} "
@@ -678,9 +674,7 @@ async def fetch_extraction_chunks_for_run(
 
     MUST NOT call vector_search or any HNSW path — see module docstring.
     """
-    rows = await store._client.query(
-        store._database,
-        "sql",
+    rows = await store.execute_query(
         (
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
             "embedding, page_number, modality, pipeline_run_id, "

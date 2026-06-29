@@ -2080,8 +2080,7 @@ def _load_self_ref_chunk_map_from_arcadedb(document_id) -> dict[str, list[str]]:
     """
     try:
         graph_store = get_graph_store()
-        rows = graph_store._client.query_sync(
-            graph_store._database, "sql",
+        rows = graph_store.execute_query_sync(
             "SELECT chunk_id, self_refs, chunk_index FROM TextChunk "
             "WHERE document_id = :doc_id "
             # Fix L: deterministic order — chunk_index primary, chunk_id tiebreak
@@ -2653,8 +2652,7 @@ def _load_chunks_for_derivation(document_id: str) -> list:
     from app.services.extraction_merge import ChunkForDerivation
 
     graph_store = get_graph_store()
-    rows = graph_store._client.query_sync(
-        graph_store._database, "sql",
+    rows = graph_store.execute_query_sync(
         "SELECT @rid AS rid, text FROM TextChunk WHERE document_id = :doc_id",
         params={"doc_id": document_id},
     )
@@ -2679,8 +2677,7 @@ def _get_structural_document_rid(document_id: str) -> str:
     this point is a worker-invariant violation, not a pass failure.
     """
     graph_store = get_graph_store()
-    rows = graph_store._client.query_sync(
-        graph_store._database, "sql",
+    rows = graph_store.execute_query_sync(
         "SELECT @rid AS rid FROM Document WHERE document_id = :doc_id",
         params={"doc_id": document_id},
     )
@@ -10757,9 +10754,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
         if structural_edge_sql:
             try:
-                graph_store._client.command_sync(
-                    graph_store._database, "sqlscript",
+                graph_store.execute_command_sync(
                     ";\n".join(structural_edge_sql), structural_params,
+                    language="sqlscript",
                 )
                 logger.info(
                     "derive_structure_links: created %d ArcadeDB structural edges for %s",
@@ -11298,9 +11295,7 @@ def purge_terminated_extraction_chunks() -> dict:
         # created_at against (current time - 24 hours).  ArcadeDB SQL datetime
         # arithmetic: sysdate() - duration('PT24H').
         try:
-            rows = store._client.query_sync(
-                store._database,
-                "sql",
+            rows = store.execute_query_sync(
                 "SELECT DISTINCT pipeline_run_id FROM ExtractionChunk "
                 "WHERE created_at < sysdate() - duration('PT24H')",
                 {},

@@ -66,8 +66,8 @@ def index_trusted_submission(self, submission_id: str):
             "updated_at = sysdate() "
             "UPSERT WHERE chunk_id = :chunk_id"
         )
-        result = graph_store._client.command_sync(
-            graph_store._database, "sql", upsert_sql,
+        result = graph_store.execute_command_sync(
+            upsert_sql,
             {
                 "chunk_id": chunk_id,
                 "text": submission.content,

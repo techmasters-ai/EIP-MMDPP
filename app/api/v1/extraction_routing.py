@@ -322,9 +322,7 @@ async def _async_full_doc_token_estimate(
         # Direct SELECT sum(chunk_text.size()) by the indexed pipeline_run_id
         # property — no vector search involved.  ArcadeDB returns all matching
         # ExtractionChunk vertices for this run without a top_k cap.
-        rows = await store._client.query(
-            store._database,
-            "sql",
+        rows = await store.execute_query(
             "SELECT sum(chunk_text.size()) AS total_chars "
             "FROM ExtractionChunk WHERE pipeline_run_id = :run_id",
             {"run_id": pipeline_run_id},

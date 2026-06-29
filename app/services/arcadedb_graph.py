@@ -780,6 +780,38 @@ class ArcadeDBGraphStore:
         self._last_ready_check: float = 0
 
     # ------------------------------------------------------------------
+    # Raw SQL escape hatch (TODO #76)
+    # ------------------------------------------------------------------
+
+    async def execute_query(
+        self, command: str, params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run a read-only SQL query, hiding the client + database name."""
+        return await self._client.query(self._database, "sql", command, params)
+
+    def execute_query_sync(
+        self, command: str, params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Synchronous read-only query (for Celery tasks running outside a loop)."""
+        return self._client.query_sync(self._database, "sql", command, params)
+
+    async def execute_command(
+        self, command: str, params: dict[str, Any] | None = None, language: str = "sql",
+    ) -> list[dict[str, Any]]:
+        """Run a write command, hiding the client + database name.
+
+        ``language`` defaults to ``"sql"``; pass ``"sqlscript"`` for
+        multi-statement scripts.
+        """
+        return await self._client.command(self._database, language, command, params)
+
+    def execute_command_sync(
+        self, command: str, params: dict[str, Any] | None = None, language: str = "sql",
+    ) -> list[dict[str, Any]]:
+        """Synchronous write command (for Celery tasks running outside a loop)."""
+        return self._client.command_sync(self._database, language, command, params)
+
+    # ------------------------------------------------------------------
     # Validation matrix
     # ------------------------------------------------------------------
 

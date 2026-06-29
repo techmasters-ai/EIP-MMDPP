@@ -342,6 +342,53 @@ class GraphStore(Protocol):
         ...
 
     # ------------------------------------------------------------------
+    # Raw SQL escape hatch
+    # ------------------------------------------------------------------
+
+    async def execute_query(
+        self,
+        command: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run a read-only SQL query against the backing graph database.
+
+        Escape hatch for callers needing SQL the typed methods above don't
+        cover. Implementations hide the backend client and database name so
+        callers never reach into private attributes (e.g. ``store._client``).
+        """
+        ...
+
+    def execute_query_sync(
+        self,
+        command: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Synchronous variant of :meth:`execute_query` for Celery tasks."""
+        ...
+
+    async def execute_command(
+        self,
+        command: str,
+        params: dict[str, Any] | None = None,
+        language: str = "sql",
+    ) -> list[dict[str, Any]]:
+        """Run a write command against the backing graph database.
+
+        ``language`` defaults to ``"sql"``; pass ``"sqlscript"`` for
+        multi-statement scripts.
+        """
+        ...
+
+    def execute_command_sync(
+        self,
+        command: str,
+        params: dict[str, Any] | None = None,
+        language: str = "sql",
+    ) -> list[dict[str, Any]]:
+        """Synchronous variant of :meth:`execute_command` for Celery tasks."""
+        ...
+
+    # ------------------------------------------------------------------
     # Vector operations
     # ------------------------------------------------------------------
 

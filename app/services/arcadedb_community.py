@@ -152,8 +152,7 @@ async def run_community_detection(
             stale_cids = existing_cids - current_cids
             for stale_cid in stale_cids:
                 try:
-                    await graph_store._client.command(
-                        graph_store._database, "sql",
+                    await graph_store.execute_command(
                         "DELETE VERTEX FROM CommunityReport WHERE community_id = :cid",
                         {"cid": stale_cid},
                     )
