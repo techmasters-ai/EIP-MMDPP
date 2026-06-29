@@ -1,6 +1,21 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-30
+**Last updated:** 2026-06-29
+
+---
+
+## Backlog Reconciliation — 2026-06-29
+
+Three-agent audit of every open item against HEAD `9950deb`. **NOTE: line numbers in items written before 2026-05 are stale** — `docling-graph/app/main.py` was refactored (filters → `evidence_gate.py`, table logic → `app/services/table_normalization/`) and `app/config.py` shifted. Corrected refs are inline below.
+
+**Resolved / obsolete (no longer actionable):**
+- **#84** (`_table_facts.py` zero `sustain_mass_kg`) — OBSOLETE. The fact-synthesis path was reverted behind `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS` (off in prod; `.env:494`); production uses `app/services/table_normalization/`. Sustainer aliases now exist (`_alias_map.py:129-141`). See item for detail.
+- **#85** (`5Ya23` dropped) — OBSOLETE as written (same reverted path). If the symptom recurs, the live suspect is the evidence-gate identity filter (#83), not the parser.
+- **VARIANT_OF coverage gap** (memory-tracked) — FIXED in `a9f1028` (2026-06-17); manifest/coverage/validation_matrix all agree on `VARIANT_OF`. Residual cosmetic: stray `IS_VARIANT_OF` key in `validation_matrix.py:126` `SCORING_WEIGHTS` (0.7 default vs intended 0.95) — harmless to the coverage test.
+- **HNSW post-filter starvation** (memory-tracked) — FIXED; production defaults to direct per-run cosine (`vector_router_retrieval_mode=direct`, `.env:530`). Legacy HNSW path retained behind a flag (optional cleanup).
+- **`run_tests.sh` false-green** (memory-tracked) — FIXED; now `scripts/run_tests.sh` with `set -euo pipefail` + non-zero exit on failure.
+- **Schema-wide retrieval/routing plan** (memory-tracked) — largely EXECUTED (post-rerank boost, identity anchors §8, subset-schema §9 all landed); only Phase A wire re-enable + D3 `table_boost` remain (deferred).
+- **Lineage follow-up (e) checklist/README** — ADDRESSED in `VERIFICATION_CHECKLIST.md` + README.
 
 ---
 
@@ -9,8 +24,8 @@
 ### Frontend / UX
 
 **#73. Render LaTeX in image-description hover popovers**
-**Status:** Open. Small, isolated frontend change.
-**Files:** `frontend/src/components/QueryPage.tsx` (lines ~656–680), `frontend/src/components/DoclingViewer.tsx` (lines ~358–388), `frontend/package.json`
+**Status:** Open (NARROWED 2026-06-29). KaTeX infra now exists — `katex ^0.16.45` is wired for *formula elements* inside the Docling iframe (`DoclingViewer.tsx` `renderFormulaFragment` → `window.katex.renderToString`, commit `356553f`). The remaining gap is the **image-description** content specifically: `DoclingViewer.tsx:381-385` still renders `desc.content_text` as plain `whiteSpace:"pre-line"` text, and `QueryPage.tsx` surfaces descriptions via native `title=` tooltips that can't render markup. Scope → route image-description `content_text` through the existing KaTeX path.
+**Files:** `frontend/src/components/QueryPage.tsx`, `frontend/src/components/DoclingViewer.tsx:381-385`, `frontend/package.json`
 
 **Observation:**
 Picture descriptions emitted by `derive_picture_descriptions` frequently contain inline LaTeX (e.g. `$\sigma_0$`, `$E = mc^2$`, equation blocks). Today they appear in two places:
@@ -343,8 +358,8 @@ Each timeout silently drops a batch of element translations. The doc proceeds wi
 ---
 
 **#78. Short-circuit `extract-pass` for tiny-markdown DoclingDocuments**
-**Status:** Open. Surfaced during the 2026-04-30 fresh-ingest monitoring run.
-**Files:** `docker/docling-graph/app/main.py:281` (existing `_is_empty()` short-circuit), same file ~line 290-329 (where the new short-circuit slots in)
+**Status:** Open (refs corrected 2026-06-29). Still valid — `_is_empty()` exists (`main.py:651-658`, fired `:887`) but only triggers on a *fully* empty doc; the tiny-markdown short-circuit has NOT been added.
+**Files:** `docker/docling-graph/app/main.py:651-658` (`_is_empty()`), fire site `:887` (where the new `_is_too_small()` check slots in)
 
 **Observation:**
 During the 2026-04-30 reingest, three `/extract-pass` calls hit the soft-fail path with markdown_length=166 (twice) and 12662 (once):
@@ -417,8 +432,8 @@ docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_sanitizer
 ---
 
 **#82. Apply TCP keepalive + read-timeout-split hardening to the ArcadeDB httpx client**
-**Status:** Open. Defense-in-depth follow-up to commit `49c2e43` (OllamaPool TCP keepalive fix).
-**Files:** `app/services/arcadedb_client.py:110` (`_async_client`), `app/services/arcadedb_client.py:126` (`_sync_client`)
+**Status:** Open (refs corrected 2026-06-29). Still valid — both clients use only a single flat `timeout=60.0` + httpx pool `keepalive_expiry` (connection reuse, NOT TCP SO_KEEPALIVE); no `socket_options`/split connect-read timeouts. (Note: the recently added 503 ConcurrentModification retry in `command_sync`, commit `6bdce99`, is a separate concern.)
+**Files:** `app/services/arcadedb_client.py:118-129` (`_async_client`), `:134-141` (`_sync_client`)
 
 **Observation:**
 On 2026-04-30 a /extract-pass call hung 35+ minutes against a healthy Ollama because docling-graph's `httpx.Client` had no `SO_KEEPALIVE` set and a single 20-hour blanket timeout — when a NAT/firewall/conntrack table aged out the idle TCP state mid-generation, the kernel never noticed the connection was dead. The fix in `49c2e43` added `_build_keepalive_http_client()` (TCP_KEEPIDLE=60, KEEPINTVL=15, KEEPCNT=6 → ~150s dead-socket detection; `httpx.Timeout(connect=10s, read=min(timeout_s, 1800s), write=60s, pool=30s)`) to both `OllamaChatClient` and `OllamaEmbeddingClient`.
@@ -447,8 +462,8 @@ A worker hung on a dead ArcadeDB socket is invisible: no error log, no task time
 ---
 
 **#83. Relax post-extraction IDENTITY_FILTER (recoverable false-positive drops at high temperature)**
-**Status:** Open. Surfaced during the 2026-05-03/05 temperature × field A/B sweep (Runs 13–20).
-**Files:** `docker/docling-graph/app/main.py:1121` (`_filter_pass_output_by_batch_text`), same file ~1146 (`_filter_provenance_rows_by_allowed_identities`), same file ~1167–1179 (IDENTITY_FILTER log).
+**Status:** Open (refs corrected + ELEVATED 2026-06-29). Still valid and unrelaxed — the filter now lives in `evidence_gate.py` and still drops any entity whose normalized identity (uppercase/whitespace-collapsed via `normalize_evidence_text`, `evidence_gate.py:118`) fails a literal regex/substring match against batch text (`evidence_gate.py:169-172`), no fuzzy/temperature loosening. **This is now the prime suspect for the #85 `5Ya23` drop** — if entities are still disappearing, this gate (not the reverted parser path) is the cause.
+**Files:** `docker/docling-graph/app/evidence_gate.py:176` (`filter_pass_output_by_batch_text`), `:278` (`filter_provenance_rows_by_allowed_identities`); call sites `main.py:1824` / `:1880`, IDENTITY_FILTER log `main.py:1908`.
 
 **Observation:**
 The post-extraction "service identity gate" at `main.py:1121` substring-matches each extracted entity's identity values against the batch's evidence text and drops any that don't appear verbatim. At higher LLM sampling temperatures (T=1.0 in particular), gemma4:31b extracted entities whose identity values ARE in the source document but whose surface form differed from the evidence text by literal characters — the gate rejected them as if they were hallucinations.
@@ -494,7 +509,7 @@ Bundle with the next `docker/docling-graph/app/main.py` change. Specifically: if
 ---
 
 **#84. Parser-side `_table_facts.py` emits zero `sustain_mass_kg` facts on SA-2 Sustainer band (silent regression vs 2026-05-06 baseline)**
-**Status:** Open. Surfaced 2026-05-08 during PR #2 (per-pass-fanin) acceptance run on doc `38bebd4a-9137-4f02-ab64-ec08c94b804c` (run `ba94d7fb`).
+**Status:** OBSOLETE (closed 2026-06-29 audit). The `synthesize_table_facts` path this item targets was built+validated then reverted behind `is_experimental_table_facts_enabled()` (`main.py:699-707, 870-883`), defaults off (`table_normalization/config.py:59-60`), and is off in prod (`DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS=false`, `.env:494`). Production uses `app/services/table_normalization/` instead, and the missing sustainer aliases now exist (`_alias_map.py:129-141`, `detect_section_context` at `_table_facts.py:396`; commits `b8a9ccd`/`767d62f`, 2026-05-17). The original detail is retained below for history.
 **Files:** `docker/docling-graph/app/_table_facts.py` (section detection — `detect_section_context` from commit `b888a3b`, `extract_label_rows`, fact emission path), `docker/docling-graph/app/_alias_map.py` (ALIAS_MAP keyed on `(label_normalized, section_ctx, pass_name)`), `pipeline_pass_outputs.extract_pass_response_json->'table_overlay'->'facts'` (post-run inspection).
 
 **Observation:**
@@ -540,7 +555,7 @@ Soon — every SA-2 ingest is silently producing wrong sustain_mass_kg values un
 ---
 
 **#85. `5Ya23` MISSILE_SYSTEM dropped between parser facts and ArcadeDB write (cross-bug companion to #84)**
-**Status:** Open. Surfaced 2026-05-08 during the same PR #2 acceptance run.
+**Status:** OBSOLETE as written (2026-06-29 audit) — the "parser-facts → graph-write" path it blames is the same reverted `synthesize_table_facts` flow that does not run in production (`.env:494`). If `5Ya23`-class entity drops recur on a fresh ingest, the live cause is the evidence-gate identity filter (#83, `evidence_gate.py:176`), which drops entities whose identity doesn't literally match batch text. Being verified against the current 21-doc ingest; if confirmed it folds into #83. Original detail retained below.
 **Files:** `app/services/extraction_merge.py` (identity canonicalization, entity-merge phase), `app/services/table_overlay.py` (`apply_identity_rewrite`), `app/services/arcadedb_graph.py` (graph write path), and parser-side `_alias_map.py` (`MISSILE_IDENTITY_LABELS`, `CANONICAL_PRIORITY`).
 
 **Observation:**
