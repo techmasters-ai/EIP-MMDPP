@@ -436,7 +436,7 @@ docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_sanitizer
 **Files:** `app/services/_http_keepalive.py` (new), `app/services/arcadedb_client.py` (`_get_async_client`/`_get_sync_client`)
 
 **#86. Reconcile pre-existing `ollama_pool_client.py` mirror drift (`think:` per-call override)**
-**Status:** Open. Surfaced 2026-06-29 while running `tests/test_pool_client_mirror.py` for #82 (NOT caused by #82 — confirmed by stashing all #82 changes; the test fails on clean HEAD `f1627d9`).
+**Status:** DONE + DEPLOYED 2026-06-29. The docling-graph mirror's `with_runtime_defaults` carried a per-call `think: bool | str | None = None` keyword (needed for thinking-model extraction) that the canonical main-app copy lacked. Synced the canonical to match (added the keyword-only param + `think=think if think is not None else self._default_think`) — backward-compatible, byte-identical to the mirror's shared section now. `tests/test_pool_client_mirror.py` is GREEN again (both pairs); 20 ollama-pool config tests still pass; workers+api restarted, param verified live in-container. The mirror tripwire can catch new drift again.
 **Files:** `app/services/ollama_pool_client.py` (canonical), `docker/docling-graph/app/ollama_pool_client.py` (mirror).
 
 **Observation:** The mirror invariant test is RED at HEAD. The docling-graph mirror's shared section has a per-call `think: bool | str | None = None` parameter (and `think=think if think is not None else self._default_think`) that the main-app canonical lacks (`think=self._default_think`) — 3 differing lines. One side was updated without the other.

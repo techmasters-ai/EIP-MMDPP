@@ -323,6 +323,7 @@ class OllamaChatClient:
         max_tokens: int | None = None,
         truncation_retry_max_tokens: int | None = None,
         model: str | None = None,
+        think: bool | str | None = None,
     ) -> "OllamaChatClient":
         """Return a client sharing this pool with per-request generation knobs.
 
@@ -344,7 +345,7 @@ class OllamaChatClient:
                 if max_tokens is not None
                 else self._default_max_tokens
             ),
-            think=self._default_think,
+            think=think if think is not None else self._default_think,
             schema_transform=self._schema_transform,
             structured_output_threshold_chars=self._threshold,
             force_json_mode=self._force_json_mode,
