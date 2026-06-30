@@ -23,9 +23,9 @@ Three-agent audit of every open item against HEAD `9950deb`. **NOTE: line number
 
 ### Frontend / UX
 
-**#73. Render LaTeX in image-description hover popovers**
-**Status:** Open (NARROWED 2026-06-29). KaTeX infra now exists — `katex ^0.16.45` is wired for *formula elements* inside the Docling iframe (`DoclingViewer.tsx` `renderFormulaFragment` → `window.katex.renderToString`, commit `356553f`). The remaining gap is the **image-description** content specifically: `DoclingViewer.tsx:381-385` still renders `desc.content_text` as plain `whiteSpace:"pre-line"` text, and `QueryPage.tsx` surfaces descriptions via native `title=` tooltips that can't render markup. Scope → route image-description `content_text` through the existing KaTeX path.
-**Files:** `frontend/src/components/QueryPage.tsx`, `frontend/src/components/DoclingViewer.tsx:381-385`, `frontend/package.json`
+**#73. Render LaTeX in image-description panel**
+**Status:** DONE 2026-06-29 (deploy = api image rebuild). The DoclingViewer "AI Image Analysis" panel now renders inline (`$...$`) and display (`$$...$$`) LaTeX via the `katex` npm package: new `renderImageDescriptionWithMath` helper (`DoclingViewer.tsx`) splits `content_text` on math delimiters and renders each math segment with `katex.renderToString` (CSS via `import "katex/dist/katex.min.css"`). Conservative guard — only segments containing LaTeX-ish chars `[\\^_{}]` are treated as math, so prose like `$5 and $10` stays literal; invalid LaTeX falls back to the raw text. `tsc --noEmit` clean + `vite build` succeeds (KaTeX fonts/CSS bundle). **Scope note:** the old `QueryPage.tsx` native-`title=`-tooltip subtask is DROPPED as stale — image descriptions are no longer surfaced via result-tile tooltips there; the panel is the live locus. Deploy: api image bakes the frontend (multi-stage `npm run build`), so it ships on the next `docker compose build api` + recreate.
+**Files:** `frontend/src/components/DoclingViewer.tsx` (`renderImageDescriptionWithMath`)
 
 **Observation:**
 Picture descriptions emitted by `derive_picture_descriptions` frequently contain inline LaTeX (e.g. `$\sigma_0$`, `$E = mc^2$`, equation blocks). Today they appear in two places:
