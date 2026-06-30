@@ -28,8 +28,12 @@ from app.schemas.retrieval import (
 router = APIRouter(tags=["retrieval"])
 logger = logging.getLogger(__name__)
 
-# Max concurrent seed expansions
-_EXPAND_CONCURRENCY = 16
+# Max concurrent seed expansions. Each _expand_one opens its own AsyncSession
+# (TODO #88 determinism fix), so this caps concurrent DB sessions per query.
+# Keep it well under the async pool (pool_size 20 + overflow 10 = 30, see
+# app/db/session.py) so multiple simultaneous hybrid queries can't exhaust the
+# pool: at 8, ~3 concurrent queries fit (3*9 ≈ 27 < 30).
+_EXPAND_CONCURRENCY = 8
 
 # Shared image extension -> MIME type mapping
 _IMAGE_CONTENT_TYPES = {
