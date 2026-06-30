@@ -374,7 +374,7 @@ def _merge_seed_results(results_lists: list) -> list[QueryResultItem]:
     best: dict[str, QueryResultItem] = {}
     for result in results_lists:
         if isinstance(result, Exception):
-            logger.debug("Search task failed: %s", result)
+            logger.warning("Search task failed: %s", result)
             continue
         for r in result:
             key = str(r.chunk_id) if r.chunk_id else str(id(r))
@@ -427,12 +427,16 @@ async def _expand_seeds(
         *[_expand_one(s) for s in seeds if s.chunk_id],
         return_exceptions=True,
     )
-    return [
-        item
-        for sublist in expansion_lists
-        if not isinstance(sublist, Exception)
-        for item in sublist
-    ]
+    merged: list[QueryResultItem] = []
+    for sublist in expansion_lists:
+        if isinstance(sublist, Exception):
+            # Soft-fail visibility (#88 follow-up): a failed per-seed expansion
+            # was previously filtered out silently, hiding real ArcadeDB/graph
+            # failures behind an empty expansion. Surface it at warning.
+            logger.warning("Seed expansion task failed: %s", sublist)
+            continue
+        merged.extend(sublist)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +691,7 @@ async def _expand_via_doc_structure(
                 if r.get("chunk_id")
             ]
     except Exception as e:
-        logger.debug("ArcadeDB doc-structure expansion failed for %s: %s", chunk_id, e)
+        logger.warning("ArcadeDB doc-structure expansion failed for %s: %s", chunk_id, e)
 
     # Fallback: Postgres chunk_links for pre-migration documents
     if not rows:
@@ -707,7 +711,7 @@ async def _expand_via_doc_structure(
             })
             rows = [(str(r[0]), r[1], float(r[2]), int(r[3])) for r in result.fetchall()]
         except Exception as e:
-            logger.debug("Postgres doc-structure expansion failed for %s: %s", chunk_id, e)
+            logger.warning("Postgres doc-structure expansion failed for %s: %s", chunk_id, e)
             return []
 
     if not rows:

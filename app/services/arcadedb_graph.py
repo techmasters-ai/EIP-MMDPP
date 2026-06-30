@@ -1703,11 +1703,19 @@ class ArcadeDBGraphStore:
         # DETERMINISM (#88): a SQL `LIMIT` inside the MATCH is applied during
         # traversal — it yields an arbitrary `limit`-sized subset of neighbors
         # *before* any ORDER BY, so the kept set (not just its order) varied
-        # run-to-run and the hybrid pipeline's tail flipped. We therefore fetch
-        # ALL neighbors (no SQL ORDER BY / LIMIT) and sort + truncate in Python:
-        # strongest weight first, ties broken by ascending chunk_id. This makes
-        # the returned set fully deterministic.
-        sql = (
+        # run-to-run and the hybrid pipeline's tail flipped.
+        #
+        # PERF + DETERMINISM (#88 follow-up b): instead of fetching ALL
+        # neighbors (which can be thousands for a chunk in a huge SAME_ARTIFACT
+        # clique), we wrap the MATCH in an outer SELECT so that ORDER BY + LIMIT
+        # apply POST-traversal. Unlike the in-MATCH LIMIT, this yields a
+        # deterministic top-N (verified stable across repeated live calls on
+        # this ArcadeDB build). The cap is generous (`limit * 40`, min 100) so
+        # normal documents are unaffected while pathological cliques are bounded.
+        # The Python `(-weight, chunk_id)` sort + `[:limit]` below remains the
+        # final authority on the returned set.
+        cap = max(limit * 40, 100)
+        match_clause = (
             f"MATCH "
             f"{{type: TextChunk, as: src, where: (@rid = {rid})}}"
             f".bothE('NEXT_CHUNK','SAME_PAGE','SAME_SECTION','SAME_ARTIFACT'){{as: e}}"
@@ -1719,6 +1727,10 @@ class ArcadeDBGraphStore:
             f"tgt.modality AS modality, "
             f"e.@type AS link_type, "
             f"e.weight AS weight"
+        )
+        sql = (
+            f"SELECT FROM ( {match_clause} ) "
+            f"ORDER BY weight DESC, chunk_id ASC LIMIT {cap}"
         )
         rows = await self._client.query(self._database, "sql", sql)
         rows = sorted(
