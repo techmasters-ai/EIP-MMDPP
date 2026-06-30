@@ -1280,4 +1280,5 @@ async def get_retrieval_settings():
         "top_k": settings.query_default_top_k,
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
+        "ontology_reserved_slots": settings.retrieval_ontology_reserved_slots,
     }

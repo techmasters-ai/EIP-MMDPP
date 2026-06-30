@@ -112,6 +112,10 @@ class UnifiedQueryRequest(APIModel):
     reranker_top_n: Optional[int] = Field(default=None, ge=1, le=200, description="Number of candidates to rerank (defaults to server config)")
     min_confidence: Optional[float] = Field(default=0.1, ge=0.0, le=1.0, description="Minimum confidence score (matches /v1/settings/retrieval default)")
     include_context: bool = True
+    ontology_reserved_slots: Optional[int] = Field(
+        default=None, ge=0, le=100,
+        description="Hybrid only: reserved top_k slots for ontology-related chunks. None = server default.",
+    )
 
     @model_validator(mode="after")
     def resolve_legacy_mode(self):
