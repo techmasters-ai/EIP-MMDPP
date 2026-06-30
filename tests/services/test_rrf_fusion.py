@@ -37,3 +37,25 @@ def test_expansion_floor_no_evict_on_full_topk():
                  {"text":1.0,"visual":1.0,"ontology":0.5}, k=20, c=0.05)
     out = apply_expansion_floor(fused, [("e1", 0.4)], top_k=20, floor_slots=2, display_scale=0.05)
     assert len([u for u in out if u.id.startswith("t")]) == 20
+
+
+from app.services.rrf_fusion import build_units
+
+class _Item:
+    def __init__(self, chunk_id, modality, artifact_id=None, score=0.0, page_number=None):
+        self.chunk_id, self.modality, self.artifact_id = chunk_id, modality, artifact_id
+        self.score, self.page_number = score, page_number
+
+def test_build_units_collapses_image_and_description():
+    items = [
+        _Item("img1", "image", artifact_id="A", score=0.51, page_number=7),
+        _Item("desc1", "image_description", artifact_id="A", score=0.80, page_number=7),
+        _Item("txt1", "text", artifact_id="A", score=0.95, page_number=2),  # same artifact, must NOT merge
+    ]
+    units = build_units(items)
+    by = {tuple(sorted(u.member_chunk_ids)): u for u in units}
+    assert ("desc1", "img1") in by
+    merged = by[("desc1", "img1")]
+    assert merged.text_score == 0.80 and merged.visual_score == 0.51
+    assert set(merged.member_chunk_ids) == {"img1", "desc1"} and set(merged.pages) == {7}
+    assert ("txt1",) in by
