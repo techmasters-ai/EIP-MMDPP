@@ -123,7 +123,12 @@ def deduplicate_results(results: list[QueryResultItem]) -> list[QueryResultItem]
     best: dict[str, QueryResultItem] = {}
     for r in results:
         key = str(r.chunk_id) if r.chunk_id else str(id(r))
-        if key not in best or r.score > best[key].score:
+        existing = best.get(key)
+        if existing is None or r.score > existing.score or (
+            # Deterministic tie-break: on equal score keep the smaller chunk_id
+            r.score == existing.score
+            and str(r.chunk_id or "") < str(existing.chunk_id or "")
+        ):
             best[key] = r
     return list(best.values())
 

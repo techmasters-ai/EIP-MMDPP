@@ -270,7 +270,7 @@ def _apply_reserved_slots(
 ) -> list[QueryResultItem]:
     """Guarantee up to `m` qualifying ontology_relation chunks in the top_k,
     filling the rest by descending fused score. m=0 == pure ranking."""
-    ranked = sorted(deduped, key=lambda x: x.score, reverse=True)
+    ranked = sorted(deduped, key=lambda x: (-x.score, str(x.chunk_id or "")))
     if m <= 0:
         return ranked[:top_k]
 
@@ -390,12 +390,20 @@ async def _expand_seeds(
 
     async def _expand_one(seed: QueryResultItem) -> list[QueryResultItem]:
         from app.config import get_settings
+        from app.db.session import AsyncSessionFactory
         async with sem:
             chunk_id_str = str(seed.chunk_id)
             items: list[QueryResultItem] = []
 
-            # Try doc-structure expansion (chunk_links table) first
-            doc_items = await _expand_via_doc_structure(db, chunk_id_str, seed.score, include_context, query_text)
+            # Determinism (#88): each concurrent expansion MUST use its own DB
+            # session. Sharing the pipeline's single AsyncSession across up to
+            # _EXPAND_CONCURRENCY coroutines is unsafe (SQLAlchemy forbids
+            # concurrent ops on one session) and caused intermittent, silently
+            # swallowed lookup failures — so doc-structure candidates flipped
+            # run-to-run. The other expanders already open their own sessions.
+            async with AsyncSessionFactory() as expand_db:
+                # Try doc-structure expansion (chunk_links table) first
+                doc_items = await _expand_via_doc_structure(expand_db, chunk_id_str, seed.score, include_context, query_text)
             if doc_items:
                 items.extend(doc_items)
             else:
@@ -559,7 +567,7 @@ async def _text_vector_search(
 
     # Content-level diversification, then trim to requested top_k
     results = _diversify_results(results)
-    results.sort(key=lambda r: r.score, reverse=True)
+    results.sort(key=lambda r: (-r.score, str(r.chunk_id or "")))
     results = results[:body.top_k]
 
     # Re-rank top candidates using cross-encoder
@@ -635,7 +643,7 @@ async def _image_vector_search(
         )
 
     # Sort by score and trim to requested top_k
-    results.sort(key=lambda r: r.score, reverse=True)
+    results.sort(key=lambda r: (-r.score, str(r.chunk_id or "")))
     return results[:body.top_k]
 
 
@@ -684,7 +692,7 @@ async def _expand_via_doc_structure(
             FROM retrieval.chunk_links cl
             WHERE cl.source_chunk_id = :chunk_id
               AND cl.hop <= :max_hops
-            ORDER BY cl.weight DESC
+            ORDER BY cl.weight DESC, cl.target_chunk_id ASC
             LIMIT :limit
         """)
         try:

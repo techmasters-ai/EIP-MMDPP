@@ -1546,6 +1546,9 @@ class ArcadeDBGraphStore:
             if crid and crid not in seen:
                 seen.add(crid)
                 result.append(r)
+        # Deterministic ordering: the caller slices linked[:k], so stabilize
+        # by a fixed key before returning (rows arrive in arbitrary DB order).
+        result.sort(key=lambda r: str(r.get("chunk_id") or r.get("chunk_rid") or ""))
         return result
 
     async def get_related_entity_chunks(
@@ -1600,7 +1603,10 @@ class ArcadeDBGraphStore:
             if prev is None or w > prev.get("_w", -1.0):
                 r["_w"] = w
                 best[crid] = r
-        out = sorted(best.values(), key=lambda x: x.get("_w", 0.0), reverse=True)[:limit]
+        out = sorted(
+            best.values(),
+            key=lambda x: (-x.get("_w", 0.0), str(x.get("chunk_id") or x.get("chunk_rid") or "")),
+        )[:limit]
         for r in out:
             r.pop("_w", None)
         return out
@@ -1692,8 +1698,15 @@ class ArcadeDBGraphStore:
         # ArcadeDB SQL quirk: `target.@class` / `edge.@class` is a parser error
         # ("no viable alternative at input '.@'"). MATCH + `as: X` + `X.@type`
         # works because @type is resolved inside the MATCH scope rather than as
-        # a dotted attribute lookup on a LET variable. Return weight via
-        # explicit projection and handle null weight in ORDER BY.
+        # a dotted attribute lookup on a LET variable.
+        #
+        # DETERMINISM (#88): a SQL `LIMIT` inside the MATCH is applied during
+        # traversal — it yields an arbitrary `limit`-sized subset of neighbors
+        # *before* any ORDER BY, so the kept set (not just its order) varied
+        # run-to-run and the hybrid pipeline's tail flipped. We therefore fetch
+        # ALL neighbors (no SQL ORDER BY / LIMIT) and sort + truncate in Python:
+        # strongest weight first, ties broken by ascending chunk_id. This makes
+        # the returned set fully deterministic.
         sql = (
             f"MATCH "
             f"{{type: TextChunk, as: src, where: (@rid = {rid})}}"
@@ -1705,13 +1718,13 @@ class ArcadeDBGraphStore:
             f"tgt.document_id AS document_id, "
             f"tgt.modality AS modality, "
             f"e.@type AS link_type, "
-            f"e.weight AS weight "
-            f"ORDER BY weight DESC "
-            f"LIMIT :limit"
+            f"e.weight AS weight"
         )
-        rows = await self._client.query(
-            self._database, "sql", sql, {"limit": limit},
-        )
+        rows = await self._client.query(self._database, "sql", sql)
+        rows = sorted(
+            rows,
+            key=lambda r: (-(r.get("weight") or 0.0), str(r.get("chunk_id") or "")),
+        )[:limit]
         return rows
 
     async def get_entity_evidence_chunks(
