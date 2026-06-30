@@ -1548,6 +1548,63 @@ class ArcadeDBGraphStore:
                 result.append(r)
         return result
 
+    async def get_related_entity_chunks(
+        self, node_id: str, rel_types: list[str], limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """1-hop domain-relation expansion: chunks of entities related to the
+        seed chunk's entities via `rel_types` (undirected). Returns each chunk
+        with the true relation it was reached by, deduped keeping the strongest."""
+        if not rel_types:
+            return []
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
+        type_rows = await self._client.query(
+            self._database, "sql", f"SELECT @type AS node_type FROM {rid}",
+        )
+        seed_type = type_rows[0].get("node_type") if type_rows and isinstance(type_rows[0], dict) else None
+        if seed_type not in ("TextChunk", "ImageChunk"):
+            return []
+        rel_list = ",".join(f"'{r}'" for r in rel_types if r.isidentifier())
+        if not rel_list:
+            return []
+        sql = (
+            f"MATCH {{type: {seed_type}, as: seed, where: (@rid = {rid})}}"
+            f".in('EXTRACTED_FROM') {{as: entity}}"
+            f".bothE({rel_list}) {{as: rel}}.bothV() {{as: related, "
+            f"where: ($matched.entity.@rid <> @rid)}}"
+            f".out('EXTRACTED_FROM') {{as: chunk, where: (@rid <> {rid})}} "
+            f"RETURN chunk.@rid AS chunk_rid, chunk.@type AS chunk_type, "
+            f"chunk.chunk_id AS chunk_id, chunk.document_id AS document_id, "
+            f"chunk.text AS text, chunk.chunk_text AS chunk_text, "
+            f"chunk.modality AS modality, chunk.page_number AS page_number, "
+            f"related.name AS related_entity, rel.@type AS rel_type"
+        )
+        try:
+            rows = await self._client.query(self._database, "sql", sql)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("get_related_entity_chunks MATCH failed for %s: %s", node_id, exc)
+            return []
+        from app.api.v1._retrieval_helpers import get_retrieval_relation_weights
+        weights = get_retrieval_relation_weights()
+        best: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            crid = str(r.get("chunk_rid", ""))
+            if not crid:
+                continue
+            r = dict(r)
+            r["target_chunk_id"] = r.get("chunk_id")
+            r["target_chunk_type"] = "image_chunk" if r.get("chunk_type") == "ImageChunk" else "text_chunk"
+            w = weights.get(str(r.get("rel_type")), weights.get("default", 0.70))
+            prev = best.get(crid)
+            if prev is None or w > prev.get("_w", -1.0):
+                r["_w"] = w
+                best[crid] = r
+        out = sorted(best.values(), key=lambda x: x.get("_w", 0.0), reverse=True)[:limit]
+        for r in out:
+            r.pop("_w", None)
+        return out
+
     async def get_entity_by_rid(self, rid: str) -> dict[str, Any]:
         """Return all properties of the vertex at the given RID, including
         nullable ones. Used by section_properties profiles to feed
