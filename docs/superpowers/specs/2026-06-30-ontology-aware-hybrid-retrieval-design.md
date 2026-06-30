@@ -132,11 +132,11 @@ Satisfies the data-lineage rule and makes the behavior debuggable end-to-end.
 ## 5. Files affected
 
 - `app/services/arcadedb_graph.py` — new `get_related_entity_chunks` (+ GraphStore Protocol decl in `app/services/graph_store.py`).
-- `app/api/v1/retrieval.py` — new `_expand_via_domain_relations`, call it in `_expand_seeds` (gated by the master flag); `_rescore_expanded_chunks` stores `context.raw_cosine` + `context.fused_score_pre_rerank` (instead of discarding cosine); reserved-slot logic in `_multi_modal_pipeline`; blended `_apply_reranker`; `ontology_relation` formatting in `build_markdown`/`build_sources`; extend `GET /settings/retrieval`.
+- `app/api/v1/retrieval.py` — new `_expand_via_domain_relations`, call it in `_expand_seeds` (gated by the master flag); `_rescore_expanded_chunks` stores `context.raw_cosine` + `context.fused_score_pre_rerank` (instead of discarding cosine); reserved-slot logic in `_multi_modal_pipeline`; blended `_apply_reranker`; extend `GET /settings/retrieval`.
 - `app/api/v1/_retrieval_helpers.py` — env-backed retrieval relation-weight table + `get_retrieval_relation_weights()` getter; `compute_fusion_score` consuming the true relation.
 - `app/schemas/retrieval.py` — `ontology_reserved_slots` on `UnifiedQueryRequest`.
 - `app/api/v1/agent.py` — `reserved_slots` query param plumbing.
-- `app/api/v1/_agent_helpers.py` — `ontology_relation` source label/formatting (currently only handles `source=="ontology"`).
+- `app/api/v1/_agent_helpers.py` — `ontology_relation` source label/formatting in `build_markdown`/`build_sources` (which live here, not in `retrieval.py`; currently only handle `source=="ontology"`).
 - `app/config.py` + `.env` + `.env.example` — new settings (master flag, reserved-slot knobs, expand_k, optional weight-table JSON override). **Global fusion weights unchanged.**
 - `frontend/src/components/QueryPage.tsx` (+ api client) — hybrid-mode reserved-slots stepper **and** `ontology_relation` source label + reserved badge (currently only labels `source==="ontology"` at `:589`).
 - **No ontology-bundle / generator changes** — the retrieval relation-weight table is env-backed, not bundle-backed.
@@ -146,7 +146,7 @@ Satisfies the data-lineage rule and makes the behavior debuggable end-to-end.
 
 1. A hybrid query on a known air-defense system (SA-2) returns at least one chunk reached via a **domain** relation (`ASSOCIATED_WITH`/`CUES`/`VARIANT_OF` — a Fan Song chunk) that does **not** appear in the pre-change result, marked `context.reserved=true` with its `rel_type`. The E2E fixture must **guarantee** the SA-2↔Fan Song edge exists in the test graph and **assert** the chunk was absent pre-change.
 2. Domain-expanded chunks are weighted by the **true** relation (`VARIANT_OF`=0.95 ≠ co-mention `EXTRACTED_FROM`=0.70), verified in the stored `context.fused_score_pre_rerank`.
-3. `context.raw_cosine` and `context.fused_score_pre_rerank` are stored on every expanded chunk and logged; tests assert both.
+3. `context.raw_cosine` and `context.fused_score_pre_rerank` are stored on every domain-expanded (`ontology_relation`) chunk and logged; tests assert both. (Doc-structure, cross-modal, and co-mention expansions are unchanged.)
 4. Reserved-slot selection admits up to `M` qualifying (rel ≥0.85 **and** `raw_cosine` ≥0.15) domain chunks into `top_k`; a chunk **below the cosine floor is rejected** (explicit test case), as is a non-tier relation.
 5. The reranker **blends** (`α·rerank + (1−α)·fused`) rather than overwrites; reserved chunks are never dropped.
 6. `M` is settable per query from the hybrid-search UI and via the request parameter, defaulting from the server (clamped to `[0, top_k]`).
