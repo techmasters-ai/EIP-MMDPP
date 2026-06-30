@@ -14,6 +14,12 @@ class AgentSource(APIModel):
     score: float
     modality: str
     classification: str
+    # Provenance (ontology-aware retrieval). Populated from the result's
+    # context; None/False for non-graph-expanded results.
+    source: Optional[str] = None
+    rel_type: Optional[str] = None
+    related_entity: Optional[str] = None
+    reserved: bool = False
 
 
 class AgentContextResponse(APIModel):
@@ -76,12 +82,19 @@ def build_markdown(query: str, results: list[QueryResultItem]) -> str:
 
 
 def build_sources(results: list[QueryResultItem]) -> list[AgentSource]:
-    return [
-        AgentSource(
-            chunk_id=str(item.chunk_id) if item.chunk_id else None,
-            score=item.score,
-            modality=item.modality,
-            classification=item.classification,
+    sources: list[AgentSource] = []
+    for item in results:
+        ctx = item.context or {}
+        sources.append(
+            AgentSource(
+                chunk_id=str(item.chunk_id) if item.chunk_id else None,
+                score=item.score,
+                modality=item.modality,
+                classification=item.classification,
+                source=ctx.get("source"),
+                rel_type=ctx.get("rel_type"),
+                related_entity=ctx.get("related_entity"),
+                reserved=bool(ctx.get("reserved", False)),
+            )
         )
-        for item in results
-    ]
+    return sources
