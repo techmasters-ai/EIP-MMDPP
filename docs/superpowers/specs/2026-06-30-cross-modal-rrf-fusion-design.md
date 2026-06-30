@@ -1,84 +1,99 @@
-# Cross-Modal RRF Fusion for Multi-Modal Retrieval — Design (v2)
+# Cross-Modal RRF Fusion for Multi-Modal Retrieval — Design (v3)
 
 - **Date:** 2026-06-30
-- **Status:** Revised after 3 independent reviews → pending implementation plan
-- **Scope:** hybrid retrieval ordering in `app/api/v1/retrieval.py`
+- **Status:** Revised after 2 rounds × 3 independent reviews → ready for implementation plan
+- **Scope:** hybrid retrieval ordering in `app/api/v1/retrieval.py` (+ `_apply_reranker`, `unified_query`)
 
 ## Problem
 
 Multi-modal (hybrid) retrieval merges results from **incompatible scorers** onto one
-0–1 axis and sorts them together:
-
-- **cross-encoder** text relevance (`bge-reranker-v2-m3`, ~0.1–0.99)
-- **SigLIP** visual match probability (~0–0.93)
-- **cross-modal expansion** decay (text-proximity, *not* a query-relevance measure)
-
-A SigLIP `0.5` is not comparable to a cross-encoder `0.9`, so the merged ordering is not
-meaningful. True calibration to a common relevance probability requires labeled cross-modal
-data we do not have.
+0–1 axis and sorts them together: cross-encoder text relevance (`bge-reranker-v2-m3`,
+~0.1–0.99), SigLIP visual match probability (~0–0.93), and cross-modal expansion decay
+(text-proximity, *not* a relevance measure). A SigLIP `0.5` is not comparable to a
+cross-encoder `0.9`, so the merged ordering is meaningless. Calibrating to a common
+relevance probability needs labeled cross-modal data we do not have.
 
 ## Goal
 
-One merged, well-ordered hybrid result list via **Reciprocal Rank Fusion (RRF)** — the
-**industry-standard, calibration-free** rank-aggregation method for fusing heterogeneous
-retrievers (Cormack et al. 2009; the default "hybrid search" fusion in Elasticsearch,
-OpenSearch, Qdrant, Weaviate, Vespa, Milvus). RRF is **agreement-based** (CombSUM-family):
-an item endorsed by multiple signals ranks above one endorsed by a single weak signal —
-the empirically-better behavior (Fox & Shaw 1994: CombSUM/MNZ > CombMAX). We explicitly
-**reject** "best-of"/MAX fusion; it underperforms and is not standard.
+One merged, well-ordered hybrid list via **Reciprocal Rank Fusion (RRF)** — the
+industry-standard, calibration-free, **agreement-based** (CombSUM-family) rank-aggregation
+method (Cormack et al. 2009; default hybrid-search fusion in Elasticsearch, OpenSearch,
+Qdrant, Weaviate, Vespa, Milvus). "Best-of"/MAX is explicitly rejected (Fox & Shaw 1994:
+CombSUM/MNZ > CombMAX).
 
 ## Non-goals
 
-- Calibrated relevance probabilities (not achievable without labels).
-- Any change to **Text Basic** (`strategy=basic`) ranking — must stay byte-identical.
-- A VLM cross-modal reranker (possible future "deep search" toggle).
-- Faceted/grouped UI.
+- Calibrated relevance probabilities. Any change to **Text Basic** ranking (must stay
+  byte-identical). A VLM cross-modal reranker. Faceted UI.
 
 ---
 
 ## Design
 
-### Fusion signals (RRF inputs)
+### Fusion signals (relevance only)
 
-RRF fuses **relevance signals only**. Each is an independently-ranked list, built **before**
-the candidate merge/dedup so per-signal ranks survive:
+Each is an independently-ranked list, built **before** the candidate merge/dedup:
 
-1. **S_text** — cross-encoder relevance over text-bearing candidates (`text`, `table`,
-   `image_description`, and image captions — see per-image unit below). Ranked desc by
-   reranker score.
-2. **S_visual** — SigLIP match probability over `image`/`schematic` candidates, **admitted
-   only when the visual signal is real** (separation gate, below). Ranked desc by prob.
-3. **S_ontology** — qualifying `ontology_relation` chunks (`rel_weight ≥ min`,
-   `raw_cosine ≥ min`; reuses `_apply_reserved_slots.qualifies()`). Ranked desc by rel_weight.
+1. **S_text** — cross-encoder relevance over text-bearing units (`text`, `table`,
+   `image_description`, and image **captions**, see caption pass + per-image unit).
+2. **S_visual** — SigLIP probability over `image`/`schematic` units, admitted only when the
+   visual signal is real (separation gate).
+3. **S_ontology** — qualifying `ontology_relation` chunks (`qualifies()`: `rel_weight ≥ min`,
+   `raw_cosine ≥ min`).
 
-**Cross-modal expansion is NOT a fusion signal.** It was peer-weighted in v1; reviews showed
-a text-proximity signal at peer weight floats co-page/derived images above the canonical text
-answer. Expansion remains **candidate generation only** (recall): an expansion chunk ranks
-*only if it independently earns a place in S_text / S_visual / S_ontology*. (Trade-off: a
-co-page figure with no caption match and weak SigLIP no longer auto-surfaces — the honest
-outcome when no genuine image-relevance signal exists.)
+**Per-signal dedup:** within each signal, collapse duplicate `chunk_id`s (the expansion fan-out
+can reach the same chunk from multiple seeds) **before** assigning ranks.
 
-### Per-image unit (de-duplication of the *picture*)
+**Within-signal rank assignment:** sort `(score desc, id asc)`, then assign **contiguous**
+1-based ranks (no holes).
 
-A single picture can exist as up to three chunks: the `image` chunk (SigLIP vector + caption
-`content_text`), and a separate `image_description` TextChunk (VLM prose). These are
-**collapsed into one logical result unit keyed by `artifact_id`** for both fusion and display:
+### Per-image unit (collapse the *picture*)
 
-- the unit's **S_visual rank** = its `image` chunk's rank;
-- the unit's **S_text rank** = the *best* rank among {caption, image_description};
-- displayed as **one card** ("matched visually and/or by description").
+A picture exists as up to three chunks: the `image` chunk (SigLIP vector + caption
+`content_text`) and a separate `image_description` TextChunk. **Collapse into one unit keyed
+by `artifact_id`, gated to `modality ∈ {image, image_description, schematic}` with non-null
+`artifact_id`** (plain `text`/`table` chunks also carry an `artifact_id` and must NOT be
+merged):
 
-This removes the double-counting and double-card problems and is where agreement between an
-image's visual and textual evidence is rewarded (it appears in both S_visual and S_text).
+- unit **visual_score** = its image chunk's SigLIP prob → its S_visual rank;
+- unit **text_score** = `max(caption_score, image_description_score)` (same-signal dedup, a
+  MAX *within* S_text, not a fusion-level MAX) → its S_text rank;
+- **Ranks are assigned over units by score, contiguously** (collapse-by-score first, then
+  rank — resolves the v2 wording ambiguity; no rank holes).
+- Displayed as **one card** retaining **both source `chunk_id`s and page numbers** (project
+  lineage rule — the merged card must list image + description provenance, not drop one).
+
+### Caption → S_text pass (explicit producer)
+
+Captions live on `image` chunks returned by `_image_vector_search`, **not** on any TextChunk
+from `_text_vector_search`. So S_text is built from **two** producers: (a) the text/table/
+image_description TextChunks from the text vector search, and (b) a dedicated cross-encoder
+pass over the **captions of the S_visual image chunks**. Both feed one combined S_text ranking
+(after per-image-unit collapse). Caption text is read from the image chunk's `chunk_text`
+**regardless of `include_context`**.
 
 ### Visual separation gate (suppress SigLIP noise)
 
-For codename queries (e.g. "Fan Song") SigLIP has no visual handle; its within-band ordering
-is noise. An image is admitted to **S_visual** only if its SigLIP prob ≥
-`retrieval_rrf_visual_min_prob` (default **0.30**) — distinct from, and stricter than, the
-`retrieval_image_min_score_threshold` (0.0) used for Images-Only display. On a flat/noise
-distribution this empties S_visual, so noise contributes nothing to fusion. (Images-Only mode
-is unaffected — it does not use fusion.)
+Admit an image to S_visual only if SigLIP prob ≥ `retrieval_rrf_visual_min_prob` (default
+**0.35**). Measured separation ("Fan Song" one image at 0.51 vs rest ~0; "radar antenna" ~18
+images ≥0.5) leaves headroom, so 0.35 keeps genuine hits while excluding the noise floor.
+Distinct from `retrieval_image_min_score_threshold` (0.0, Images-Only display). On a flat
+distribution S_visual is effectively empty.
+
+### Expansion floor (bounded, non-leading — restores codename diagrams)
+
+Dropping expansion entirely (v2) removed the **only** mechanism that surfaces an on-page
+schematic for a **codename** query — where SigLIP can't read the codename, the caption is
+often "Figure 3", and the VLM description names shape/function not the codename, so all three
+relevance signals fail together. Re-admit expansion as a **bounded, non-leading** path, NOT a
+peer RRF signal:
+
+- After fusion, reserve up to `retrieval_rrf_expansion_floor_slots` (default **2**) **tail
+  slots** of `top_k` for the best `cross_modal`/`doc_structure` expansion units **not already
+  present**, ordered by their decay score.
+- **Hard constraint:** an expansion-floor unit's display score is **capped below the lowest
+  fused (non-floor) item**, so a co-page item can *appear* but provably **cannot outrank** a
+  genuinely-scored result. This keeps the recall value without the v1 float-to-top defect.
 
 ### Fusion
 
@@ -86,63 +101,68 @@ is unaffected — it does not use fusion.)
 RRF(u) = Σ over signals S where unit u ∈ S:  w_S / (k + rank_S(u))
 ```
 
-- `k` = `RETRIEVAL_RRF_K` (default **20**, not 60 — these lists are short (tens of items);
-  k=60 flattens rank so "presence" dominates and the cross-encoder's confident top is lost).
-- `w_S`: `w_text=1.0`, `w_visual=1.0`, `w_ontology=0.5` (tunable). No `w_expand` (dropped).
-- `rank_S(u)`: 1-based rank within S, assigned after sorting **(score desc, then `chunk_id`/
-  `artifact_id` asc)** so ties are deterministic.
-
-Sort fused units by `RRF(u)` desc, tiebreak by unit id. Then apply the ontology floor and trim.
+- `k` = `RETRIEVAL_RRF_K` (default **20**; verified separation: rank-1 = 0.0476, rank-10 =
+  0.0333, rank-30 = 0.0200 — 2.38× r1/r30, vs 1.48× at k=60).
+- `w_S`: `w_text=1.0`, `w_visual=1.0`, `w_ontology=0.5` (tunable).
+- Sort units by `RRF(u)` desc. **Leading-slot tiebreak:** on (near-)equal RRF, prefer (1)
+  more contributing signals, then (2) a text-bearing unit over a single-signal image, then
+  (3) id — so a lone marginal image cannot edge the primary text answer at slot #1.
 
 ### Ontology minimal floor (preserve the live-verified guarantee)
 
-Folding ontology fully into a soft signal would drop the shipped, live-verified reserved-slot
-guarantee (CUES→Amazonka/SNR-75). Keep a **minimal hard floor**: guarantee up to
-`retrieval_rrf_ontology_min_slots` (default **1**) qualifying ontology unit(s) in the final
-top_k if any qualify; RRF orders everything else. (v1's full reserved-slot count is replaced
-by this minimal floor + the S_ontology signal.)
+Guarantee up to `retrieval_rrf_ontology_min_slots` qualifying ontology units **in top_k**.
+**Action item for the plan:** the live CUES→Amazonka/SNR-75 case must be re-run to confirm how
+many qualifying ontology chunks it produced; set the default to that count (≥1) so the
+guarantee is not silently weaker than v1's reserved slots. The floor guarantees **membership**;
+a floored unit keeps its RRF-ordered position (annotate that a tail-floored unit may display
+below the item above it — accepted minor non-monotonicity).
 
-### Filtering vs. display (decouple them)
+### Filtering vs. display
 
-- **Filtering** is done by the **per-signal gates** on their native scales — the existing
-  reranker floor (0.05) for S_text, the visual separation gate (0.30) for S_visual — *before*
-  fusion. The request `min_confidence` is **not** applied to the fused score in hybrid mode
-  (the fused score is not a relevance probability; applying a 0.1–0.5 threshold to it is
-  meaningless and breaks portability). `min_confidence` continues to gate **Text Basic** and
-  is documented as a per-signal relevance floor for hybrid.
-- **Display score** is informational only: `display(u) = RRF(u) / (RRF(u) + C)`,
-  `C = RETRIEVAL_RRF_DISPLAY_SCALE` (default **0.05** so a strong single-signal top item reads
-  ≈ 0.5 with k=20). Monotonic, stable across queries. **Labeled "fusion score," not a
-  probability**, with the understood band (~0.3–0.85), not "0–1".
+- **Filtering** is per-signal, on native scales, **before** fusion: reranker floor (0.05) for
+  S_text, visual gate (0.35) for S_visual.
+- **`min_confidence` in hybrid** is **mapped onto the per-signal floors** (not applied to the
+  fused score, which is not a probability): the effective S_text floor = `max(0.05,
+  min_confidence)` on reranker score, and the effective S_visual gate = `max(0.35,
+  min_confidence)` on SigLIP prob. This keeps the API knob meaningful instead of inert. Text
+  Basic keeps applying `min_confidence` to its score unchanged.
+- **Display score** is informational: `display(u) = RRF(u) / (RRF(u) + C)`,
+  `C = RETRIEVAL_RRF_DISPLAY_SCALE` (default **0.05**). Strong single-signal top reads ≈ **0.49**,
+  agreement top ≈ **0.66**, structural max ≈ **0.70**. **Documented band ~0.3–0.70** (NOT 0–1).
+  Labeled "fusion score, not a probability." Note: not comparable across queries (a
+  single-signal-correct answer reads ~0.49 while an agreement answer reads ~0.66) — UI should
+  not threshold on it.
 
 ---
 
-## Integration (rewritten per reviewer 2)
+## Integration (per reviewer-2, round 2)
 
-The current pipeline collapses signal identity (`_merge_seed_results` → `_deduplicate_results`
-→ `_diversify_results`) **before** any final ordering, and `_text_vector_search` reranks +
-trims internally and is **shared with Text Basic**. So RRF is not "just replace the final
-sort." Concretely:
+The pipeline currently collapses signal identity (`_merge_seed_results :352` →
+`_deduplicate_results :365` → `_diversify_results :366`) **before** ordering; `_text_vector_search`
+reranks+trims via `_apply_reranker` (the `top_k` trim lives at `_apply_reranker :299`, **not** in
+`_text_vector_search`); and `min_confidence` is applied strategy-agnostically in
+`unified_query :102-103`. So the RRF path touches **three** shared surfaces, all flag-branched:
 
-1. **Signal capture (pre-merge).**
-   - **S_text:** add a `for_fusion: bool=False` parameter to `_text_vector_search`. When true
-     (hybrid only) it returns the **wide reranked pool without the final top_k trim** and
-     treats the reranker floor as **signal membership, not candidate removal** (sub-floor text
-     chunks are simply absent from S_text, not deleted). When false → **today's exact behavior**
-     (Text Basic byte-identical). Caption text for image chunks is fetched for reranking
-     regardless of the response-level `include_context`.
-   - **S_visual:** capture `_image_vector_search` output (already a ranked SigLIP list) before
-     merge; apply the separation gate.
-   - **S_ontology / candidates:** partition `expanded` by `context["source"]`.
-2. **Build units** (collapse images by `artifact_id`), assign per-signal ranks.
-3. **Fuse** (RRF), apply ontology floor, then **dedup/diversify on the fused output**, trim top_k.
-4. **Rollback:** the entire RRF path is behind `RETRIEVAL_RRF_FUSION_ENABLED` (default true).
-   When false, `_multi_modal_pipeline` runs the **untouched** legacy path (reserved-slots +
-   single rerank, image-bypass intact). All RRF edits to shared functions are strictly branched
-   so the off-path is bit-for-bit the pre-change behavior.
+1. **`_text_vector_search(for_fusion=False)`** — default = today's exact behavior (Text Basic
+   byte-identical). `for_fusion=True` returns the **wide reranked pool without the final trim**.
+2. **`_apply_reranker`** — gains a `for_fusion` branch that **skips the `top_k` trim** (and the
+   `passthrough`/`remainder` re-assembly) so the wide pool survives to S_text.
+3. **`unified_query`** — branches `:102-103` so hybrid maps `min_confidence` onto per-signal
+   floors instead of cutting the fused score.
 
-`_apply_reranker`'s `_NON_RERANK_MODALITIES` image-bypass (commit 33063fe) stays for the
-legacy/off path; the RRF path handles images via S_visual + caption-in-S_text instead.
+**Seed fan-out fix (HIGH):** the wide S_text pool (≈128) must **not** become the expansion seed
+set — `_expand_seeds` is sized for ~`top_k` seeds (`_EXPAND_CONCURRENCY=8`, each seed opens DB
+sessions). Take the **top ~`top_k`** of the wide pool as expansion seeds; keep the full pool only
+for S_text. No second search (the reranker already scores ≤`retrieval_rerank_pool_size` pairs, so
+this does not increase cross-encoder cost).
+
+**Flow:** capture S_visual (pre-merge, gated) and the wide text pool → caption pass over S_visual
+images → build per-image units → per-signal dedup + contiguous ranks → RRF → ontology floor →
+expansion floor → dedup/diversify on the fused output → trim `top_k`.
+
+**Rollback:** `RETRIEVAL_RRF_FUSION_ENABLED` (default true). When false, all three functions run
+their untouched legacy branch (reserved-slots + single rerank + image-bypass `_NON_RERANK_MODALITIES`
+`:248-250`). The flag-off equality test must cover **all three** functions.
 
 ---
 
@@ -152,58 +172,63 @@ legacy/off path; the RRF path handles images via S_visual + caption-in-S_text in
 |---|---|---|
 | `RETRIEVAL_RRF_FUSION_ENABLED` | `true` | master flag; false = legacy ordering |
 | `RETRIEVAL_RRF_K` | `20` | RRF constant (tuned for short lists) |
-| `RETRIEVAL_RRF_W_TEXT` | `1.0` | S_text weight |
-| `RETRIEVAL_RRF_W_VISUAL` | `1.0` | S_visual weight |
-| `RETRIEVAL_RRF_W_ONTOLOGY` | `0.5` | S_ontology weight |
-| `RETRIEVAL_RRF_VISUAL_MIN_PROB` | `0.30` | SigLIP admit threshold for S_visual |
-| `RETRIEVAL_RRF_ONTOLOGY_MIN_SLOTS` | `1` | minimal ontology hard floor |
+| `RETRIEVAL_RRF_W_TEXT` / `_W_VISUAL` / `_W_ONTOLOGY` | `1.0` / `1.0` / `0.5` | signal weights |
+| `RETRIEVAL_RRF_VISUAL_MIN_PROB` | `0.35` | SigLIP admit threshold for S_visual |
+| `RETRIEVAL_RRF_ONTOLOGY_MIN_SLOTS` | `1` (verify vs live case) | ontology hard floor |
+| `RETRIEVAL_RRF_EXPANSION_FLOOR_SLOTS` | `2` | bounded non-leading co-page slots |
 | `RETRIEVAL_RRF_DISPLAY_SCALE` | `0.05` | display transform constant C |
 
 ## Edge cases
 
-- **Single-modality hybrid** (`modality_filter=text`/`image`): the filter runs **before**
-  signal building, so S_visual (or S_text) is simply empty; RRF over the remaining signal =
-  identity ranking. Harmless.
-- **Empty signals:** skipped in the sum.
-- **No qualifying ontology unit:** floor does nothing.
-- **Determinism:** RRF + stable within-signal sort + `chunk_id` tiebreak gives **deterministic
-  ordering for a fixed candidate set**. Exact-kNN (commit ec363e6) stabilizes vector retrieval;
-  full byte-identical run-to-run for hybrid additionally depends on the expansion-gather set
-  (separate TODO), so it is **not** claimed as a gate here. Text Basic byte-identical **is** a gate.
+- **Single-modality hybrid** (`modality_filter`): filter runs before signal building → the other
+  signal is empty; RRF over one signal = identity ranking.
+- **Empty signals / no qualifying ontology:** skipped / floor no-ops.
+- **Determinism:** RRF + per-signal dedup + contiguous stable ranks + id tiebreak →
+  **deterministic ordering for a fixed candidate set** (exact-kNN `ec363e6` stabilizes vectors;
+  full run-to-run hybrid determinism also needs expansion-gather stability — separate TODO, not a
+  gate here). **Text Basic byte-identical IS a gate.**
 
 ## Verification
 
-- `"radar antenna"` / All → strong images (SigLIP ≥0.3) rank near strong text; agreement items
-  (good SigLIP + good caption) top the list.
-- `"Fan Song"` / All → text leads; S_visual largely empty (codename → no visual separation), so
-  no spurious images; any image present has a real caption match. Deterministic across runs.
-- Known ontology case (CUES→Amazonka/SNR-75) still appears in top_k (floor + S_ontology).
+- `"radar antenna"` / All → strong images (≥0.35) near strong text; agreement units (good SigLIP
+  + good caption) lead; weak-but-real images mid-list.
+- `"Fan Song"` / All → text leads (RRF over the dominant signal ≈ identity); S_visual admits only
+  the one separated image (0.51) if genuine; the **on-page schematic appears via the expansion
+  floor at the tail, never above text**; deterministic across runs.
+- CUES→Amazonka/SNR-75 still in top_k (ontology floor sized to the live case).
 - Text Basic `"Fan Song"` → **byte-identical** to pre-change.
-- `RETRIEVAL_RRF_FUSION_ENABLED=false` → identical to current behavior (hard gate).
+- `RETRIEVAL_RRF_FUSION_ENABLED=false` → identical to current behavior across all three functions.
 
 ## Testing
 
-- **Unit:** RRF math (known ranks → known fused order); within-signal stable-rank under ties;
-  per-image unit collapse; display transform monotonicity; visual separation gate.
-- **Integration:** the verification queries via `POST /v1/retrieval/query`, plus a
-  flag-off equality test and a Text-Basic equality test.
+- **Unit:** RRF math (known ranks → fused order); contiguous-rank assignment under ties and
+  unit-collapse; per-image collapse modality gate; caption pass; visual gate; expansion-floor cap
+  (floored item < lowest fused item); `min_confidence`→floor mapping.
+- **Integration:** the verification queries; flag-off equality (3 functions); Text-Basic equality;
+  lineage present on merged image cards.
 
 ---
 
-## Appendix — resolution of the 3 reviews
+## Appendix — review resolutions (rounds 1 & 2)
 
-| Finding (reviewer) | Resolution |
+| Finding | Resolution |
 |---|---|
-| SUM ≠ "best-of" (R1, R3) | Goal corrected to agreement/RRF (industry standard); "best-of" rejected. |
-| k=60 flattens cross-encoder (R1, R3) | k default 20; documented rationale for short lists. |
-| Per-signal lists don't exist; upstream collapses them (R2) | Integration rewritten: capture signals pre-merge; dedup/diversify after fusion. |
-| `_text_vector_search` shared w/ Text Basic (R2) | `for_fusion` param; off-path byte-identical; Text-Basic equality test. |
-| Images-in-S_text reverses 33063fe + `include_context` dep (R2) | Per-image unit; caption fetched regardless of `include_context`; bypass kept for legacy path. |
-| Display band compressed / `min_confidence` breaks (R1, R2, R3) | Filtering via per-signal gates pre-fusion; `min_confidence` not applied to fused score in hybrid; C retuned to 0.05; band documented. |
-| S_expand = non-relevance peer signal (R1, R3) | Expansion dropped as a fusion signal; candidate-generation only. |
-| Same image counted up to 4× / two cards (R1, R2, R3) | Per-image unit collapse by `artifact_id`. |
-| SigLIP noise floods codename queries (R3) | Visual separation gate `retrieval_rrf_visual_min_prob`=0.30. |
-| Ontology guarantee regression (R3) | Minimal hard floor `retrieval_rrf_ontology_min_slots`=1 + S_ontology signal. |
-| Within-signal tie determinism (R1, R2) | Stable within-signal sort (score desc, id asc) before rank assignment. |
-| Run-to-run determinism over-claimed (R2) | Down-scoped to "deterministic ordering for a fixed set"; not a gate for hybrid. |
-| Rollback not clean if shared fns edited (R2) | All RRF edits strictly branched behind the flag; off-path untouched + equality test. |
+| SUM ≠ best-of (R1) | Agreement/RRF adopted as standard; best-of rejected. |
+| k=60 flattens (R1) | k=20 (numbers verified: 2.38× r1/r30). |
+| Per-signal lists collapsed upstream (R2) | Capture pre-merge; dedup/diversify after fusion. |
+| `_text_vector_search` shared (R2) | `for_fusion` param; off-path byte-identical. |
+| **Trim is in `_apply_reranker`, not `_text_vector_search` (R2-r2)** | Flag branch spans `_apply_reranker` too. |
+| **`min_confidence` in `unified_query` (R2-r2)** | Branch `:102-103`; map onto per-signal floors. |
+| **Seed fan-out: wide pool as 128 seeds (R2-r2, HIGH)** | Expansion seeds = top ~`top_k`; wide pool only for S_text. |
+| **Caption→S_text has no producer (R2-r2, HIGH)** | Explicit caption rerank pass over S_visual images. |
+| **Per-image collapse needs modality guard + lineage (R2-r2)** | Gate to image modalities w/ non-null artifact_id; retain both chunk_ids/pages. |
+| **Per-signal dedup missing (R2-r2)** | Dedup each signal before rank assignment. |
+| Display band / min_confidence coupling (R1, R2, R3) | Filter pre-fusion; map min_confidence to floors; C=0.05; band ~0.3–0.70. |
+| **"collapse by max rank" vs "max score" (R1-r2)** | Collapse by max **score**, then contiguous ranks. |
+| **Visual gate binary cliff / lone-0.51 leads (R1-r2, R3-r2)** | Gate 0.30→0.35; leading-slot tiebreak prefers agreement/text. |
+| **Codename diagrams disappear (R3-r2, blocking)** | Bounded non-leading expansion floor (display-capped). |
+| **Ontology floor=1 may be < live case (R3-r2)** | Size floor to verified live cardinality; guarantees membership. |
+| S_expand non-relevance peer (R1, R3) | Not a fusion signal; only the bounded floor. |
+| SigLIP noise floods codename (R3) | Visual separation gate. |
+| Determinism over-claimed (R2) | Down-scoped to fixed-set ordering. |
+| "S_visual largely empty" prose wrong (R3-r2) | Corrected: noise floor excluded, separated images admitted. |
