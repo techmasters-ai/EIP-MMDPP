@@ -221,6 +221,7 @@ def _apply_reranker(
     if not _s.reranker_enabled or not body.query_text:
         return results
 
+    alpha = _s.retrieval_rerank_blend_alpha
     _RERANK_MAX_CHARS = 512
     top_n = body.reranker_top_n or _s.reranker_top_n
     candidates = results[:top_n]
@@ -246,7 +247,9 @@ def _apply_reranker(
         key = r["chunk_id"]
         original = by_key.get(key)
         if original:
-            original.score = r.get("reranker_score", r.get("score", original.score))
+            rer = r.get("reranker_score", r.get("score", original.score))
+            fused = r.get("score", original.score)
+            original.score = alpha * rer + (1.0 - alpha) * fused
             output.append(original)
 
     # Append unscorable items (no content_text) from remainder
