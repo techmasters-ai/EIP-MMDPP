@@ -264,6 +264,31 @@ def _apply_reranker(
 # Multi-modal pipeline (shared by text_only, images_only, multi_modal)
 # ---------------------------------------------------------------------------
 
+def _apply_reserved_slots(
+    deduped: list[QueryResultItem], top_k: int, m: int,
+    min_rel_weight: float, min_cosine: float, relation_weights: dict[str, float],
+) -> list[QueryResultItem]:
+    """Guarantee up to `m` qualifying ontology_relation chunks in the top_k,
+    filling the rest by descending fused score. m=0 == pure ranking."""
+    ranked = sorted(deduped, key=lambda x: x.score, reverse=True)
+    if m <= 0:
+        return ranked[:top_k]
+
+    def qualifies(item: QueryResultItem) -> bool:
+        ctx = item.context or {}
+        if ctx.get("source") != "ontology_relation":
+            return False
+        w = relation_weights.get(str(ctx.get("rel_type")), relation_weights.get("default", 0.70))
+        return w >= min_rel_weight and float(ctx.get("raw_cosine", 0.0)) >= min_cosine
+
+    reserved: list[QueryResultItem] = [it for it in ranked if qualifies(it)][:m]
+    reserved_ids = {id(it) for it in reserved}
+    for it in reserved:
+        (it.context or {}).update({"reserved": True})
+    fillers = [it for it in ranked if id(it) not in reserved_ids]
+    return (reserved + fillers)[:top_k]
+
+
 async def _multi_modal_pipeline(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
@@ -307,9 +332,20 @@ async def _multi_modal_pipeline(
     elif body.modality_filter == ModalityFilter.image:
         deduped = [r for r in deduped if r.modality in ("image", "schematic", "image_description")]
 
-    # Sort by score descending, cap at top_k
-    deduped.sort(key=lambda x: x.score, reverse=True)
-    final = deduped[:body.top_k]
+    # Reserved-slot membership guarantee (ontology-aware retrieval)
+    from app.config import get_settings as _gs
+    from app.api.v1._retrieval_helpers import get_retrieval_relation_weights as _grw
+    _s = _gs()
+    _m = body.ontology_reserved_slots
+    if _m is None:
+        _m = _s.retrieval_ontology_reserved_slots
+    _m = max(0, min(int(_m), body.top_k))
+    final = _apply_reserved_slots(
+        deduped, body.top_k, _m,
+        _s.retrieval_ontology_reserve_min_rel_weight,
+        _s.retrieval_ontology_reserve_min_cosine,
+        _grw(),
+    )
 
     # Re-rank top candidates using cross-encoder
     final = _apply_reranker(final, body)
