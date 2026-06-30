@@ -350,6 +350,7 @@ async def _expand_seeds(
     sem = asyncio.Semaphore(_EXPAND_CONCURRENCY)
 
     async def _expand_one(seed: QueryResultItem) -> list[QueryResultItem]:
+        from app.config import get_settings
         async with sem:
             chunk_id_str = str(seed.chunk_id)
             items: list[QueryResultItem] = []
@@ -365,6 +366,10 @@ async def _expand_seeds(
 
             onto_items = await _expand_via_ontology(chunk_id_str, seed.score, include_context, query_text)
             items.extend(onto_items)
+
+            if get_settings().retrieval_domain_expansion_enabled:
+                domain_items = await _expand_via_domain_relations(chunk_id_str, seed.score, include_context, query_text)
+                items.extend(domain_items)
             return items
 
     expansion_lists = await asyncio.gather(
@@ -805,6 +810,58 @@ async def _expand_via_ontology(
                 }
                 items.append(chunk_data)
 
+    return items
+
+
+async def _expand_via_domain_relations(
+    chunk_id: str,
+    source_score: float,
+    include_context: bool = True,
+    query_text: str | None = None,
+) -> list[QueryResultItem]:
+    """Follow CURATED domain relations (entity -[rel]- related_entity -> chunk)
+    one hop to retrieve ontologically-related chunks. Augments co-mention."""
+    from app.config import get_settings
+    from app.api.v1._retrieval_helpers import get_curated_domain_relations, get_retrieval_relation_weights
+
+    s = get_settings()
+    graph_store = get_graph_store()
+    try:
+        linked = await graph_store.get_related_entity_chunks(
+            chunk_id, get_curated_domain_relations(), s.retrieval_domain_expand_k,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug("Domain-relation expansion failed for %s: %s", chunk_id, e)
+        return []
+
+    weights = get_retrieval_relation_weights()
+    items: list[QueryResultItem] = []
+    from app.db.session import AsyncSessionFactory
+    async with AsyncSessionFactory() as db_session:
+        for link in linked:
+            target_id = link.get("target_chunk_id") or link.get("chunk_id", "")
+            target_type = link.get("target_chunk_type", "text_chunk")
+            if not target_id:
+                continue
+            chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
+            if not chunk_data:
+                continue
+            rel_type = str(link.get("rel_type", "RELATED_TO"))
+            chunk_data.score = compute_fusion_score(
+                semantic_score=source_score,
+                ontology_rel_type=rel_type,
+                ontology_hops=1,
+                content_text=chunk_data.content_text,
+                query_text=query_text,
+                relation_weights=weights,
+            )
+            chunk_data.context = {
+                "source": "ontology_relation",
+                "rel_type": rel_type,
+                "related_entity": link.get("related_entity", ""),
+                "source_chunk_id": chunk_id,
+            }
+            items.append(chunk_data)
     return items
 
 
