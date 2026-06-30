@@ -412,6 +412,17 @@ class Settings(BaseSettings):
     # slice (not just top_k) lets it surface. Higher = better recall, more CPU.
     retrieval_rerank_pool_size: int = 128
 
+    # Cross-modal RRF fusion (spec 2026-06-30-cross-modal-rrf-fusion v3.1)
+    retrieval_rrf_fusion_enabled: bool = True
+    retrieval_rrf_k: int = 20
+    retrieval_rrf_w_text: float = 1.0
+    retrieval_rrf_w_visual: float = 1.0
+    retrieval_rrf_w_ontology: float = 0.5
+    retrieval_rrf_visual_min_prob: float = 0.35
+    retrieval_rrf_ontology_min_slots: int = 1
+    retrieval_rrf_expansion_floor_slots: int = 2
+    retrieval_rrf_display_scale: float = 0.05
+
     # Exact brute-force cosine kNN instead of ArcadeDB HNSW for vector search.
     # HNSW is approximate (recall depends on ef/k) and non-deterministic; at
     # this corpus scale (~1-10k vectors) exact cosine is a sub-10ms matmul,
