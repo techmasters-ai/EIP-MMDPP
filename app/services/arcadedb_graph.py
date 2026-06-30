@@ -2172,21 +2172,48 @@ class ArcadeDBGraphStore:
         """
         algo_params = ", ".join(f"{k}: {v}" for k, v in params.items())
 
-        where_clause = "WHERE toString(id(n)) = rid"
-        if exclude_types:
-            where_clause += " AND " + " AND ".join(
-                f"NOT n:{t}" for t in sorted(exclude_types)
-            )
-
-        cypher = (
+        # Step 1: run the algorithm. ``algo.{louvain}() YIELD node`` returns a
+        # DatabaseRID (e.g. '#102:0'), NOT a vertex, so node.name/labels(node)
+        # are unbound. Carry the RID as a string; resolve real vertices in step 2.
+        # (The old ``MATCH (n) WHERE toString(id(n)) = rid`` join NEVER matched:
+        # id(n) is a numeric internal id (e.g. 5207287069147136) while rid is a
+        # '#bucket:pos' RID, so detection silently returned 0 rows -> 0 communities.)
+        algo_rows = await self._client.query(
+            self._database, "cypher",
             f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
-            f"WITH toString(node) AS rid, communityId AS cid "
-            f"MATCH (n) "
-            f"{where_clause} "
-            f"RETURN n.name AS name, labels(n)[0] AS entity_type, "
-            f"id(n) AS node_rid, cid AS community_id"
+            f"RETURN toString(node) AS rid, communityId AS cid",
         )
-        return await self._client.query(self._database, "cypher", cypher)
+        rid_to_cid: dict[str, Any] = {}
+        for r in algo_rows:
+            rid, cid = r.get("rid"), r.get("cid")
+            if rid is not None and cid is not None:
+                rid_to_cid[str(rid)] = cid
+        if not rid_to_cid:
+            return []
+
+        # Step 2: resolve RIDs -> (name, type) via SQL RID lookup (batched), and
+        # drop structural vertex types from the OUTPUT.
+        results: list[dict] = []
+        rids = list(rid_to_cid)
+        _BATCH = 1000
+        for i in range(0, len(rids), _BATCH):
+            rid_list = ", ".join(rids[i:i + _BATCH])
+            rows = await self._client.query(
+                self._database, "sql",
+                f"SELECT @rid AS rid, name, @type AS entity_type FROM [{rid_list}]",
+            )
+            for row in rows or []:
+                etype = row.get("entity_type", "")
+                if exclude_types and etype in exclude_types:
+                    continue
+                rid = str(row.get("rid", ""))
+                results.append({
+                    "name": row.get("name", ""),
+                    "entity_type": etype,
+                    "node_rid": rid,
+                    "community_id": rid_to_cid.get(rid),
+                })
+        return results
 
     async def get_community_reports(self) -> list[dict]:
         """Return all existing CommunityReport rows."""

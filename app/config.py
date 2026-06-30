@@ -392,6 +392,9 @@ class Settings(BaseSettings):
     community_detection_algorithm: str = "louvain"
     community_detection_resolution: float = 1.0
     community_detection_max_iterations: int = 20
+    # Skip communities smaller than this when generating LLM reports — a
+    # 1-2 entity "community" is not worth a report and floods generation.
+    community_min_size: int = 3
     community_report_llm_model: str = "llama3.2"
     community_report_llm_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     community_report_llm_prompt: str = ""

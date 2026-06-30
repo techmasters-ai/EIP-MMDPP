@@ -89,7 +89,13 @@ async def run_community_detection(
     reports_generated = 0
     reports_reused = 0
 
+    min_size = settings.community_min_size
     for cid, members in communities.items():
+        # Skip trivial communities — a single entity (or pair) is not a
+        # "community" worth an LLM report and would flood report generation.
+        if len(members) < min_size:
+            continue
+
         new_hash = _compute_membership_hash(members)
 
         if mode == "incremental" and existing_hashes.get(cid) == new_hash:
