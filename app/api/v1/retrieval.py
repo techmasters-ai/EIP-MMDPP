@@ -228,12 +228,15 @@ def _apply_reranker(
     alpha = _s.retrieval_rerank_blend_alpha
     score_floor = _s.retrieval_reranker_score_floor
     _RERANK_MAX_CHARS = 512
-    # Rerank (and gate) at least as many candidates as we intend to return.
-    # If top_k > reranker_top_n, the tail must still be scored — otherwise it
-    # is returned with raw (flat ~0.5) cosine, un-gated and un-sorted, which
+    # Rerank (and gate) at least as many candidates as we intend to return,
+    # and up to the configured pool size. If fewer were scored, the tail would
+    # be returned with raw (flat ~0.5) cosine, un-gated and un-sorted — which
     # both leaks junk past the score floor and strands genuinely-relevant
-    # chunks below the reranked head.
-    top_n = max(body.reranker_top_n or _s.reranker_top_n, body.top_k)
+    # chunks (deep in cosine order) below the reranked head.
+    top_n = min(
+        len(results),
+        max(body.reranker_top_n or _s.reranker_top_n, body.top_k, _s.retrieval_rerank_pool_size),
+    )
     candidates = results[:top_n]
     remainder = results[top_n:]
 
@@ -273,6 +276,11 @@ def _apply_reranker(
     for r in remainder:
         if r not in output:
             output.append(r)
+
+    # Sort by the FINAL blended score so the list is monotonic high->low.
+    # (cross_encoder_rerank orders by raw reranker score; the 0.1*cosine blend
+    # term can nudge two near-tied items out of blended order otherwise.)
+    output.sort(key=lambda r: -(r.score or 0.0))
 
     return output[:body.top_k]
 
@@ -586,12 +594,16 @@ async def _text_vector_search(
             )
         )
 
-    # Content-level diversification, then trim to requested top_k
+    # Content-level diversification.
     results = _diversify_results(results)
     results.sort(key=lambda r: (-r.score, str(r.chunk_id or "")))
-    results = results[:body.top_k]
 
-    # Re-rank top candidates using cross-encoder
+    # Tier 2: rerank a WIDE slice of the oversample pool (not just top_k)
+    # before trimming. cosine is non-discriminating for short queries, so a
+    # strong chunk can sit deep in the pool; capping at top_k here would
+    # discard it by cosine rank before the cross-encoder ever sees it.
+    # _apply_reranker scores this slice, gates junk, sorts, and trims to top_k.
+    results = results[:_settings.retrieval_rerank_pool_size]
     results = _apply_reranker(results, body)
 
     # Strip content_text if not requested

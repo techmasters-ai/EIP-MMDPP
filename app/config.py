@@ -406,6 +406,11 @@ class Settings(BaseSettings):
     # (reranker_score < floor). cosine is non-discriminating for short
     # entity queries, so the blended score can otherwise resurrect junk.
     retrieval_reranker_score_floor: float = 0.05
+    # Tier 2: how many candidates from the oversample pool to send through the
+    # cross-encoder before trimming to top_k. cosine ranks poorly on short
+    # queries, so a strong chunk can sit deep in the pool; reranking a wide
+    # slice (not just top_k) lets it surface. Higher = better recall, more CPU.
+    retrieval_rerank_pool_size: int = 128
 
     # Minimum cosine similarity threshold (below this, results are dropped)
     retrieval_min_score_threshold: float = 0.25
