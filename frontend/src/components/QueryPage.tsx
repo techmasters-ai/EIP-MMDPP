@@ -13,6 +13,7 @@ import {
   type ModalityFilter,
   type QueryResultItem,
 } from "../api/client";
+import { renderTextWithMath } from "../utils/renderMath";
 import { GraphView, toGraphElements } from "./GraphView";
 import { FieldGroupTable } from "./FieldGroupTable";
 import { DossierSectionList } from "./DossierSectionList";
@@ -701,7 +702,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
       {/* Text preview — always visible */}
       {preview && (
-        <p className="result-text">{preview}</p>
+        <p className="result-text">{renderTextWithMath(preview)}</p>
       )}
 
       {/* Graph view (when toggled and entity data present) */}
@@ -740,7 +741,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
           {displayText && (
             <div style={{ marginBottom: "0.5rem" }}>
               <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Full Text</div>
-              <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{displayText}</p>
+              <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{renderTextWithMath(displayText)}</p>
             </div>
           )}
           {provenance.length > 0 && <ProvenancePanel provenance={provenance} />}
