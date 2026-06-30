@@ -548,6 +548,17 @@ class Settings(BaseSettings):
     retrieval_doc_max_hops: int = 2
     retrieval_ontology_expand_k: int = 5
 
+    # --- Ontology-aware hybrid retrieval ---
+    retrieval_domain_expansion_enabled: bool = True
+    retrieval_domain_expand_k: int = 5
+    retrieval_ontology_reserved_slots: int = 3
+    retrieval_ontology_reserve_min_rel_weight: float = 0.85
+    retrieval_ontology_reserve_min_cosine: float = 0.15
+    retrieval_rerank_blend_alpha: float = 0.6
+    # JSON object string overriding/merging the code-default retrieval relation
+    # weight table; empty = use code default. Env-backed (NOT the ontology bundle).
+    retrieval_domain_relation_weights: str = ""
+
     # Document-structure link weights
     retrieval_weight_next_chunk: float = 0.90
     retrieval_weight_same_section: float = 0.88
