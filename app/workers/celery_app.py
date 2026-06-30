@@ -56,7 +56,12 @@ celery_app.conf.update(
         "app.workers.pipeline.derive_structure_links": {"queue": "graph"},
         "app.workers.pipeline.collect_derivations": {"queue": "ingest"},
         "app.workers.pipeline.finalize_document": {"queue": "ingest"},
-        "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
+        # TODO #28: the beat-driven watch-dir poller gets its own queue so its
+        # periodic tasks never sit in the `ingest` FIFO ahead of pipeline
+        # ingest tasks (prepare_document/collect_derivations/finalize_document).
+        # Only the catch-all `worker` consumes `watcher`; `worker-ingest` does
+        # not, so heavy ingest can't be starved by scan backlog.
+        "app.workers.watcher.scan_watch_directories": {"queue": "watcher"},
         "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
         "app.workers.pipeline._chord_error_handler": {"queue": "ingest"},
     },

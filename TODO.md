@@ -54,8 +54,8 @@ Several radar/missile parameter docs use inline math for cross-section, gain, be
 ### Infrastructure / Worker Queue Isolation (Deferred)
 
 **#28. Isolate `scan_watch_directories` from pipeline worker queue**
-**Status:** Deferred. Post-migration engineering work, separate PR.
-**Files:** `app/workers/celery_app.py`, `docker-compose.yml`, `scripts/full_purge_and_reingest.py`
+**Status:** DONE + DEPLOYED 2026-06-29. `scan_watch_directories` now routes to a dedicated `watcher` queue (`celery_app.py` task_routes); the catch-all `worker` consumes `celery,ingest,extract,embed,graph,graph_extract,trusted,watcher` while `worker-ingest` keeps `celery,ingest,extract` (NO watcher) — so scan polling can never sit in the `ingest` FIFO ahead of pipeline ingest tasks. Item 3 (stop beat during re-ingest) was already satisfied by `scripts/full_purge_and_reingest.py` (stops/restarts beat in steps 2/8). Item 4 (queue-depth ceiling) skipped as optional. Note: the periodic DB-polled `dispatch_pending_pipeline_stages` already mitigates the original "chain-break illusion"; this is defense-in-depth and removes the contention entirely. 2 routing unit tests added; worker recreated + beat restarted; verified live (beat→watcher→worker-1 receipt, ingest depth 0). **Caveat:** `watcher` is consumed only by the catch-all `worker` — a future split-only deployment without it would leave `watcher` unconsumed.
+**Files:** `app/workers/celery_app.py`, `docker-compose.yml`
 
 **Observed failure mode (2026-04-17 corpus re-ingest):**
 During the docs-alignment migration run, the beat-driven

@@ -401,7 +401,7 @@ services:
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
-        --queues=celery,ingest,extract,embed,graph,graph_extract,trusted
+        --queues=celery,ingest,extract,embed,graph,graph_extract,trusted,watcher
         --concurrency=${WORKER_CONCURRENCY:-4}
     volumes:
       - ./app:/app/app
