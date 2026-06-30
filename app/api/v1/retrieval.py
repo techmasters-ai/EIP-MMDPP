@@ -621,7 +621,7 @@ async def _text_vector_search(
 async def _image_vector_search(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
-    from app.services.embedding import embed_text_for_clip, embed_images
+    from app.services.embedding import embed_text_for_clip, embed_images, clip_cosine_to_prob
 
     if body.query_image:
         import base64
@@ -650,14 +650,19 @@ async def _image_vector_search(
         "ImageChunk", "image_embedding", query_embedding, oversample,
     )
 
-    # Filter by minimum score threshold
-    min_score = settings.retrieval_min_score_threshold
+    # #1 + #2: image search uses a SigLIP match probability, NOT raw cosine,
+    # and gates on a SEPARATE image threshold. SigLIP cosines (~0.05-0.18) are
+    # not comparable to BGE text cosines, so the 0.25 text floor would drop
+    # every image; convert to a calibrated 0-1 probability so the score is both
+    # meaningful and on the same scale as min_confidence / text results.
+    min_prob = settings.retrieval_image_min_score_threshold
 
     results = []
     for hit in hits:
         props = hit.properties or {}
-        score = hit.extraction_confidence or 0.0
-        if score < min_score:
+        cosine = hit.extraction_confidence or 0.0
+        score = clip_cosine_to_prob(float(cosine))
+        if score < min_prob:
             continue
         results.append(
             QueryResultItem(

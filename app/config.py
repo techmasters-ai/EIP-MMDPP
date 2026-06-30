@@ -412,8 +412,14 @@ class Settings(BaseSettings):
     # slice (not just top_k) lets it surface. Higher = better recall, more CPU.
     retrieval_rerank_pool_size: int = 128
 
-    # Minimum cosine similarity threshold (below this, results are dropped)
+    # Minimum cosine similarity threshold (below this, results are dropped).
+    # Tuned for BGE text-text cosine (~0.5 band) — do NOT apply to images.
     retrieval_min_score_threshold: float = 0.25
+    # Image search uses a SEPARATE floor on the calibrated SigLIP match
+    # probability (sigmoid(cosine*scale+bias)), NOT the text cosine threshold.
+    # SigLIP cosines live near ~0.05, so the 0.25 text floor would drop every
+    # image. Default 0.0 = let request min_confidence gate on the probability.
+    retrieval_image_min_score_threshold: float = 0.0
 
     # Query defaults (exposed via /v1/settings/retrieval for frontend)
     query_default_top_k: int = 20

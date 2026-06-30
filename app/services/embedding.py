@@ -129,3 +129,40 @@ def embed_text_for_clip(text: str) -> list[float]:
         features = features / features.norm(dim=-1, keepdim=True)
 
     return features.cpu().numpy().tolist()[0]
+
+
+@lru_cache(maxsize=1)
+def _clip_logit_params() -> tuple[float | None, float | None]:
+    """Learned (scale, bias) for SigLIP-style sigmoid scoring.
+
+    SigLIP calibrates image-text match as sigmoid(cosine * scale + bias),
+    where scale = exp(logit_scale). Returns (None, None) for models without
+    a logit_bias (e.g. plain CLIP), so callers fall back to raw cosine.
+    """
+    model, _, _ = _get_clip_model()
+    logit_scale = getattr(model, "logit_scale", None)
+    logit_bias = getattr(model, "logit_bias", None)
+    if logit_scale is None or logit_bias is None:
+        return None, None
+    import math as _math
+
+    scale = _math.exp(float(logit_scale.detach().cpu()))
+    bias = float(logit_bias.detach().cpu())
+    return scale, bias
+
+
+def clip_cosine_to_prob(cosine: float) -> float:
+    """Convert a raw CLIP/SigLIP cosine similarity into a calibrated match
+    probability via the model's learned temperature + bias (SigLIP sigmoid).
+
+    Raw SigLIP cosines sit in a low, narrow band (~0.05-0.18) that is not
+    comparable to BGE text cosines; the sigmoid maps them to an interpretable
+    0-1 match probability on the same scale as text confidence. Falls back to
+    the raw cosine if the model exposes no logit_bias (non-SigLIP).
+    """
+    scale, bias = _clip_logit_params()
+    if scale is None or bias is None:
+        return cosine
+    import math
+
+    return 1.0 / (1.0 + math.exp(-(cosine * scale + bias)))
