@@ -419,7 +419,7 @@ class Settings(BaseSettings):
     retrieval_rrf_w_visual: float = 1.0
     retrieval_rrf_w_ontology: float = 0.5
     retrieval_rrf_visual_min_prob: float = 0.35
-    retrieval_rrf_ontology_min_slots: int = 1
+    retrieval_rrf_ontology_min_slots: int = 3     # matches v1 reserved-slots guarantee (ontology_reserved_slots default 3); live CUES pool is 60-75 qualifying
     retrieval_rrf_expansion_floor_slots: int = 2
     retrieval_rrf_display_scale: float = 0.05
 
