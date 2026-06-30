@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (SigLIP2 via OpenCLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via bundle-based multi-pass entity/relationship extraction (hand-authored fixed schemas; identity → field-group → relationship passes; schema-derived `absolute_union` chunk selection; per-pass dispatch + merge-and-resolve + lineage-gated graph import) → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
+Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (SigLIP2 via OpenCLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via bundle-based multi-pass entity/relationship extraction (hand-authored fixed schemas; identity → field-group → relationship passes; schema-derived `absolute_union` chunk selection; per-pass dispatch + merge-and-resolve + lineage-gated graph import) → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (cross-modal Reciprocal Rank Fusion over text + image + ontology signals), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
 
 > 📖 **For a complete, end-to-end description of every workflow and feature, see [`docs/SYSTEM-DESCRIPTION.md`](docs/SYSTEM-DESCRIPTION.md).** This README covers setup, operations, the API surface, and ontology/chunk-selector authoring.
 
@@ -60,11 +60,41 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
-### Docker Services (13 containers with the default split-worker profile)
+### Hybrid retrieval — cross-modal RRF fusion
+
+The `hybrid` strategy (`POST /v1/retrieval/query`, `strategy=hybrid`) merges results from
+heterogeneous, non-comparable scorers — the **cross-encoder** (text relevance), **SigLIP**
+(visual match probability), and the **ontology** graph — using **Reciprocal Rank Fusion
+(RRF)**, the industry-standard, calibration-free rank-aggregation method (`Σ wₛ/(k+rankₛ)`).
+RRF is *agreement-based*: an item endorsed by multiple signals outranks one endorsed by a
+single weak signal. A picture's image chunk, its VLM description, and its caption collapse
+into one ranked card (by `artifact_id`), so a figure that matches *both* visually and by
+description can legitimately lead. Cross-modal expansion contributes a bounded, non-leading
+"co-page" floor (it can surface an on-page diagram but never outrank a genuinely-scored hit).
+The displayed score is a fused-relevance value (`RRF/(RRF+C)`, band ~0.3–0.66), **not** a
+probability. `basic` (Text Basic) is unaffected.
+
+Tunable via env (all in `.env` / `.env.example`); set `RETRIEVAL_RRF_FUSION_ENABLED=false`
+for the legacy reserved-slots ordering (byte-identical rollback):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `RETRIEVAL_RRF_FUSION_ENABLED` | `true` | Master flag; `false` = legacy ordering |
+| `RETRIEVAL_RRF_K` | `20` | RRF constant (tuned for short lists) |
+| `RETRIEVAL_RRF_W_TEXT` / `_W_VISUAL` / `_W_ONTOLOGY` | `1.0` / `1.0` / `0.5` | Per-signal weights |
+| `RETRIEVAL_RRF_VISUAL_MIN_PROB` | `0.35` | SigLIP admit floor for the visual signal |
+| `RETRIEVAL_RRF_ONTOLOGY_MIN_SLOTS` | `3` | Minimal ontology hard floor (preserves the v1 guarantee) |
+| `RETRIEVAL_RRF_EXPANSION_FLOOR_SLOTS` | `2` | Bounded non-leading co-page slots |
+| `RETRIEVAL_RRF_DISPLAY_SCALE` | `0.05` | Display transform constant `C` |
+
+Design + review history: `docs/superpowers/specs/2026-06-30-cross-modal-rrf-fusion-design.md`.
+
+### Docker Services (14 containers with the default split-worker profile)
 
 | Service | Purpose |
 |---|---|
-| `api` | FastAPI application server |
+| `frontend` | React UI — Vite dev server (HMR), `FRONTEND_PORT` (default 3100); proxies `/v1` to `api` |
+| `api` | FastAPI application server (backend only; serves `/v1`, `/docs`) |
 | `worker-ingest` | Celery worker — `celery`/`ingest`/`extract` queues (split profile, **default**) |
 | `worker-embed` | Celery worker — `embed` queue (split profile) |
 | `worker-graph` | Celery worker — `graph`/`graph_extract` queues (split profile) |
@@ -90,8 +120,9 @@ cp env.example .env
 # 2. Start all services (builds images, runs migrations, waits for health)
 ./manage.sh --start
 
-# 3. API + web UI
-#    Web UI:      http://localhost:8005/
+# 3. Web UI + API
+#    Web UI:      http://localhost:3100/   (dedicated Vite frontend container, FRONTEND_PORT)
+#    API:         http://localhost:8005/v1
 #    API docs:    http://localhost:8005/docs
 #    ArcadeDB UI: http://localhost:2480/
 ```
