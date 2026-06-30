@@ -353,6 +353,27 @@ services:
       - model_cache:/root/.cache
 
   # ---------------------------------------------------------------------------
+  # Frontend — Vite dev server (React UI) with HMR.
+  # Serves the SPA on FRONTEND_PORT and proxies /v1 to the api service.
+  # frontend/ is bind-mounted for live reload; the anonymous volume on
+  # node_modules preserves the image-built deps (host dir would shadow them).
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+    ports:
+      - "${FRONTEND_PORT:-3100}:3000"
+    volumes:
+      - ./frontend:/frontend
+      - /frontend/node_modules
+
+  # ---------------------------------------------------------------------------
   # Worker — single Celery worker (all queues, default mode)
   # Use WORKER_SPLIT_ENABLED=true to run split workers instead.
   # ---------------------------------------------------------------------------

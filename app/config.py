@@ -402,6 +402,10 @@ class Settings(BaseSettings):
     reranker_device: str = "cpu"  # cpu | cuda
     reranker_enabled: bool = True
     reranker_top_n: int = 20
+    # Tier 1 #1: drop candidates the cross-encoder judges irrelevant
+    # (reranker_score < floor). cosine is non-discriminating for short
+    # entity queries, so the blended score can otherwise resurrect junk.
+    retrieval_reranker_score_floor: float = 0.05
 
     # Minimum cosine similarity threshold (below this, results are dropped)
     retrieval_min_score_threshold: float = 0.25

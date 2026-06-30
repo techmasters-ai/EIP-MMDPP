@@ -736,8 +736,8 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
       {detailsOpen && (
         <div style={{ marginTop: "0.5rem", borderTop: "1px solid var(--color-border, #e0e0e0)", paddingTop: "0.5rem" }}>
-          {/* Full text if longer than preview */}
-          {displayText && displayText.length > previewLen && (
+          {/* Full text — always shown when present (even if ≤ preview length) */}
+          {displayText && (
             <div style={{ marginBottom: "0.5rem" }}>
               <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Full Text</div>
               <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{displayText}</p>

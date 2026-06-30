@@ -181,9 +181,11 @@ cmd_start() {
   dc "${profile_args[@]}" up -d
 
   local api_port="${API_PORT:-8000}"
+  local frontend_port="${FRONTEND_PORT:-3100}"
   divider
   wait_for_healthy "http://localhost:${api_port}/v1/health" "API liveness" "${HEALTH_TIMEOUT}"
   wait_for_healthy "http://localhost:${api_port}/v1/health/ready" "API readiness" "${HEALTH_TIMEOUT}"
+  wait_for_healthy "http://localhost:${frontend_port}/" "UI (frontend)" "${HEALTH_TIMEOUT}"
 
   # Pre-download ML models (air-gapped: must be available before first query)
   header "Pre-downloading ML models"
@@ -247,7 +249,7 @@ print('Image embedding model ready')
 
   divider
   info "All services started."
-  info "  UI:            http://localhost:${api_port}"
+  info "  UI:            http://localhost:${frontend_port}"
   info "  API:           http://localhost:${api_port}/v1"
   info "  API docs:      http://localhost:${api_port}/docs"
   info "  MinIO console: http://localhost:${MINIO_CONSOLE_PORT:-9001}"
@@ -268,9 +270,11 @@ cmd_restart() {
   dc restart
 
   local api_port="${API_PORT:-8000}"
+  local frontend_port="${FRONTEND_PORT:-3100}"
   divider
   wait_for_healthy "http://localhost:${api_port}/v1/health" "API liveness" "${HEALTH_TIMEOUT}"
   wait_for_healthy "http://localhost:${api_port}/v1/health/ready" "API readiness" "${HEALTH_TIMEOUT}"
+  wait_for_healthy "http://localhost:${frontend_port}/" "UI (frontend)" "${HEALTH_TIMEOUT}"
 
   info "All services restarted."
 }

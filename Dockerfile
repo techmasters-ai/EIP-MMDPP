@@ -63,22 +63,11 @@ CEOF
 RUN gcc -shared -fPIC -o /tmp/libfips_bypass.so /tmp/fips_bypass.c -ldl
 
 # ============================================================
-# Stage 1 — Build the React frontend
+# Python API (backend only)
 # ============================================================
-FROM node:22-alpine AS frontend-build
-
-WORKDIR /frontend
-
-COPY frontend/package.json frontend/package-lock.json* ./
-# Use 'ci' if lock file was copied, otherwise fall back to 'install'
-RUN if [ -f package-lock.json ]; then npm ci --prefer-offline; else npm install; fi
-
-COPY frontend/ ./
-RUN npm run build
-
-# ============================================================
-# Stage 2 — Python API + embedded frontend
-# ============================================================
+# The React UI is now its own Docker Compose service (see the `frontend`
+# service in docker-compose.yml + frontend/Dockerfile). The API no longer
+# builds or embeds the SPA; it exposes /v1, /docs, etc. only.
 FROM python:3.11-slim-bookworm
 
 # Install FIPS bypass shim (needed at build-time AND runtime)
@@ -125,9 +114,6 @@ COPY ontology_bundles/ ./ontology_bundles/
 COPY scripts/ ./scripts/
 
 RUN chmod +x scripts/*.sh
-
-# Copy built frontend from Stage 1
-COPY --from=frontend-build /frontend/dist ./frontend/dist
 
 # Default: run the API server
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

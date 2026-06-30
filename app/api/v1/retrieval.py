@@ -226,6 +226,7 @@ def _apply_reranker(
         return results
 
     alpha = _s.retrieval_rerank_blend_alpha
+    score_floor = _s.retrieval_reranker_score_floor
     _RERANK_MAX_CHARS = 512
     top_n = body.reranker_top_n or _s.reranker_top_n
     candidates = results[:top_n]
@@ -253,6 +254,13 @@ def _apply_reranker(
         if original:
             rer = r.get("reranker_score", r.get("score", original.score))
             fused = r.get("score", original.score)
+            # Tier 1 #1: gate on the cross-encoder directly. The reranker
+            # cleanly scores irrelevant chunks (ads, base64, nav chrome) at
+            # ~0.0, but the flat-cosine blend term would otherwise lift them
+            # over min_confidence. Only drop items that were actually scored
+            # (reranker_score present); pass unscorable items through.
+            if "reranker_score" in r and rer < score_floor:
+                continue
             original.score = alpha * rer + (1.0 - alpha) * fused
             output.append(original)
 
