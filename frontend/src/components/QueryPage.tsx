@@ -766,6 +766,7 @@ export function QueryPage() {
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
   const [rerankerTopN, setRerankerTopN] = useState(20);
+  const [reservedSlots, setReservedSlots] = useState<number>(3);
   const [minConfidence, setMinConfidence] = useState(0.1);
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [totalResults, setTotalResults] = useState(0);
@@ -783,6 +784,7 @@ export function QueryPage() {
       setTopK(s.top_k);
       setRerankerTopN(s.reranker_top_n);
       setMinConfidence(s.min_confidence);
+      setReservedSlots((s as any).ontology_reserved_slots ?? 3);
     }).catch(() => {});  // keep hardcoded defaults on failure
   }, []);
 
@@ -913,6 +915,7 @@ export function QueryPage() {
           reranker_top_n: rerankerTopN,
           min_confidence: minConfidence,
           include_context: true,
+          ontology_reserved_slots: retrievalSelected.strategy === "hybrid" ? reservedSlots : undefined,
         });
         setResults(res.results);
         setTotalResults(res.total);
@@ -1075,6 +1078,21 @@ export function QueryPage() {
                   step={0.05}
                   value={minConfidence}
                   onChange={(e) => setMinConfidence(parseFloat(e.target.value) || 0)}
+                />
+              </div>
+            )}
+            {retrievalSelected?.strategy === "hybrid" && (
+              <div className="field" style={{ width: "140px", flexShrink: 0 }}>
+                <label htmlFor="ontology-reserved-slots">Ontology reserved slots</label>
+                <input
+                  id="ontology-reserved-slots"
+                  type="number"
+                  min={0}
+                  max={topK}
+                  value={reservedSlots}
+                  onChange={(e) =>
+                    setReservedSlots(Math.max(0, Math.min(topK, Number(e.target.value) || 0)))
+                  }
                 />
               </div>
             )}
