@@ -402,10 +402,13 @@ async def _rescore_expanded_chunks(
     if not expanded or not query_text:
         return expanded
 
+    from app.api.v1._retrieval_helpers import get_retrieval_relation_weights
+    retrieval_weights = get_retrieval_relation_weights()
+
     # Only re-score ontology-sourced text chunks (they have content_text)
     ontology_chunks = [
         c for c in expanded
-        if (c.context or {}).get("source") == "ontology"
+        if (c.context or {}).get("source") in ("ontology", "ontology_relation")
         and c.content_text
     ]
 
@@ -431,14 +434,21 @@ async def _rescore_expanded_chunks(
 
     for chunk, sim in zip(ontology_chunks, similarities):
         cosine_sim = max(float(sim), 0.0)
-        rel_type = (chunk.context or {}).get("rel_type", "RELATED_TO")
+        ctx = chunk.context or {}
+        source = ctx.get("source")
+        rel_type = ctx.get("rel_type", "RELATED_TO")
+        rel_weights = retrieval_weights if source == "ontology_relation" else None
         chunk.score = compute_fusion_score(
             semantic_score=cosine_sim,
             ontology_rel_type=rel_type,
             ontology_hops=1,
             content_text=chunk.content_text,
             query_text=query_text,
+            relation_weights=rel_weights,
         )
+        ctx["raw_cosine"] = cosine_sim
+        ctx["fused_score_pre_rerank"] = chunk.score
+        chunk.context = ctx
 
     return expanded
 
