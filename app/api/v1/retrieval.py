@@ -240,10 +240,19 @@ def _apply_reranker(
     candidates = results[:top_n]
     remainder = results[top_n:]
 
+    # Non-text modalities bypass the cross-encoder: their relevance is their
+    # own embedding-space score (e.g. SigLIP visual prob for images), NOT a
+    # text match on their caption. Raw image/schematic chunks carry their
+    # image_description as content_text, so without this they'd be scored as
+    # text and dropped by the gate — discarding a genuine visual match.
+    _NON_RERANK_MODALITIES = {"image", "schematic", "video", "audio"}
+    passthrough = [r for r in candidates if r.modality in _NON_RERANK_MODALITIES]
+    rerankable = [r for r in candidates if r.modality not in _NON_RERANK_MODALITIES]
+
     # Build a lookup from chunk_id to original result for score update
     by_key: dict[str, QueryResultItem] = {}
     rerank_input = []
-    for r in candidates:
+    for r in rerankable:
         key = str(r.chunk_id or id(r))
         by_key[key] = r
         rerank_input.append({
@@ -271,6 +280,11 @@ def _apply_reranker(
                 continue
             original.score = alpha * rer + (1.0 - alpha) * fused
             output.append(original)
+
+    # Non-text-modality candidates bypass the reranker with their score intact.
+    for r in passthrough:
+        if r not in output:
+            output.append(r)
 
     # Append unscorable items (no content_text) from remainder
     for r in remainder:
