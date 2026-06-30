@@ -412,6 +412,13 @@ class Settings(BaseSettings):
     # slice (not just top_k) lets it surface. Higher = better recall, more CPU.
     retrieval_rerank_pool_size: int = 128
 
+    # Exact brute-force cosine kNN instead of ArcadeDB HNSW for vector search.
+    # HNSW is approximate (recall depends on ef/k) and non-deterministic; at
+    # this corpus scale (~1-10k vectors) exact cosine is a sub-10ms matmul,
+    # 100% deterministic and exact, and filtering happens BEFORE ranking (no
+    # post-filter starvation). Set False to use HNSW for very large corpora.
+    retrieval_exact_knn: bool = True
+
     # Minimum cosine similarity threshold (below this, results are dropped).
     # Tuned for BGE text-text cosine (~0.5 band) — do NOT apply to images.
     retrieval_min_score_threshold: float = 0.25

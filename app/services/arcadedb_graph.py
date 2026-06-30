@@ -1923,6 +1923,7 @@ class ArcadeDBGraphStore:
         }
 
         where_parts: list[str] = []
+        filter_params: dict[str, Any] = {}
 
         # Existing document_ids clause (string-interpolated, preserving the
         # existing pattern — values are UUIDs, safe against SQL injection).
@@ -1936,10 +1937,20 @@ class ArcadeDBGraphStore:
                 param_key = f"filter_{k}"
                 where_parts.append(f"{k} = :{param_key}")
                 params[param_key] = v
+                filter_params[param_key] = v
 
         where_clause = ""
         if where_parts:
             where_clause = " WHERE " + " AND ".join(where_parts)
+
+        # Exact brute-force cosine kNN — deterministic and exact at this corpus
+        # scale, and filters are applied BEFORE ranking (no HNSW post-filter
+        # starvation). Falls back to HNSW only when retrieval_exact_knn=False.
+        if _gs().retrieval_exact_knn:
+            return await self._exact_vector_search(
+                vertex_type, embedding_property, query_vector, top_k,
+                score_threshold, where_clause, filter_params,
+            )
 
         # ArcadeDB quirk: when vectorNeighbors is expanded inside a subquery,
         # `$distance` is NOT projected in the outer SELECT (only available while
@@ -1963,6 +1974,58 @@ class ArcadeDBGraphStore:
                 r for r in results
                 if (r.extraction_confidence or 0) >= score_threshold
             ]
+        return results
+
+    async def _exact_vector_search(
+        self,
+        vertex_type: str,
+        embedding_property: str,
+        query_vector: list[float],
+        top_k: int,
+        score_threshold: float | None,
+        where_clause: str,
+        filter_params: dict[str, Any],
+    ) -> list["GraphEntityResult"]:
+        """Exact brute-force cosine kNN over (filtered) vertices.
+
+        Filters are applied in SQL FIRST, then exact cosine is computed in
+        NumPy over the survivors and the top_k returned with a deterministic
+        (-cosine, @rid) ordering. Embeddings are stored L2-normalized, but we
+        renormalize defensively so the dot product is a true cosine.
+        """
+        import numpy as np
+
+        sql = f"SELECT *, @rid AS node_id FROM {vertex_type}{where_clause}"
+        rows = await self._client.query(self._database, "sql", sql, filter_params)
+        if not rows:
+            return []
+
+        q = np.asarray(query_vector, dtype=np.float32)
+        qn = float(np.linalg.norm(q))
+        if qn:
+            q = q / qn
+
+        scored: list[tuple[float, str, dict[str, Any]]] = []
+        for r in rows:
+            emb = r.get(embedding_property)
+            if not emb:
+                continue
+            v = np.asarray(emb, dtype=np.float32)
+            vn = float(np.linalg.norm(v))
+            if vn:
+                v = v / vn
+            cosine = float(np.dot(q, v))
+            scored.append((cosine, str(r.get("@rid") or r.get("node_id") or ""), r))
+
+        # Deterministic ordering: highest cosine first, @rid as a stable tiebreak.
+        scored.sort(key=lambda t: (-t[0], t[1]))
+
+        results: list[GraphEntityResult] = []
+        for cosine, _rid, r in scored[:top_k]:
+            if score_threshold is not None and cosine < score_threshold:
+                continue
+            r["distance"] = 1.0 - cosine  # _to_entity maps distance -> 1 - distance
+            results.append(_to_entity(r))
         return results
 
     async def set_vertex_embedding(
