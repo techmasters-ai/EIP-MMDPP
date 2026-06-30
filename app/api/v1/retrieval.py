@@ -228,7 +228,12 @@ def _apply_reranker(
     alpha = _s.retrieval_rerank_blend_alpha
     score_floor = _s.retrieval_reranker_score_floor
     _RERANK_MAX_CHARS = 512
-    top_n = body.reranker_top_n or _s.reranker_top_n
+    # Rerank (and gate) at least as many candidates as we intend to return.
+    # If top_k > reranker_top_n, the tail must still be scored — otherwise it
+    # is returned with raw (flat ~0.5) cosine, un-gated and un-sorted, which
+    # both leaks junk past the score floor and strands genuinely-relevant
+    # chunks below the reranked head.
+    top_n = max(body.reranker_top_n or _s.reranker_top_n, body.top_k)
     candidates = results[:top_n]
     remainder = results[top_n:]
 
