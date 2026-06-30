@@ -210,13 +210,18 @@ async def get_image(
 # ---------------------------------------------------------------------------
 
 def _apply_reranker(
-    results: list[QueryResultItem], body: UnifiedQueryRequest
+    results: list[QueryResultItem], body: UnifiedQueryRequest, for_fusion: bool = False
 ) -> list[QueryResultItem]:
     """Re-rank results using cross-encoder if enabled and query_text is present.
 
     Preserves ALL fields on the original QueryResultItem (context, sources,
     lineage metadata). Only the score is updated with the reranker's score.
     Content text is truncated for the reranker input only, not on the result.
+
+    for_fusion=True widens the rerank pool to the full candidate set (instead
+    of capping at top_k) and returns the full reranked output unsliced, so a
+    later cross-modal RRF fusion step can draw from the WIDE reranked text
+    pool. Default (False) is byte-identical to pre-fusion behavior.
     """
     from app.config import get_settings
     from app.services.reranker import rerank as cross_encoder_rerank
@@ -261,7 +266,9 @@ def _apply_reranker(
             "score": r.score,
         })
 
-    reranked = cross_encoder_rerank(body.query_text, rerank_input, top_k=body.top_k)
+    reranked = cross_encoder_rerank(
+        body.query_text, rerank_input, top_k=(len(rerank_input) if for_fusion else body.top_k)
+    )
 
     # Update scores on the ORIGINAL items, preserving context/sources/lineage
     output: list[QueryResultItem] = []
@@ -296,7 +303,7 @@ def _apply_reranker(
     # term can nudge two near-tied items out of blended order otherwise.)
     output.sort(key=lambda r: -(r.score or 0.0))
 
-    return output[:body.top_k]
+    return output if for_fusion else output[:body.top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +555,7 @@ async def _rescore_expanded_chunks(
 # ---------------------------------------------------------------------------
 
 async def _text_vector_search(
-    db: AsyncSession, body: UnifiedQueryRequest
+    db: AsyncSession, body: UnifiedQueryRequest, for_fusion: bool = False
 ) -> list[QueryResultItem]:
     if not body.query_text:
         return []
@@ -618,7 +625,10 @@ async def _text_vector_search(
     # discard it by cosine rank before the cross-encoder ever sees it.
     # _apply_reranker scores this slice, gates junk, sorts, and trims to top_k.
     results = results[:_settings.retrieval_rerank_pool_size]
-    results = _apply_reranker(results, body)
+    # for_fusion=True: return the WIDE reranked pool (no top_k trim) so a
+    # later cross-modal RRF fusion step can draw from it. Default behavior
+    # (basic strategy callers) is unchanged.
+    results = _apply_reranker(results, body, for_fusion=for_fusion)
 
     # Strip content_text if not requested
     if not body.include_context:
