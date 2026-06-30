@@ -440,7 +440,7 @@ class Settings(BaseSettings):
     retrieval_image_min_score_threshold: float = 0.0
 
     # Query defaults (exposed via /v1/settings/retrieval for frontend)
-    query_default_top_k: int = 20
+    query_default_top_k: int = 30
     query_default_min_confidence: float = 0.1
 
     # Embedding-pipeline chunking (Pass A — worker-embed → bge-m3).
@@ -584,7 +584,6 @@ class Settings(BaseSettings):
     # --- Ontology-aware hybrid retrieval ---
     retrieval_domain_expansion_enabled: bool = True
     retrieval_domain_expand_k: int = 5
-    retrieval_ontology_reserved_slots: int = 3
     retrieval_ontology_reserve_min_rel_weight: float = 0.85
     retrieval_ontology_reserve_min_cosine: float = 0.15
     retrieval_rerank_blend_alpha: float = 0.6

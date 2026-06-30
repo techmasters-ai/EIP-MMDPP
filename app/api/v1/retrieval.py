@@ -116,6 +116,10 @@ async def unified_query(
     # Backfill page_number from Postgres for results missing it
     await _backfill_page_numbers(db, results)
 
+    # Backfill self_refs/evidence_ids (Docling provenance) for results missing
+    # them — e.g. graph-expansion chunks in the hybrid pipeline.
+    await _backfill_evidence_ids(results)
+
     # Spec 2026-05-11-table-aware-chunking §11.5 — populate table_chunk
     # block for results whose underlying TextChunk has chunk_metadata.
     await _backfill_table_chunk_metadata(db, results)
@@ -692,7 +696,7 @@ async def _multi_modal_pipeline(
     _s = _gs()
     _m = body.ontology_reserved_slots
     if _m is None:
-        _m = _s.retrieval_ontology_reserved_slots
+        _m = _s.retrieval_rrf_ontology_min_slots
     _m = max(0, min(int(_m), body.top_k))
     final = _apply_reserved_slots(
         deduped, body.top_k, _m,
@@ -1490,6 +1494,49 @@ async def _backfill_page_numbers(
             r.page_number = page_map[cid]
 
 
+async def _backfill_evidence_ids(results: list[QueryResultItem]) -> None:
+    """Backfill self_refs/evidence_ids (Docling element provenance) from the
+    ArcadeDB chunk vertices for results missing them.
+
+    Direct vector-search hits carry their chunk's self_refs, but graph-expansion
+    chunks (doc_structure / cross_modal / ontology_relation) are built without
+    them — so a hybrid result can lack the "Evidence IDs" provenance even though
+    its underlying TextChunk stores it. Restores the data-lineage guarantee.
+    """
+    missing = {
+        str(r.chunk_id): r
+        for r in results
+        if r.chunk_id is not None and not (r.self_refs or r.evidence_ids)
+    }
+    if not missing:
+        return
+    from app.db.session import get_graph_store
+    gs = get_graph_store()
+    for vtype in ("TextChunk", "ImageChunk"):
+        if not missing:
+            break
+        id_list = ", ".join(f"'{c}'" for c in missing)
+        try:
+            rows = await gs.execute_query(
+                f"SELECT chunk_id, self_refs, evidence_ids FROM {vtype} "
+                f"WHERE chunk_id IN [{id_list}]"
+            )
+        except Exception as e:  # vertex type may lack the columns — skip
+            logger.warning("evidence_ids backfill (%s) failed: %s", vtype, e)
+            continue
+        for row in rows or []:
+            cid = str(row.get("chunk_id"))
+            r = missing.get(cid)
+            if r is None:
+                continue
+            sr = row.get("self_refs") or []
+            ev = row.get("evidence_ids") or sr
+            if sr or ev:
+                r.self_refs = list(sr)
+                r.evidence_ids = list(ev)
+                missing.pop(cid, None)
+
+
 async def _backfill_document_names(
     db: AsyncSession, results: list[QueryResultItem]
 ) -> None:
@@ -1764,5 +1811,4 @@ async def get_retrieval_settings():
         "top_k": settings.query_default_top_k,
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
-        "ontology_reserved_slots": settings.retrieval_ontology_reserved_slots,
     }
