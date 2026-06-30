@@ -443,7 +443,6 @@ async def _rrf_fusion_pipeline(
 
     onto_items = [e for e in expanded if _onto_qualifies(e) and _passes(e.modality)]
 
-    # --- Step 4: build per-signal (chunk_id, score) lists, then contiguous ranks -
     def _dedup_max(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
         best: dict[str, float] = {}
         for cid, sc in pairs:
@@ -451,55 +450,79 @@ async def _rrf_fusion_pipeline(
                 best[cid] = sc
         return list(best.items())
 
-    s_text_pairs = _dedup_max(
-        [(str(r.chunk_id), float(r.score or 0.0)) for r in wide_text]
-        + [(str(r.chunk_id), float(r.score or 0.0)) for r in caption_scored]
-        + [(str(e.chunk_id), float(e.score or 0.0)) for e in expanded_desc]
-    )
-    s_visual_pairs = _dedup_max([(str(r.chunk_id), float(r.score or 0.0)) for r in visual])
-    s_onto_pairs = _dedup_max([
-        (str(e.chunk_id),
-         relation_weights.get(str((e.context or {}).get("rel_type")), relation_weights.get("default", 0.70)))
+    # --- Step 4: collapse to per-image UNITS FIRST, then rank over units (A1) ----
+    # Build candidate units BEFORE signal ranking so caption + image_description +
+    # image fold into ONE CandidateUnit by artifact_id (text_score = MAX over text
+    # members, visual_score = image SigLIP). Ranking over units means each picture
+    # contributes exactly ONE S_text entry — no double-count of a synthetic caption
+    # id AND the real image_description id across two rank slots.
+    all_candidate_items: list = []
+    seen_cids: set[str] = set()
+    for it in (list(wide_text) + caption_scored + expanded_desc + list(visual) + onto_items):
+        cid = str(it.chunk_id)
+        if cid in seen_cids:
+            continue
+        seen_cids.add(cid)
+        all_candidate_items.append(it)
+
+    candidate_units = build_units(all_candidate_items)
+
+    # Ontology qualification is per-item knowledge build_units lacks: mark a unit
+    # ontology-qualifying if ANY member was an ontology_relation qualifying item.
+    onto_weight_by_cid: dict[str, float] = {
+        str(e.chunk_id): relation_weights.get(
+            str((e.context or {}).get("rel_type")), relation_weights.get("default", 0.70)
+        )
         for e in onto_items
-    ])
+    }
+
+    # (A2) min_confidence maps onto the S_text reranker floor too (not just visual).
+    eff_text_floor = max(s.retrieval_reranker_score_floor, body.min_confidence or 0.0)
+
+    # --- Build the three UNIT-level signals, keyed by unit.primary_chunk_id ------
+    s_text_pairs: list[tuple[str, float]] = []
+    s_visual_pairs: list[tuple[str, float]] = []
+    s_onto_pairs: list[tuple[str, float]] = []
+    unit_pid: dict[int, str] = {}        # id(cu) -> primary chunk id
+    unit_onto_w: dict[str, float] = {}   # primary chunk id -> rel_weight (qualifying units)
+    for cu in candidate_units:
+        pid = cu.primary_chunk_id or (cu.member_chunk_ids[0] if cu.member_chunk_ids else None)
+        if pid is None:
+            continue
+        unit_pid[id(cu)] = pid
+        if cu.text_score is not None and cu.text_score >= eff_text_floor:
+            s_text_pairs.append((pid, float(cu.text_score)))
+        if cu.visual_score is not None:  # image members were already gated at eff_visual
+            s_visual_pairs.append((pid, float(cu.visual_score)))
+        onto_w = max(
+            (onto_weight_by_cid[m] for m in cu.member_chunk_ids if m in onto_weight_by_cid),
+            default=None,
+        )
+        if onto_w is not None:
+            s_onto_pairs.append((pid, onto_w))
+            unit_onto_w[pid] = onto_w
 
     text_ranks = assign_ranks(s_text_pairs)
     visual_ranks = assign_ranks(s_visual_pairs)
     onto_ranks = assign_ranks(s_onto_pairs)
 
-    # --- Step 5: build candidate units (image+description collapse by artifact) --
-    candidate_items: list = []
-    seen_cids: set[str] = set()
-    for it in (list(wide_text) + caption_scored + list(visual) + expanded_desc + onto_items):
-        cid = str(it.chunk_id)
-        if cid in seen_cids:
-            continue
-        seen_cids.add(cid)
-        candidate_items.append(it)
-
-    candidate_units = build_units(candidate_items)
-
-    def _best_rank(rankmap: dict[str, int], members: list[str]) -> int | None:
-        ranks = [rankmap[m] for m in members if m in rankmap]
-        return min(ranks) if ranks else None
-
+    # --- Step 5: one FusedUnit per CandidateUnit, signals by primary id ----------
     fused_units: list[FusedUnit] = []
     for cu in candidate_units:
-        members = cu.member_chunk_ids
+        pid = unit_pid.get(id(cu))
+        if pid is None:
+            continue
         signals: dict[str, int] = {}
-        tr = _best_rank(text_ranks, members)
-        if tr is not None:
-            signals["text"] = tr
-        vr = _best_rank(visual_ranks, members)
-        if vr is not None:
-            signals["visual"] = vr
-        orr = _best_rank(onto_ranks, members)
-        if orr is not None:
-            signals["ontology"] = orr
+        if pid in text_ranks:
+            signals["text"] = text_ranks[pid]
+        if pid in visual_ranks:
+            signals["visual"] = visual_ranks[pid]
+        if pid in onto_ranks:
+            signals["ontology"] = onto_ranks[pid]
         if not signals:
             continue
         fused_units.append(FusedUnit(
-            id=cu.primary_chunk_id or members[0],
+            id=pid,
             signals=signals,
             text_bearing=cu.text_bearing,
             payload=cu,
@@ -518,17 +541,27 @@ async def _rrf_fusion_pipeline(
     def _is_qual_onto(fu: FusedUnit) -> bool:
         return "ontology" in fu.signals
 
-    top = fused[:body.top_k]
+    top = list(fused[:body.top_k])
     if N > 0:
         need = N - sum(1 for u in top if _is_qual_onto(u))
         if need > 0:
             later_qual = [u for u in fused[body.top_k:] if _is_qual_onto(u)][:need]
             for q in later_qual:
-                non_onto = [u for u in top if not _is_qual_onto(u)]
-                if non_onto:
-                    top.remove(non_onto[-1])  # drop lowest-RRF non-ontology (RRF-sorted desc)
-                top.append(q)
+                # Drop the lowest-RRF non-ontology unit by INDEX (identity-safe;
+                # dataclass __eq__ would match value-equal units). top is RRF-sorted
+                # desc, so the last non-ontology index is the lowest-RRF one.
+                drop_idx = next(
+                    (i for i in range(len(top) - 1, -1, -1) if not _is_qual_onto(top[i])),
+                    None,
+                )
+                if drop_idx is not None:
+                    top.pop(drop_idx)
+                # Only add when there is room — guarantees len(top) <= top_k even if
+                # no non-ontology unit was droppable (cannot overflow).
+                if len(top) < body.top_k:
+                    top.append(q)
             top.sort(key=lambda u: (-u.rrf, -len(u.signals), -int(u.text_bearing), u.id))
+    assert len(top) <= body.top_k
 
     # --- Step 8: bounded non-leading expansion floor ---------------------------
     present_ids: set[str] = set()
@@ -566,14 +599,26 @@ async def _rrf_fusion_pipeline(
         item = cu.payload  # primary QueryResultItem (image chunk for collapsed units)
         if item is None:
             continue
+        pid = fu.id  # the unit's primary chunk id (set in step 5)
         item.score = fu.display
-        if len(cu.member_chunk_ids) > 1:
-            # Collapsed image card: retain both source chunk_ids + pages (lineage rule).
-            merged = [m for m in cu.member_chunk_ids if not str(m).startswith("cap::")]
+        # (A3) merged-card lineage built from the unit's ACTUAL members — not a
+        # hardcoded pair. Synthetic caption ids (cap::*) carry no standalone
+        # lineage and are excluded; the real secondary is the image_description
+        # TextChunk (any non-primary, non-caption member).
+        real_members = [
+            m for m in cu.member_chunk_ids
+            if m != pid and not str(m).startswith("cap::")
+        ]
+        if real_members:
+            sources: list[str] = []
+            if cu.visual_score is not None:
+                sources.append("visual")
+            sources.append("description")
             item.context = {
                 **(item.context or {}),
-                "merged_chunk_ids": merged,
-                "merged_sources": ["visual", "description"],
+                "merged_chunk_ids": [pid] + real_members,
+                "merged_sources": sources,
+                "image_description_chunk_id": real_members[0],
             }
             item.page_numbers = sorted(set((item.page_numbers or []) + cu.pages))
         final_items.append(item)
