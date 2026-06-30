@@ -4,69 +4,69 @@
     {
       "id": 0,
       "subject": "Task 0: Config + env-backed retrieval relation-weight table",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Add new retrieval_* settings (master flag, reserve knobs, expand_k, weights JSON override) + env-backed get_retrieval_relation_weights() + get_curated_domain_relations() + optional relation_weights param on compute_fusion_score. New env vars in BOTH .env and .env.example.\n\n```json:metadata\n{\"files\": [\"app/config.py\", \"app/api/v1/_retrieval_helpers.py\", \".env\", \".env.example\", \"tests/unit/test_retrieval_relation_weights.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_retrieval_relation_weights.py -q\", \"acceptanceCriteria\": [\"default table VARIANT_OF=0.95/ASSOCIATED_WITH=0.85/CUES=0.88/default=0.70\", \"JSON env override merges\", \"get_curated_domain_relations returns 6\", \"compute_fusion_score relation_weights param (None=bundle behavior)\", \"env vars in both .env files\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 1: get_related_entity_chunks graph traversal",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** 1-hop domain-relation traversal in ArcadeDBGraphStore (+ Protocol): seed_chunk <-EXTRACTED_FROM- entity -[rel both dirs]- related_entity -EXTRACTED_FROM-> chunk; true rel_type captured; dedup keeping strongest; bounded by limit.\n\n```json:metadata\n{\"files\": [\"app/services/arcadedb_graph.py\", \"app/services/graph_store.py\", \"tests/unit/test_get_related_entity_chunks.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_get_related_entity_chunks.py -q\", \"acceptanceCriteria\": [\"MATCH returns related chunks with true rel_type+related_entity\", \"dedup keeps strongest relation\", \"capped at limit; non-chunk seed []\", \"Protocol declares method\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 2,
       "subject": "Task 2: _expand_via_domain_relations + wire into _expand_seeds",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 1],
       "description": "**Goal:** New expansion fn stamping context.source=ontology_relation + rel_type/related_entity, scored via compute_fusion_score(relation_weights=retrieval table); wired into _expand_seeds gated by master flag; co-mention unchanged.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\", \"tests/unit/test_expand_via_domain_relations.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_expand_via_domain_relations.py -q\", \"acceptanceCriteria\": [\"stamps ontology_relation context\", \"_expand_seeds gates on master flag; co-mention unchanged\", \"flag false => no ontology_relation items\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 3,
       "subject": "Task 3: Rescore stores raw_cosine + fused_score_pre_rerank; handle ontology_relation",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 2],
       "description": "**Goal:** _rescore_expanded_chunks also rescores ontology_relation chunks (true rel + retrieval weights) and persists context.raw_cosine + context.fused_score_pre_rerank.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\", \"tests/unit/test_rescore_stores_fields.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_rescore_stores_fields.py -q\", \"acceptanceCriteria\": [\"ontology + ontology_relation rescored\", \"raw_cosine + fused_score_pre_rerank stored\", \"ontology_relation uses retrieval weights; legacy ontology unchanged\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 4,
       "subject": "Task 4: Reserved slots in _multi_modal_pipeline",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 3, 6],
       "description": "**Goal:** _apply_reserved_slots reserves up to M qualifying ontology_relation chunks (rel>=gate AND raw_cosine>=floor) into top_k; fill rest by fused score; m=0 == pure ranking; wired into pipeline resolving m from body.ontology_reserved_slots??settings clamped [0,top_k].\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\", \"tests/unit/test_reserved_slots.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_reserved_slots.py -q\", \"acceptanceCriteria\": [\"qualifying chunk reserved over higher-scored seeds; reserved=true\", \"below-floor not reserved\", \"non-tier not reserved\", \"m=0 == pure ranking\", \"m resolved request??settings clamped\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 5,
       "subject": "Task 5: Blended rerank in _apply_reranker",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** Replace pure-semantic overwrite with blend alpha*rerank + (1-alpha)*fused; alpha=1.0 reproduces today; reserved chunks never dropped.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\", \"tests/unit/test_blended_rerank.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_blended_rerank.py -q\", \"acceptanceCriteria\": [\"alpha=0.6 => 0.6*rerank+0.4*fused\", \"alpha=1.0 reproduces overwrite\", \"no candidate dropped when pool<=top_k\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 6,
       "subject": "Task 6: ontology_reserved_slots request param + agent plumbing + settings endpoint",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** UnifiedQueryRequest.ontology_reserved_slots field; /agent/context reserved_slots query param plumbed in; GET /settings/retrieval returns ontology_reserved_slots.\n\n```json:metadata\n{\"files\": [\"app/schemas/retrieval.py\", \"app/api/v1/agent.py\", \"app/api/v1/retrieval.py\", \"tests/unit/test_reserved_slots_request.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_reserved_slots_request.py -q\", \"acceptanceCriteria\": [\"UnifiedQueryRequest field default None\", \"/agent/context reserved_slots plumbed\", \"/settings/retrieval returns key\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 7,
       "subject": "Task 7: Surface ontology_relation provenance (markdown + UI)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [2],
       "description": "**Goal:** build_markdown + QueryPage render ontology_relation provenance (rel_type -> related_entity + reserved badge).\n\n```json:metadata\n{\"files\": [\"app/api/v1/_agent_helpers.py\", \"frontend/src/components/QueryPage.tsx\", \"tests/unit/test_agent_markdown_ontology_relation.py\"], \"verifyCommand\": \"python3 -m pytest tests/unit/test_agent_markdown_ontology_relation.py -q\", \"acceptanceCriteria\": [\"build_markdown renders rel_type+related_entity+reserved\", \"QueryPage label + reserved badge\", \"frontend tsc --noEmit exit 0\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 8,
       "subject": "Task 8: Hybrid reserved-slots UI control + client param",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [6],
       "description": "**Goal:** unifiedQuery sends ontology_reserved_slots; hybrid-only numeric stepper seeded from /settings/retrieval, value sent on hybrid query.\n\n```json:metadata\n{\"files\": [\"frontend/src/api/client.ts\", \"frontend/src/components/QueryPage.tsx\"], \"verifyCommand\": \"cd frontend && npx tsc --noEmit && npm run build\", \"acceptanceCriteria\": [\"unifiedQuery sends ontology_reserved_slots\", \"hybrid-only stepper seeded from settings range 0..topK\", \"value sent on hybrid query\", \"tsc + vite build succeed\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 9,
       "subject": "Task 9: E2E acceptance, full-rollback regression, deploy",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [4, 5, 7, 8],
       "description": "**USER-ORDERED GATE — NON-SKIPPABLE.** Close only after every acceptanceCriteria item is re-validated independently with output captured.\n\n**Goal:** Prove on the live stack that a reserved ontology_relation chunk reaches the context (SA-2->Fan Song via curated relation, absent when flag off), raw_cosine stored, full rollback byte-identical; deploy (api rebuild + recreate).\n\n```json:metadata\n{\"files\": [\"tests/integration/test_ontology_aware_retrieval_e2e.py\"], \"verifyCommand\": \"curl -s localhost:8005/v1/settings/retrieval\", \"acceptanceCriteria\": [\"feature-on returns reserved ontology_relation chunk (curated rel_type) absent when flag off\", \"ontology_relation results carry raw_cosine + fused_score_pre_rerank\", \"full rollback reproduces baseline chunk_id order byte-identically\", \"api rebuilt+recreated; /settings/retrieval returns ontology_reserved_slots; health 200\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requireEvidenceTokens\": [[\"before\", \"flag-off\", \"absent\", \"baseline\"], [\"after\", \"flag-on\", \"reserved\", \"ontology_relation\"]], \"modelTier\": \"standard\"}\n```"
     }

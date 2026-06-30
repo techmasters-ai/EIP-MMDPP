@@ -40,6 +40,7 @@ async def get_agent_context(
     modality_filter: ModalityFilter = Query(ModalityFilter.all, description="Filter results by modality"),
     mode: Optional[str] = Query(None, description="Deprecated: use strategy + modality_filter"),
     top_k: int = Query(10, ge=1, le=50, description="Number of results"),
+    reserved_slots: Optional[int] = Query(None, ge=0, le=50, description="Hybrid only: reserved ontology slots"),
     include_sources: bool = Query(True, description="Include sources list in response"),
     db: AsyncSession = Depends(get_async_session),
 ) -> AgentContextResponse:
@@ -73,6 +74,7 @@ async def get_agent_context(
         modality_filter=modality_filter,
         top_k=top_k,
         include_context=True,
+        ontology_reserved_slots=reserved_slots,
     )
 
     from app.api.v1.retrieval import (

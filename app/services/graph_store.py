@@ -294,6 +294,15 @@ class GraphStore(Protocol):
         """Return text/image chunks that mention *node_id* via ontology edges."""
         ...
 
+    async def get_related_entity_chunks(
+        self,
+        node_id: str,
+        rel_types: list[str],
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """1-hop domain-relation expansion over the given relation types."""
+        ...
+
     async def get_graph_stats(self) -> dict[str, Any]:
         """Return backend-level graph statistics."""
         ...

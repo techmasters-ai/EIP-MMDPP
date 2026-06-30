@@ -221,6 +221,7 @@ def _apply_reranker(
     if not _s.reranker_enabled or not body.query_text:
         return results
 
+    alpha = _s.retrieval_rerank_blend_alpha
     _RERANK_MAX_CHARS = 512
     top_n = body.reranker_top_n or _s.reranker_top_n
     candidates = results[:top_n]
@@ -246,7 +247,9 @@ def _apply_reranker(
         key = r["chunk_id"]
         original = by_key.get(key)
         if original:
-            original.score = r.get("reranker_score", r.get("score", original.score))
+            rer = r.get("reranker_score", r.get("score", original.score))
+            fused = r.get("score", original.score)
+            original.score = alpha * rer + (1.0 - alpha) * fused
             output.append(original)
 
     # Append unscorable items (no content_text) from remainder
@@ -260,6 +263,31 @@ def _apply_reranker(
 # ---------------------------------------------------------------------------
 # Multi-modal pipeline (shared by text_only, images_only, multi_modal)
 # ---------------------------------------------------------------------------
+
+def _apply_reserved_slots(
+    deduped: list[QueryResultItem], top_k: int, m: int,
+    min_rel_weight: float, min_cosine: float, relation_weights: dict[str, float],
+) -> list[QueryResultItem]:
+    """Guarantee up to `m` qualifying ontology_relation chunks in the top_k,
+    filling the rest by descending fused score. m=0 == pure ranking."""
+    ranked = sorted(deduped, key=lambda x: x.score, reverse=True)
+    if m <= 0:
+        return ranked[:top_k]
+
+    def qualifies(item: QueryResultItem) -> bool:
+        ctx = item.context or {}
+        if ctx.get("source") != "ontology_relation":
+            return False
+        w = relation_weights.get(str(ctx.get("rel_type")), relation_weights.get("default", 0.70))
+        return w >= min_rel_weight and float(ctx.get("raw_cosine", 0.0)) >= min_cosine
+
+    reserved: list[QueryResultItem] = [it for it in ranked if qualifies(it)][:m]
+    reserved_ids = {id(it) for it in reserved}
+    for it in reserved:
+        (it.context or {}).update({"reserved": True})
+    fillers = [it for it in ranked if id(it) not in reserved_ids]
+    return (reserved + fillers)[:top_k]
+
 
 async def _multi_modal_pipeline(
     db: AsyncSession, body: UnifiedQueryRequest
@@ -304,9 +332,20 @@ async def _multi_modal_pipeline(
     elif body.modality_filter == ModalityFilter.image:
         deduped = [r for r in deduped if r.modality in ("image", "schematic", "image_description")]
 
-    # Sort by score descending, cap at top_k
-    deduped.sort(key=lambda x: x.score, reverse=True)
-    final = deduped[:body.top_k]
+    # Reserved-slot membership guarantee (ontology-aware retrieval)
+    from app.config import get_settings as _gs
+    from app.api.v1._retrieval_helpers import get_retrieval_relation_weights as _grw
+    _s = _gs()
+    _m = body.ontology_reserved_slots
+    if _m is None:
+        _m = _s.retrieval_ontology_reserved_slots
+    _m = max(0, min(int(_m), body.top_k))
+    final = _apply_reserved_slots(
+        deduped, body.top_k, _m,
+        _s.retrieval_ontology_reserve_min_rel_weight,
+        _s.retrieval_ontology_reserve_min_cosine,
+        _grw(),
+    )
 
     # Re-rank top candidates using cross-encoder
     final = _apply_reranker(final, body)
@@ -350,6 +389,7 @@ async def _expand_seeds(
     sem = asyncio.Semaphore(_EXPAND_CONCURRENCY)
 
     async def _expand_one(seed: QueryResultItem) -> list[QueryResultItem]:
+        from app.config import get_settings
         async with sem:
             chunk_id_str = str(seed.chunk_id)
             items: list[QueryResultItem] = []
@@ -365,6 +405,10 @@ async def _expand_seeds(
 
             onto_items = await _expand_via_ontology(chunk_id_str, seed.score, include_context, query_text)
             items.extend(onto_items)
+
+            if get_settings().retrieval_domain_expansion_enabled:
+                domain_items = await _expand_via_domain_relations(chunk_id_str, seed.score, include_context, query_text)
+                items.extend(domain_items)
             return items
 
     expansion_lists = await asyncio.gather(
@@ -397,10 +441,13 @@ async def _rescore_expanded_chunks(
     if not expanded or not query_text:
         return expanded
 
+    from app.api.v1._retrieval_helpers import get_retrieval_relation_weights
+    retrieval_weights = get_retrieval_relation_weights()
+
     # Only re-score ontology-sourced text chunks (they have content_text)
     ontology_chunks = [
         c for c in expanded
-        if (c.context or {}).get("source") == "ontology"
+        if (c.context or {}).get("source") in ("ontology", "ontology_relation")
         and c.content_text
     ]
 
@@ -426,14 +473,21 @@ async def _rescore_expanded_chunks(
 
     for chunk, sim in zip(ontology_chunks, similarities):
         cosine_sim = max(float(sim), 0.0)
-        rel_type = (chunk.context or {}).get("rel_type", "RELATED_TO")
+        ctx = chunk.context or {}
+        source = ctx.get("source")
+        rel_type = ctx.get("rel_type", "RELATED_TO")
+        rel_weights = retrieval_weights if source == "ontology_relation" else None
         chunk.score = compute_fusion_score(
             semantic_score=cosine_sim,
             ontology_rel_type=rel_type,
             ontology_hops=1,
             content_text=chunk.content_text,
             query_text=query_text,
+            relation_weights=rel_weights,
         )
+        ctx["raw_cosine"] = cosine_sim
+        ctx["fused_score_pre_rerank"] = chunk.score
+        chunk.context = ctx
 
     return expanded
 
@@ -805,6 +859,58 @@ async def _expand_via_ontology(
                 }
                 items.append(chunk_data)
 
+    return items
+
+
+async def _expand_via_domain_relations(
+    chunk_id: str,
+    source_score: float,
+    include_context: bool = True,
+    query_text: str | None = None,
+) -> list[QueryResultItem]:
+    """Follow CURATED domain relations (entity -[rel]- related_entity -> chunk)
+    one hop to retrieve ontologically-related chunks. Augments co-mention."""
+    from app.config import get_settings
+    from app.api.v1._retrieval_helpers import get_curated_domain_relations, get_retrieval_relation_weights
+
+    s = get_settings()
+    graph_store = get_graph_store()
+    try:
+        linked = await graph_store.get_related_entity_chunks(
+            chunk_id, get_curated_domain_relations(), s.retrieval_domain_expand_k,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug("Domain-relation expansion failed for %s: %s", chunk_id, e)
+        return []
+
+    weights = get_retrieval_relation_weights()
+    items: list[QueryResultItem] = []
+    from app.db.session import AsyncSessionFactory
+    async with AsyncSessionFactory() as db_session:
+        for link in linked:
+            target_id = link.get("target_chunk_id") or link.get("chunk_id", "")
+            target_type = link.get("target_chunk_type", "text_chunk")
+            if not target_id:
+                continue
+            chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
+            if not chunk_data:
+                continue
+            rel_type = str(link.get("rel_type", "RELATED_TO"))
+            chunk_data.score = compute_fusion_score(
+                semantic_score=source_score,
+                ontology_rel_type=rel_type,
+                ontology_hops=1,
+                content_text=chunk_data.content_text,
+                query_text=query_text,
+                relation_weights=weights,
+            )
+            chunk_data.context = {
+                "source": "ontology_relation",
+                "rel_type": rel_type,
+                "related_entity": link.get("related_entity", ""),
+                "source_chunk_id": chunk_id,
+            }
+            items.append(chunk_data)
     return items
 
 
@@ -1280,4 +1386,5 @@ async def get_retrieval_settings():
         "top_k": settings.query_default_top_k,
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
+        "ontology_reserved_slots": settings.retrieval_ontology_reserved_slots,
     }

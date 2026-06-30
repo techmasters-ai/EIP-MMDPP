@@ -274,6 +274,7 @@ export async function unifiedQuery(params: {
   reranker_top_n?: number;
   min_confidence?: number;
   include_context?: boolean;
+  ontology_reserved_slots?: number;
 }): Promise<UnifiedQueryResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout

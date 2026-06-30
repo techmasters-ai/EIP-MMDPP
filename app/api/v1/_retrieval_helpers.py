@@ -4,6 +4,7 @@ Kept in a separate module so unit tests can import them without triggering
 the DB session / asyncpg dependency chain (same pattern as _agent_helpers.py).
 """
 
+import json as _json
 import re
 from functools import lru_cache
 
@@ -56,6 +57,41 @@ register_invalidation_hook(_load_scoring_weights.cache_clear)
 
 def get_ontology_relation_weights() -> dict[str, float]:
     return _load_scoring_weights(get_ontology_cache_signature())
+
+
+_CURATED_DOMAIN_RELATIONS: tuple[str, ...] = (
+    "VARIANT_OF", "ASSOCIATED_WITH", "CUES", "PART_OF", "CONTAINS", "USES_COMPONENT",
+)
+
+_RETRIEVAL_RELATION_WEIGHTS_DEFAULT: dict[str, float] = {
+    "VARIANT_OF": 0.95,
+    "USES_COMPONENT": 0.92,
+    "CONTAINS": 0.90,
+    "PART_OF": 0.90,
+    "CUES": 0.88,
+    "ASSOCIATED_WITH": 0.85,
+    "default": 0.70,
+}
+
+
+def get_curated_domain_relations() -> list[str]:
+    return list(_CURATED_DOMAIN_RELATIONS)
+
+
+def get_retrieval_relation_weights() -> dict[str, float]:
+    """Env-backed retrieval relation weights: code default merged with an
+    optional RETRIEVAL_DOMAIN_RELATION_WEIGHTS JSON override. Does NOT read the
+    ontology bundle (extraction weights stay independent)."""
+    weights = dict(_RETRIEVAL_RELATION_WEIGHTS_DEFAULT)
+    raw = (_settings().retrieval_domain_relation_weights or "").strip()
+    if raw:
+        try:
+            override = _json.loads(raw)
+            if isinstance(override, dict):
+                weights.update({str(k): float(v) for k, v in override.items()})
+        except (ValueError, TypeError):
+            pass
+    return weights
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +208,7 @@ def compute_fusion_score(
     cross_modal_decay: float = 0.0,
     content_text: str | None = None,
     query_text: str | None = None,
+    relation_weights: dict[str, float] | None = None,
 ) -> float:
     """Compute weighted fusion score for a candidate chunk.
 
@@ -195,7 +232,7 @@ def compute_fusion_score(
     # Ontology component
     onto_score = 0.0
     if ontology_rel_type:
-        rel_weights = get_ontology_relation_weights()
+        rel_weights = relation_weights if relation_weights is not None else get_ontology_relation_weights()
         rel_weight = rel_weights.get(ontology_rel_type, rel_weights.get("default", 0.70))
         hop_penalty = hop_base ** max(0, ontology_hops - 1)
         onto_score = rel_weight * hop_penalty
