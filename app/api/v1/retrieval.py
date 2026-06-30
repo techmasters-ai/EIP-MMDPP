@@ -98,8 +98,15 @@ async def unified_query(
     if body.filters:
         results = _apply_query_filters(results, body.filters)
 
-    # Filter by minimum confidence
-    if body.min_confidence is not None:
+    # Filter by minimum confidence.
+    # For hybrid + RRF fusion enabled, min_confidence is mapped onto the
+    # per-signal native-scale floors INSIDE the fusion pipeline (reranker floor
+    # for S_text, SigLIP gate for S_visual) — it must NOT be applied to the
+    # fused display score, which is a rank-aggregation value, not a probability.
+    from app.config import get_settings as _gs_mc
+    if body.min_confidence is not None and not (
+        body.strategy == QueryStrategy.hybrid and _gs_mc().retrieval_rrf_fusion_enabled
+    ):
         results = [r for r in results if r.score >= body.min_confidence]
 
     # Backfill content_text from Postgres for results missing it (pre-existing data)
@@ -335,6 +342,258 @@ def _apply_reserved_slots(
     return (reserved + fillers)[:top_k]
 
 
+async def _rrf_fusion_pipeline(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Cross-modal Reciprocal Rank Fusion hybrid ordering.
+
+    Spec: docs/superpowers/specs/2026-06-30-cross-modal-rrf-fusion-design.md.
+
+    Builds three independently-ranked relevance signals (S_text cross-encoder,
+    S_visual SigLIP prob, S_ontology qualifying relations) over per-image-collapsed
+    units, fuses them with RRF, then applies the ontology membership floor and the
+    bounded non-leading expansion floor. min_confidence is mapped onto the per-signal
+    native-scale floors here (NOT onto the fused score — see unified_query).
+    """
+    from types import SimpleNamespace
+
+    from app.config import get_settings as _gs
+    from app.api.v1._retrieval_helpers import get_retrieval_relation_weights as _grw
+    from app.services.rrf_fusion import (
+        assign_ranks,
+        build_units,
+        fuse,
+        apply_expansion_floor,
+        FusedUnit,
+    )
+
+    s = _gs()
+    t0 = time.monotonic()
+    k = s.retrieval_rrf_k
+    C = s.retrieval_rrf_display_scale
+    relation_weights = _grw()
+
+    # --- modality-filter predicate (mirrors the legacy candidate-pool filter) ---
+    def _passes(mod: str) -> bool:
+        if body.modality_filter == ModalityFilter.text:
+            return mod in ("text", "table")
+        if body.modality_filter == ModalityFilter.image:
+            return mod in ("image", "schematic", "image_description")
+        return True
+
+    # --- Step 1: capture signals ------------------------------------------------
+    # Wide reranked text/table/image_description pool (no top_k trim) and the
+    # SigLIP-prob-scored image pool, gathered in parallel.
+    wide_text: list[QueryResultItem] = []
+    images: list[QueryResultItem] = []
+    if body.query_text:
+        wt_task = _text_vector_search(db, body, for_fusion=True)
+    else:
+        wt_task = None
+    img_task = _image_vector_search(db, body)
+    if wt_task is not None:
+        wide_text, images = await asyncio.gather(wt_task, img_task)
+    else:
+        images = await img_task
+
+    wide_text = [r for r in wide_text if _passes(r.modality)]
+
+    # Visual separation gate: admit images only when SigLIP prob clears the floor,
+    # which also absorbs min_confidence onto the native S_visual scale.
+    eff_visual = max(s.retrieval_rrf_visual_min_prob, body.min_confidence or 0.0)
+    visual = [r for r in images if (r.score or 0.0) >= eff_visual and _passes(r.modality)]
+
+    # --- Caption pass: feed image captions into S_text via the cross-encoder ----
+    caption_items: list = []
+    for img in visual:
+        cap = img.content_text
+        if not cap or not str(cap).strip():
+            continue
+        caption_items.append(SimpleNamespace(
+            chunk_id=f"cap::{img.chunk_id}",
+            content_text=cap,
+            modality="image_description",
+            artifact_id=img.artifact_id,
+            score=0.0,
+            page_number=img.page_number,
+        ))
+    caption_scored = (
+        _apply_reranker(caption_items, body, for_fusion=True)
+        if (body.query_text and caption_items) else []
+    )
+
+    # --- Expansion (bounded seeds: top ~top_k of each pool, NOT the wide pool) ---
+    seeds = _merge_seed_results([wide_text[:body.top_k], images[:body.top_k]])
+    expanded = await _expand_seeds(db, seeds, body.include_context, body.query_text)
+    expanded = await _rescore_expanded_chunks(expanded, body.query_text)
+    t_expand = time.monotonic()
+
+    expanded_desc = [e for e in expanded if e.modality == "image_description" and _passes(e.modality)]
+
+    # --- Ontology qualifying predicate (reuse the reserved-slots semantics) ------
+    def _onto_qualifies(item: QueryResultItem) -> bool:
+        ctx = item.context or {}
+        if ctx.get("source") != "ontology_relation":
+            return False
+        w = relation_weights.get(str(ctx.get("rel_type")), relation_weights.get("default", 0.70))
+        return (
+            w >= s.retrieval_ontology_reserve_min_rel_weight
+            and float(ctx.get("raw_cosine", 0.0)) >= s.retrieval_ontology_reserve_min_cosine
+        )
+
+    onto_items = [e for e in expanded if _onto_qualifies(e) and _passes(e.modality)]
+
+    # --- Step 4: build per-signal (chunk_id, score) lists, then contiguous ranks -
+    def _dedup_max(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        best: dict[str, float] = {}
+        for cid, sc in pairs:
+            if cid not in best or sc > best[cid]:
+                best[cid] = sc
+        return list(best.items())
+
+    s_text_pairs = _dedup_max(
+        [(str(r.chunk_id), float(r.score or 0.0)) for r in wide_text]
+        + [(str(r.chunk_id), float(r.score or 0.0)) for r in caption_scored]
+        + [(str(e.chunk_id), float(e.score or 0.0)) for e in expanded_desc]
+    )
+    s_visual_pairs = _dedup_max([(str(r.chunk_id), float(r.score or 0.0)) for r in visual])
+    s_onto_pairs = _dedup_max([
+        (str(e.chunk_id),
+         relation_weights.get(str((e.context or {}).get("rel_type")), relation_weights.get("default", 0.70)))
+        for e in onto_items
+    ])
+
+    text_ranks = assign_ranks(s_text_pairs)
+    visual_ranks = assign_ranks(s_visual_pairs)
+    onto_ranks = assign_ranks(s_onto_pairs)
+
+    # --- Step 5: build candidate units (image+description collapse by artifact) --
+    candidate_items: list = []
+    seen_cids: set[str] = set()
+    for it in (list(wide_text) + caption_scored + list(visual) + expanded_desc + onto_items):
+        cid = str(it.chunk_id)
+        if cid in seen_cids:
+            continue
+        seen_cids.add(cid)
+        candidate_items.append(it)
+
+    candidate_units = build_units(candidate_items)
+
+    def _best_rank(rankmap: dict[str, int], members: list[str]) -> int | None:
+        ranks = [rankmap[m] for m in members if m in rankmap]
+        return min(ranks) if ranks else None
+
+    fused_units: list[FusedUnit] = []
+    for cu in candidate_units:
+        members = cu.member_chunk_ids
+        signals: dict[str, int] = {}
+        tr = _best_rank(text_ranks, members)
+        if tr is not None:
+            signals["text"] = tr
+        vr = _best_rank(visual_ranks, members)
+        if vr is not None:
+            signals["visual"] = vr
+        orr = _best_rank(onto_ranks, members)
+        if orr is not None:
+            signals["ontology"] = orr
+        if not signals:
+            continue
+        fused_units.append(FusedUnit(
+            id=cu.primary_chunk_id or members[0],
+            signals=signals,
+            text_bearing=cu.text_bearing,
+            payload=cu,
+        ))
+
+    # --- Step 6: fuse ----------------------------------------------------------
+    fused = fuse(
+        fused_units,
+        {"text": s.retrieval_rrf_w_text, "visual": s.retrieval_rrf_w_visual, "ontology": s.retrieval_rrf_w_ontology},
+        k, C,
+    )
+
+    # --- Step 7: ontology membership floor (guarantee up to N qualifying in top_k)
+    N = min(s.retrieval_rrf_ontology_min_slots, body.top_k)
+
+    def _is_qual_onto(fu: FusedUnit) -> bool:
+        return "ontology" in fu.signals
+
+    top = fused[:body.top_k]
+    if N > 0:
+        need = N - sum(1 for u in top if _is_qual_onto(u))
+        if need > 0:
+            later_qual = [u for u in fused[body.top_k:] if _is_qual_onto(u)][:need]
+            for q in later_qual:
+                non_onto = [u for u in top if not _is_qual_onto(u)]
+                if non_onto:
+                    top.remove(non_onto[-1])  # drop lowest-RRF non-ontology (RRF-sorted desc)
+                top.append(q)
+            top.sort(key=lambda u: (-u.rrf, -len(u.signals), -int(u.text_bearing), u.id))
+
+    # --- Step 8: bounded non-leading expansion floor ---------------------------
+    present_ids: set[str] = set()
+    for fu in top:
+        cu = fu.payload
+        if cu is not None:
+            present_ids.update(cu.member_chunk_ids)
+    _exp_sources = {"cross_modal", "doc_structure"}
+    expansion_candidates = _dedup_max([
+        (str(e.chunk_id), float(e.score or 0.0))
+        for e in expanded
+        if (e.context or {}).get("source") in _exp_sources
+        and str(e.chunk_id) not in present_ids
+        and _passes(e.modality)
+    ])
+    final_units = apply_expansion_floor(
+        top, expansion_candidates, body.top_k,
+        s.retrieval_rrf_expansion_floor_slots, C,
+    )
+
+    # --- Step 9: map fused units -> QueryResultItem (with merged-card lineage) ---
+    expanded_by_id = {str(e.chunk_id): e for e in expanded if e.chunk_id is not None}
+    final_items: list[QueryResultItem] = []
+    for fu in final_units:
+        cu = fu.payload
+        if cu is None:
+            # Expansion-floor item: resolve the QueryResultItem from the expanded pool.
+            e = expanded_by_id.get(fu.id)
+            if e is None:
+                continue
+            e.score = fu.display
+            e.context = {**(e.context or {}), "expansion_floor": True, "label": "co-page (proximity)"}
+            final_items.append(e)
+            continue
+        item = cu.payload  # primary QueryResultItem (image chunk for collapsed units)
+        if item is None:
+            continue
+        item.score = fu.display
+        if len(cu.member_chunk_ids) > 1:
+            # Collapsed image card: retain both source chunk_ids + pages (lineage rule).
+            merged = [m for m in cu.member_chunk_ids if not str(m).startswith("cap::")]
+            item.context = {
+                **(item.context or {}),
+                "merged_chunk_ids": merged,
+                "merged_sources": ["visual", "description"],
+            }
+            item.page_numbers = sorted(set((item.page_numbers or []) + cu.pages))
+        final_items.append(item)
+
+    # --- Step 10: dedup/diversify on the fused output (no further trim) ---------
+    final_items = _deduplicate_results(final_items)
+    final_items = _diversify_results(final_items)
+
+    t_total = time.monotonic()
+    logger.info(
+        "retrieval[rrf]: strategy=%s modality=%s expand=%.0fms total=%.0fms "
+        "wide_text=%d visual=%d captions=%d onto=%d units=%d returned=%d",
+        body.strategy.value, body.modality_filter.value,
+        (t_expand - t0) * 1000, (t_total - t0) * 1000,
+        len(wide_text), len(visual), len(caption_scored), len(onto_items),
+        len(fused_units), len(final_items),
+    )
+    return final_items
+
+
 async def _multi_modal_pipeline(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
@@ -345,6 +604,10 @@ async def _multi_modal_pipeline(
     3. Batch chunk lookups
     4. Score fusion + deduplicate + mode filter + sort + cap
     """
+    from app.config import get_settings as _gs_rrf
+    if _gs_rrf().retrieval_rrf_fusion_enabled:
+        return await _rrf_fusion_pipeline(db, body)
+
     t0 = time.monotonic()
 
     # Step 1: Parallel vector searches (ArcadeDB)
@@ -695,7 +958,7 @@ async def _image_vector_search(
                 document_id=props.get("document_id"),
                 score=float(score),
                 modality=props.get("modality", "image"),
-                content_text=(props.get("text") or props.get("chunk_text")) if body.include_context else None,
+                content_text=(props.get("text") or props.get("chunk_text")) if (settings.retrieval_rrf_fusion_enabled or body.include_context) else None,
                 page_number=props.get("page_number"),
                 classification=props.get("classification", "UNCLASSIFIED"),
                 self_refs=props.get("self_refs") or [],
