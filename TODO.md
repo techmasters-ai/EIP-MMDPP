@@ -105,8 +105,8 @@ mode entirely.
 ### Feature Additions (Deferred)
 
 **#27. LLM-based entity mention resolution**
-**Status:** Deferred. Now unblocked but intentionally deferred due to high cost/latency tradeoff.
-**Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
+**Status:** Deferred (valid; ref refreshed 2026-06-29). Intentionally deferred on cost/latency. NOTE: the cited `_build_entity_mentions` no longer exists — mention handling now lives around `_resolve_mention_chunks` (`app/workers/pipeline.py:1929`). Feature (LLM-based mention resolution as an enhancement over the current deterministic path) is NOT obsolete, just unimplemented.
+**Files:** `app/workers/pipeline.py` (`_resolve_mention_chunks` area), new module TBD
 
 **Current state:**
 - `_build_entity_mentions` uses regex/substring matching to link extracted entities to document chunks.
@@ -137,7 +137,7 @@ mode entirely.
 ---
 
 **#29. Route image-heavy / handwritten docs through VLM backend + one-to-one**
-**Status:** Deferred. Future optimization; not a fix for the current migration. Revisit after the `llama3.1:8b` + `batch=1024` + `gleaning=2` LLM baseline stabilizes.
+**Status:** Deferred (valid; trigger refreshed 2026-06-29). Still a live TODO — referenced at `docker/docling-graph/app/main.py:925` ("TODO #29 for VLM routing"). NOTE: the old trigger condition (`llama3.1:8b` + `batch=1024` + `gleaning=2` baseline) is obsolete — production is now gemma4:31b + absolute_union with no gleaning (only a stray `.env:118` context-size comment still mentions llama3.1:8b). Re-trigger criterion = when image-heavy/handwritten docs show measurably poor extraction vs the current gemma4 baseline.
 **Files:** `app/workers/pipeline.py` (`_derive_ontology_graph_bundle_passes`), `docker/docling-graph/app/main.py` (per-request backend dispatch), `app/models/ingest.py` (optional `backend_hint` column)
 
 **Observation (2026-04-18):**
@@ -358,8 +358,7 @@ Each timeout silently drops a batch of element translations. The doc proceeds wi
 ---
 
 **#78. Short-circuit `extract-pass` for tiny-markdown DoclingDocuments**
-**Status:** Open (refs corrected 2026-06-29). Still valid — `_is_empty()` exists (`main.py:651-658`, fired `:887`) but only triggers on a *fully* empty doc; the tiny-markdown short-circuit has NOT been added.
-**Files:** `docker/docling-graph/app/main.py:651-658` (`_is_empty()`), fire site `:887` (where the new `_is_too_small()` check slots in)
+**Status:** OBSOLETE — superseded by absolute_union (decided 2026-06-29, user-confirmed). The extract-pass short-circuit operates on the PER-PASS scoped DoclingDocument. Under `absolute_union` (narrow_only), a field pass's scoped doc IS the signal-selected chunks — legitimately short but meaningful (e.g. a `"Range: 45 km"` chunk selected precisely for its measurement signal). A blanket markdown-length short-circuit would drop exactly those chunks, regressing the field recall #83 protects. The original waste case (166-char junk chunk, 2026-04-30) predates absolute_union — back then tiny chunks were chunking artifacts; now they're deliberately selected. Not implementing. `_is_empty()` (truly-empty docs) at `main.py` stays as-is.
 
 **Observation:**
 During the 2026-04-30 reingest, three `/extract-pass` calls hit the soft-fail path with markdown_length=166 (twice) and 12662 (once):
