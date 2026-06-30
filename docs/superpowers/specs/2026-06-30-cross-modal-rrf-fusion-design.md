@@ -1,7 +1,10 @@
-# Cross-Modal RRF Fusion for Multi-Modal Retrieval — Design (v3)
+# Cross-Modal RRF Fusion for Multi-Modal Retrieval — Design (v3.1)
 
 - **Date:** 2026-06-30
-- **Status:** Revised after 2 rounds × 3 independent reviews → ready for implementation plan
+- **Status:** Revised after **3 rounds × 3 independent reviews** → ready for implementation plan
+  (final round: 2 GO-conditional + 1 narrow NO-GO, all patched below)
+- **Open action (carry into plan, do NOT ship without):** measure the live
+  CUES→Amazonka/SNR-75 qualifying-ontology count and set `RETRIEVAL_RRF_ONTOLOGY_MIN_SLOTS` to it.
 - **Scope:** hybrid retrieval ordering in `app/api/v1/retrieval.py` (+ `_apply_reranker`, `unified_query`)
 
 ## Problem
@@ -88,12 +91,23 @@ often "Figure 3", and the VLM description names shape/function not the codename,
 relevance signals fail together. Re-admit expansion as a **bounded, non-leading** path, NOT a
 peer RRF signal:
 
-- After fusion, reserve up to `retrieval_rrf_expansion_floor_slots` (default **2**) **tail
-  slots** of `top_k` for the best `cross_modal`/`doc_structure` expansion units **not already
-  present**, ordered by their decay score.
-- **Hard constraint:** an expansion-floor unit's display score is **capped below the lowest
-  fused (non-floor) item**, so a co-page item can *appear* but provably **cannot outrank** a
-  genuinely-scored result. This keeps the recall value without the v1 float-to-top defect.
+- **Fill-if-spare, never evict (per round-3 R1+R3, blocking):** the floor adds up to
+  `retrieval_rrf_expansion_floor_slots` (default **2**) **additional** slots — i.e. the result
+  may return up to `top_k + floor_slots` — OR fills only the unused tail when fewer than `top_k`
+  genuine units were fused. It must **never displace a genuinely-scored fused item** (a dense
+  query with ≥`top_k` real results gets zero floored items, not two evicted answers).
+- Candidates = best `cross_modal`/`doc_structure` expansion units **not already present**,
+  ordered by decay score, distinct decay-ordered display values.
+- **Hard constraint:** an expansion-floor unit's display score is **capped strictly below the
+  lowest fused (non-floor) item** (may read **< 0.30** — a documented sub-band), so a co-page
+  item can *appear* but provably **cannot outrank** a genuinely-scored result.
+- **Determinism caveat:** floored diagrams ride the expansion-gather path, which is run-to-run
+  unstable (`project_retrieval_nondeterminism`), so a floored diagram may appear in one run and
+  not the next until that gather is stabilized. Surfacing it with a "co-page (proximity)" UI
+  label is recommended (it carries no relevance signal — it could be a co-page figure of a
+  *different* system).
+- **Injection happens AFTER display-level filtering** so the deliberately-low-capped item is
+  not immediately filtered back out.
 
 ### Fusion
 
@@ -104,9 +118,11 @@ RRF(u) = Σ over signals S where unit u ∈ S:  w_S / (k + rank_S(u))
 - `k` = `RETRIEVAL_RRF_K` (default **20**; verified separation: rank-1 = 0.0476, rank-10 =
   0.0333, rank-30 = 0.0200 — 2.38× r1/r30, vs 1.48× at k=60).
 - `w_S`: `w_text=1.0`, `w_visual=1.0`, `w_ontology=0.5` (tunable).
-- Sort units by `RRF(u)` desc. **Leading-slot tiebreak:** on (near-)equal RRF, prefer (1)
-  more contributing signals, then (2) a text-bearing unit over a single-signal image, then
-  (3) id — so a lone marginal image cannot edge the primary text answer at slot #1.
+- Sort units by a **total-order key on EXACT RRF equality** (a tolerance/"near-equal" compare
+  is non-transitive → breaks determinism, per round-3 R1): `sort by (-RRF, -num_signals,
+  -text_bearing, id_asc)`. Exact ties are common (two single-signal rank-1 units both = w/(k+1)),
+  so exact-equality handling suffices — a lone single-signal image ties, then loses to a
+  text-bearing unit, so it cannot edge the primary text answer at slot #1.
 
 ### Ontology minimal floor (preserve the live-verified guarantee)
 
@@ -128,7 +144,9 @@ below the item above it — accepted minor non-monotonicity).
   Basic keeps applying `min_confidence` to its score unchanged.
 - **Display score** is informational: `display(u) = RRF(u) / (RRF(u) + C)`,
   `C = RETRIEVAL_RRF_DISPLAY_SCALE` (default **0.05**). Strong single-signal top reads ≈ **0.49**,
-  agreement top ≈ **0.66**, structural max ≈ **0.70**. **Documented band ~0.3–0.70** (NOT 0–1).
+  agreement top ≈ **0.66**. Signals are modality-partitioned, so **no unit can be in all three**
+  → realistic ceiling is the 2-signal agreement (image+caption) ≈ **0.66** (round-3 R1).
+  **Documented band ~0.3–0.66** for fused items (expansion-floor items form a sub-band < 0.30); NOT 0–1.
   Labeled "fusion score, not a probability." Note: not comparable across queries (a
   single-signal-correct answer reads ~0.49 while an agreement answer reads ~0.66) — UI should
   not threshold on it.
@@ -145,10 +163,29 @@ reranks+trims via `_apply_reranker` (the `top_k` trim lives at `_apply_reranker 
 
 1. **`_text_vector_search(for_fusion=False)`** — default = today's exact behavior (Text Basic
    byte-identical). `for_fusion=True` returns the **wide reranked pool without the final trim**.
-2. **`_apply_reranker`** — gains a `for_fusion` branch that **skips the `top_k` trim** (and the
-   `passthrough`/`remainder` re-assembly) so the wide pool survives to S_text.
-3. **`unified_query`** — branches `:102-103` so hybrid maps `min_confidence` onto per-signal
-   floors instead of cutting the fused score.
+2. **`_apply_reranker`** — `for_fusion` branch must widen **BOTH** trims (round-3 R2 blocker):
+   the `top_k` argument passed into `cross_encoder_rerank` at `:264` (which returns
+   `result[:top_k]` in `reranker.py:80` — this is what actually caps the pool, *before* the
+   `:299` slice) **and** the `:299` `output[:top_k]`. Widen the `:264` arg to
+   `len(rerankable)` / `retrieval_rerank_pool_size`, else S_text silently stays ~`top_k`, not
+   ~128, and the whole seed/pool design no-ops. Also skip the `passthrough`/`remainder`
+   re-assembly in this branch.
+3. **`unified_query`** — branches `:102-103` so hybrid (when fusion enabled) maps
+   `min_confidence` onto per-signal floors instead of cutting the fused score. (Note: one 0–1
+   knob maps to two incommensurable scales — reranker ~0.1–0.99 vs SigLIP 0–0.93 — with
+   different activation points; document this asymmetry on the API surface.)
+4. **`_image_vector_search`** (a 4th surface, round-3 R2) — caption `content_text` is **nulled
+   when `include_context=False`** (`:688`); the caption pass needs it regardless, so read the
+   image chunk's caption independent of `include_context`. **The caption (Docling `chunk_text`,
+   often empty/"Figure 3") is NOT the VLM `image_description`** (a separate TextChunk); both can
+   feed S_text for the same picture, so the **per-image MAX collapse must run BEFORE S_text rank
+   assignment** to prevent double-counting one picture across two S_text entries.
+
+**Merged-card lineage carrier (round-3 R2):** `QueryResultItem` has a **singular** `chunk_id`/
+`page_number`. The merged image card carries the image chunk as primary `chunk_id`, puts the
+second source (`image_description` chunk_id + source label) in `context` keys captured **at
+collapse time** (downstream backfills key off the single `chunk_id` and won't populate it), and
+lists both pages in `page_numbers`. No schema change required.
 
 **Seed fan-out fix (HIGH):** the wide S_text pool (≈128) must **not** become the expansion seed
 set — `_expand_seeds` is sized for ~`top_k` seeds (`_EXPAND_CONCURRENCY=8`, each seed opens DB
@@ -232,3 +269,12 @@ their untouched legacy branch (reserved-slots + single rerank + image-bypass `_N
 | SigLIP noise floods codename (R3) | Visual separation gate. |
 | Determinism over-claimed (R2) | Down-scoped to fixed-set ordering. |
 | "S_visual largely empty" prose wrong (R3-r2) | Corrected: noise floor excluded, separated images admitted. |
+| **Round 3 — tiebreak "near-equal" non-transitive (R1)** | Exact-equality total-order key `(-RRF,-num_signals,-text_bearing,id)`. |
+| **Round 3 — expansion floor evicts genuine results (R1+R3, blocking)** | Fill-if-spare / additive `top_k+floor_slots`; never evict; floor-aware trim. |
+| **Round 3 — internal reranker trim `:264` un-handled (R2 blocker)** | `for_fusion` widens the `cross_encoder_rerank` top_k arg, not just `:299`. |
+| **Round 3 — caption producer = 4th surface; caption ≠ image_description (R2)** | Read caption regardless of include_context; per-image MAX collapse BEFORE S_text rank. |
+| **Round 3 — merged-card lineage carrier unspecified (R2)** | Primary=image chunk_id; secondary in `context` at collapse time; both pages in `page_numbers`. |
+| **Round 3 — structural max display 0.70 unreachable (R1)** | Corrected to ≈0.66 (no unit in all 3 partitioned signals). |
+| **Round 3 — ontology floor=1 still unverified (R1+R3, OPEN)** | Carried as a hard pre-ship action item; measure live CUES count. |
+| Round 3 — min_confidence two-scale asymmetry (R3) | Documented on API surface. |
+| Round 3 — determinism of restored diagram (R3) | Noted: rides expansion-gather (separate nondeterminism TODO). |
