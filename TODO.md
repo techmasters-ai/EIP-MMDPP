@@ -470,6 +470,18 @@ A worker hung on a dead ArcadeDB socket is invisible: no error log, no task time
 
 ---
 
+**#88. Retrieval pipeline is nondeterministic (hybrid result set varies run-to-run)**
+**Status:** Open. Surfaced 2026-06-30 during the ontology-aware-hybrid-retrieval Task 9 gate (NOT caused by it — verified on `main` with no feature code).
+**Files:** `app/api/v1/retrieval.py` (`_expand_seeds` async gather, `_deduplicate_results`, `_diversify_results`, `_multi_modal_pipeline`).
+
+**Observation:** `POST /v1/retrieval/query` `strategy=hybrid` for the same query (`"SA-2 guidance radar"`, top_k=10) returned **6 results one run, 5 the next** on `main` — set intersection 4, symmetric difference 3. Result **set membership** (not just ordering) varies run-to-run. This made the planned "byte-identical rollback" gate criterion unachievable (no stable baseline); the gate was dispositioned to an inert-rollback criterion (user-approved). Broadly undermines retrieval reproducibility (A/B comparisons, regression gates).
+
+**Likely sources (unverified):** `_expand_seeds` runs per-seed expansion via `asyncio.gather` under a semaphore — async completion ordering feeding `_deduplicate_results`/`_diversify_results` could change which near-duplicate survives; or a flaky graph/vector query under concurrency; or set/dict iteration order in dedup. Count *varying* points at expansion/dedup, not pure sort.
+
+**What needs to be done:** make the expansion gather + dedup order-stable (deterministically sort expanded items before dedup; confirm vector/graph queries are deterministic), then add a determinism regression test (same query twice → identical chunk_id list). See [[project_retrieval_nondeterminism]].
+
+---
+
 **#83. Relax post-extraction IDENTITY_FILTER (recoverable false-positive drops at high temperature)**
 **Status:** Tier A DONE + DEPLOYED 2026-06-29. `identity_is_supported_by_batch_text` (`evidence_gate.py`) now builds a separator-tolerant pattern: the normalized identity is split on `[\s\-_/.]+` and rejoined with an optional-separator class so "SA-2 C" matches "SA-2C"/"SA 2 C" while alphanumeric boundary lookarounds still block over-match ("S-75"≠"SA-75") and commas/semicolons/colons are NOT bridged (no list-glue false positives). Verified on the 2026-06-29 fresh ingest: 17/19 distinct dropped missile names were recoverable; the 2 genuine hallucinations (9K33M3, HQ-2P) are still dropped. 9 unit tests added to `test_service_identity_gate.py` (all green); docling-graph rebuilt + recreated (healthy); in-container behavior confirmed. **Tier B (numeric-aware match) + Tier C (temperature-aware advisory + `DOCLING_GRAPH_IDENTITY_GATE_MODE` kill-switch) remain optional follow-ups.** See [[project_identity_filter_recoverable_drops]]. Original detail below.
 
