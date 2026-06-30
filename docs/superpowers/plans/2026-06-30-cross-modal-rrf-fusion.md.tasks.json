@@ -1,0 +1,68 @@
+{
+  "planPath": "docs/superpowers/plans/2026-06-30-cross-modal-rrf-fusion.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 0: RRF config knobs + env mirroring",
+      "status": "pending",
+      "description": "**Goal:** Add 8 retrieval_rrf_* settings (defaults) to config.py, mirrored into .env and .env.example.\n\n```json:metadata\n{\"files\": [\"app/config.py\", \".env.example\", \"tests/test_config_rrf.py\"], \"verifyCommand\": \"pytest tests/test_config_rrf.py -v\", \"acceptanceCriteria\": [\"all 8 settings with correct defaults\", \"all 8 in both env files\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 1: Measure live ontology cardinality (PRE-SHIP GATE)",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Measure qualifying ontology_relation count for the live CUES case; set RETRIEVAL_RRF_ONTOLOGY_MIN_SLOTS to max(1,count). USER-ORDERED GATE — NON-SKIPPABLE.\n\n```json:metadata\n{\"files\": [\".env.example\", \"app/config.py\"], \"verifyCommand\": \"docker exec eip-mmdpp-api-1 python /tmp/cues_probe.py\", \"acceptanceCriteria\": [\"qualifying count captured from live CUES\", \"floor set to max(1,count) in both env + config default\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requiresUserSpecification\": false, \"gateScope\": \"pre-ship\", \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 2: RRF fusion core module + unit tests",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Pure module: assign_ranks, rrf_score, display_score, fuse (total-order tiebreak), apply_expansion_floor (fill-if-spare). Unit-tested.\n\n```json:metadata\n{\"files\": [\"app/services/rrf_fusion.py\", \"tests/services/test_rrf_fusion.py\"], \"verifyCommand\": \"pytest tests/services/test_rrf_fusion.py -v\", \"acceptanceCriteria\": [\"contiguous stable ranks\", \"rrf sums present signals\", \"display anchor 0.488\", \"tiebreak text>lone-image\", \"floor never evicts + caps below\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 3: Per-image unit collapse + tests",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** build_units collapses image+image_description by artifact_id (modality-gated), max text_score, retains both lineages.\n\n```json:metadata\n{\"files\": [\"app/services/rrf_fusion.py\", \"tests/services/test_rrf_fusion.py\"], \"verifyCommand\": \"pytest tests/services/test_rrf_fusion.py -k units -v\", \"acceptanceCriteria\": [\"image+desc collapse; text/table never\", \"text_score=max; visual_score=image prob\", \"both chunk_ids+pages retained\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 4: for_fusion wide-pool path + Text Basic equality",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** for_fusion on _text_vector_search + _apply_reranker widens BOTH trims (cross_encoder_rerank arg + :299 slice); Text Basic byte-identical.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\", \"tests/api/test_rrf_integration.py\", \"tests/api/fixtures/text_basic_fan_song.json\"], \"verifyCommand\": \"pytest tests/api/test_rrf_integration.py::test_text_basic_unchanged -v\", \"acceptanceCriteria\": [\"widens both reranker trims\", \"wide pool returned\", \"Text Basic byte-identical\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 5: RRF signal capture + caption pass",
+      "status": "pending",
+      "blockedBy": [5],
+      "description": "**Goal:** Capture S_visual (gated pre-merge), wide S_text, caption pass (read regardless of include_context), bounded expansion seeds ~top_k.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\"], \"verifyCommand\": \"pytest tests/api/test_rrf_integration.py -k signals -v\", \"acceptanceCriteria\": [\"S_visual gated 0.35 pre-merge\", \"expansion seeds bounded ~top_k\", \"captions read+attached to artifact unit\"], \"modelTier\": \"complex\"}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 6: Wire fusion, floors, and min_confidence mapping",
+      "status": "pending",
+      "blockedBy": [2, 3, 4, 6],
+      "description": "**Goal:** RRF over captured signals; ontology floor + fill-if-spare expansion floor; min_confidence mapped to per-signal floors; behind master flag.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\"], \"verifyCommand\": \"pytest tests/api/test_rrf_integration.py -v\", \"acceptanceCriteria\": [\"per-signal contiguous deduped ranks\", \"fuse+ontology floor+expansion floor\", \"item.score=display; dedup/diversify after\", \"min_confidence to per-signal floors\"], \"modelTier\": \"complex\"}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 7: Merged-card lineage carrier",
+      "status": "pending",
+      "blockedBy": [7],
+      "description": "**Goal:** Merged image card retains both chunk_ids + pages via context keys; backfills still resolve image.\n\n```json:metadata\n{\"files\": [\"app/api/v1/retrieval.py\"], \"verifyCommand\": \"pytest tests/api/test_rrf_integration.py -k lineage -v\", \"acceptanceCriteria\": [\"merged card both chunk_ids+pages\", \"backfills resolve image\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 8: Integration verification (PRE-MERGE GATE)",
+      "status": "pending",
+      "blockedBy": [7, 8],
+      "description": "**Goal:** Prove spec behavior + flag-off/Text-Basic equality. USER-ORDERED GATE — NON-SKIPPABLE.\n\n```json:metadata\n{\"files\": [\"tests/api/test_rrf_integration.py\"], \"verifyCommand\": \"pytest tests/api/test_rrf_integration.py -v\", \"acceptanceCriteria\": [\"radar antenna interleaves+agreement leads\", \"Fan Song text-leads+schematic tail-only+deterministic x3\", \"Text Basic byte-identical\", \"flag-off equals legacy baseline\", \"CUES ontology in top_k\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requiresUserSpecification\": false, \"gateScope\": \"pre-merge\", \"requireEvidenceTokens\": [[\"flag-on\", \"fusion\", \"rrf\"], [\"flag-off\", \"legacy\", \"baseline\"]], \"modelTier\": \"complex\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-06-30T00:00:00Z"
+}
