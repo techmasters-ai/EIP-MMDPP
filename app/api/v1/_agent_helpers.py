@@ -45,7 +45,13 @@ def build_markdown(query: str, results: list[QueryResultItem]) -> str:
         if item.content_text:
             lines.append(f"\n{item.content_text.strip()}\n")
 
-        if item.context and item.context.get("source") == "ontology":
+        if item.context and item.context.get("source") == "ontology_relation":
+            rel_type = item.context.get("rel_type", "")
+            related = item.context.get("related_entity", "")
+            badge = " (reserved)" if item.context.get("reserved") else ""
+            lines.append(f"**Via ontology**: {rel_type} → {related}{badge}")
+            lines.append("")
+        elif item.context and item.context.get("source") == "ontology":
             rel_type = item.context.get("rel_type", "")
             entity_name = item.context.get("entity_name", "")
             related_name = item.context.get("related_name", "")

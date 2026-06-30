@@ -586,7 +586,12 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   };
 
   let provenanceLabel = "";
-  if (ctx?.source === "ontology") {
+  if (ctx?.source === "ontology_relation") {
+    const rel = ctx.rel_type as string | undefined;
+    const related = ctx.related_entity as string | undefined;
+    const reserved = ctx.reserved ? " (reserved)" : "";
+    provenanceLabel = `Via ontology: ${rel || "relation"}${related ? ` → ${related}` : ""}${reserved}`;
+  } else if (ctx?.source === "ontology") {
     const entity = ctx.entity_name as string | undefined;
     const entityType = ctx.entity_type as string | undefined;
     if (entity) {
