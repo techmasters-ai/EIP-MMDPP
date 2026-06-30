@@ -59,7 +59,7 @@ Parallel to `_expand_via_ontology`, called from `_expand_seeds` alongside it (au
 
 ### 4.3 Retrieval relation-weight table (new, decoupled from extraction)
 
-A **retrieval-specific** relation-weight map (env / bundle `retrieval_relation_weights` block), keyed on live predicates — leaves the extraction `SCORING_WEIGHTS` untouched:
+A **retrieval-specific**, **env-backed** relation-weight map, keyed on live predicates — leaves the extraction `SCORING_WEIGHTS` untouched. **Canonical source:** a code-default constant (in `app/api/v1/_retrieval_helpers.py`) read through a new dedicated getter (e.g. `get_retrieval_relation_weights()`), with an optional `RETRIEVAL_DOMAIN_RELATION_WEIGHTS` JSON env override. It does **not** read the ontology bundle's `scoring_weights` and requires **no** ontology bundle / generator changes. (`get_ontology_relation_weights()`, which loads the bundle, is left as-is for extraction.)
 
 | Relation | Weight |
 |---|---|
@@ -72,7 +72,7 @@ A **retrieval-specific** relation-weight map (env / bundle `retrieval_relation_w
 
 `compute_fusion_score` / `_rescore_expanded_chunks` consume this for ontology-relation chunks; co-mention chunks keep `default`. Separately (optional, independent cleanup): fix the dead `IS_VARIANT_OF→VARIANT_OF` key in the extraction `SCORING_WEIGHTS`.
 
-Global fusion rebalance: `semantic 0.65 / doc 0.20 / ontology 0.15` → **`0.60 / 0.15 / 0.25`** so domain edges have real voice in non-reserved slots. Env-tunable; validated by a quick pre-flight experiment.
+**Global fusion weights are KEPT at today's defaults** — `semantic 0.65 / doc 0.20 / ontology 0.15`. **No always-on rebalance** (revised per review: an always-on weight change would make the kill-switch non-identical). The soft-additive effect comes *solely* from stamping the **true relation**, so an ontology chunk's ontology component scales by its real weight (0.70→0.95) instead of the flat `EXTRACTED_FROM`→0.70 it gets today. The reserved slots (§4.4) + blended rerank carry the main load for the first rollout; revisit a global ontology-weight bump only after reserved slots prove the behavior.
 
 ### 4.4 Reserved slots + blended rerank (`_multi_modal_pipeline`, `_apply_reranker`)
 
@@ -80,7 +80,9 @@ Operate on the post-dedup/diversify/modality-filter pool, before the `top_k` cap
 
 **Membership — reserved slots.** Reserve up to `M` of `top_k` slots for domain-expanded chunks that qualify:
 - relation weight ≥ `RESERVE_MIN_REL_WEIGHT` (default 0.85), **and**
-- **raw query-chunk cosine** (the `semantic_score` component computed in `_rescore_expanded_chunks`, *not* the fused score) ≥ `RESERVE_MIN_COSINE` (default 0.15 — low, to admit ontologically-central but semantically-distant chunks while excluding garbage).
+- **raw query-chunk cosine** ≥ `RESERVE_MIN_COSINE` (default 0.15 — low, to admit ontologically-central but semantically-distant chunks while excluding garbage).
+
+**Required stored fields (review fix).** `_rescore_expanded_chunks` today computes the cosine and *immediately* overwrites `chunk.score` with the fused value (`retrieval.py:429`), discarding the raw cosine. It MUST instead persist both on the chunk: `context.raw_cosine` (the pre-fusion query-chunk cosine, used by the reserve gate above) and `context.fused_score_pre_rerank` (the fused score before the reranker blends/overwrites it). Reservation reads `context.raw_cosine`; logging and tests assert against both.
 
 Note: with the §4.3 curated weights all ≥ 0.85, the rel-weight gate currently admits every curated-relation chunk; it exists as a forward-safe floor if the curated set later includes weaker relations. The cosine floor is the active discriminator against off-topic expansions.
 
@@ -92,7 +94,12 @@ score = α · rerank_semantic + (1 − α) · fused_score        # α = RERANK_B
 ```
 The reranker's input pool is already ≤ `top_k`, so it never drops — reserved chunks stay in; the blend keeps the ontological signal in the final ordering for all chunks. `α=1.0` reproduces today's pure-semantic behavior.
 
-**Provenance.** Reserved chunks carry `context.reserved=true` + `rel_type`/`related_entity`, surfaced in the source list and logs ("ontological reservation via ASSOCIATED_WITH → Fan Song") — satisfies the data-lineage rule and makes behavior debuggable.
+**Provenance + surfacing (review fix).** Domain-expanded chunks carry `context.source="ontology_relation"` (distinct from co-mention `"ontology"`), plus `rel_type`, `related_entity`, and `reserved` (bool). Because today's surfacing only recognizes `source==="ontology"` — the UI label at `QueryPage.tsx:589` and the agent markdown at `_agent_helpers.py:48` — the new source value MUST get **explicit** formatting in all three consumer paths or it's only visible in raw JSON:
+- **UI** (`QueryPage.tsx`): label `ontology_relation` sources as e.g. "Ontology: <rel_type> → <related_entity>" with a "reserved" badge when `reserved`.
+- **Agent markdown / sources** (`build_markdown`, `build_sources`, `_agent_helpers.py`): same label so `/agent/context` consumers see the provenance.
+- **Logs**: the pipeline logs reserved picks ("ontological reservation via ASSOCIATED_WITH → Fan Song").
+
+Satisfies the data-lineage rule and makes the behavior debuggable end-to-end.
 
 ### 4.5 Config surface — `M` exposed in the UI
 
@@ -108,38 +115,44 @@ The reranker's input pool is already ≤ `top_k`, so it never drops — reserved
 
 | Env var | Default | UI? |
 |---|---|---|
+| `RETRIEVAL_DOMAIN_EXPANSION_ENABLED` | `true` | no (master flag) |
 | `RETRIEVAL_ONTOLOGY_RESERVED_SLOTS` | 3 | per-query |
 | `RETRIEVAL_ONTOLOGY_RESERVE_MIN_REL_WEIGHT` | 0.85 | no |
 | `RETRIEVAL_ONTOLOGY_RESERVE_MIN_COSINE` | 0.15 | no |
 | `RETRIEVAL_RERANK_BLEND_ALPHA` | 0.6 | no |
 | `RETRIEVAL_DOMAIN_EXPAND_K` | 5 | no |
-| `RETRIEVAL_ONTOLOGY_WEIGHT` | 0.25 (was 0.15) | no |
-| `RETRIEVAL_SEMANTIC_WEIGHT` | 0.60 (was 0.65) | no |
-| `RETRIEVAL_DOC_STRUCTURE_WEIGHT` | 0.15 (was 0.20) | no |
-| `RETRIEVAL_DOMAIN_RELATION_WEIGHTS` | curated table (§4.3) | no |
+| `RETRIEVAL_DOMAIN_RELATION_WEIGHTS` | unset → §4.3 code default (JSON override) | no |
 
-**Kill-switch:** `RETRIEVAL_ONTOLOGY_RESERVED_SLOTS=0` + `RETRIEVAL_RERANK_BLEND_ALPHA=1.0` → byte-identical to today's behavior.
+**Global fusion weights are NOT modified by this feature** — `RETRIEVAL_SEMANTIC_WEIGHT` (0.65), `RETRIEVAL_DOC_STRUCTURE_WEIGHT` (0.20), `RETRIEVAL_ONTOLOGY_WEIGHT` (0.15) keep today's values, so nothing needs "restoring" on rollback.
+
+**Master flag.** `RETRIEVAL_DOMAIN_EXPANSION_ENABLED=false` skips `_expand_via_domain_relations` entirely — no domain-relation chunks enter the pool.
+
+**Full rollback → byte-identical to today:** `RETRIEVAL_DOMAIN_EXPANSION_ENABLED=false` **+** `RETRIEVAL_ONTOLOGY_RESERVED_SLOTS=0` **+** `RETRIEVAL_RERANK_BLEND_ALPHA=1.0`. With those three set, no new chunks are added, no slots are reserved, the reranker overwrites (no blend), and the global weights are already today's values — so the pipeline reproduces current behavior exactly. (Reserved-slots=0 + α=1.0 *alone* is **not** byte-identical, because domain-expanded chunks would still be in the candidate pool and could displace a co-mention/seed chunk at the cap.)
 
 ## 5. Files affected
 
 - `app/services/arcadedb_graph.py` — new `get_related_entity_chunks` (+ GraphStore Protocol decl in `app/services/graph_store.py`).
-- `app/api/v1/retrieval.py` — new `_expand_via_domain_relations`, call it in `_expand_seeds`; reserved-slot logic in `_multi_modal_pipeline`; blended `_apply_reranker`; extend `GET /settings/retrieval`.
-- `app/api/v1/_retrieval_helpers.py` — retrieval relation-weight table + `compute_fusion_score` consuming the true relation.
+- `app/api/v1/retrieval.py` — new `_expand_via_domain_relations`, call it in `_expand_seeds` (gated by the master flag); `_rescore_expanded_chunks` stores `context.raw_cosine` + `context.fused_score_pre_rerank` (instead of discarding cosine); reserved-slot logic in `_multi_modal_pipeline`; blended `_apply_reranker`; `ontology_relation` formatting in `build_markdown`/`build_sources`; extend `GET /settings/retrieval`.
+- `app/api/v1/_retrieval_helpers.py` — env-backed retrieval relation-weight table + `get_retrieval_relation_weights()` getter; `compute_fusion_score` consuming the true relation.
 - `app/schemas/retrieval.py` — `ontology_reserved_slots` on `UnifiedQueryRequest`.
 - `app/api/v1/agent.py` — `reserved_slots` query param plumbing.
-- `app/config.py` + `.env` + `.env.example` — new settings.
-- `frontend/src/components/QueryPage.tsx` (+ api client) — hybrid-mode reserved-slots stepper.
-- Tests: `tests/unit/` (weight table, reserved-slot selection, blended rerank, request plumbing, traversal shaping), integration (MATCH traversal vs seeded graph), E2E acceptance.
+- `app/api/v1/_agent_helpers.py` — `ontology_relation` source label/formatting (currently only handles `source=="ontology"`).
+- `app/config.py` + `.env` + `.env.example` — new settings (master flag, reserved-slot knobs, expand_k, optional weight-table JSON override). **Global fusion weights unchanged.**
+- `frontend/src/components/QueryPage.tsx` (+ api client) — hybrid-mode reserved-slots stepper **and** `ontology_relation` source label + reserved badge (currently only labels `source==="ontology"` at `:589`).
+- **No ontology-bundle / generator changes** — the retrieval relation-weight table is env-backed, not bundle-backed.
+- Tests: `tests/unit/` (weight table + getter, reserved-slot selection incl. below-floor/non-tier rejection, blended rerank, request plumbing + clamping, traversal shaping, master-flag/full-rollback), integration (MATCH traversal vs seeded graph), E2E acceptance.
 
 ## 6. Acceptance criteria
 
-1. A hybrid query on a known air-defense system (e.g. SA-2) returns at least one chunk reached via a **domain** relation (`ASSOCIATED_WITH`/`CUES`/`VARIANT_OF` — e.g. a Fan Song chunk) that does **not** appear in the pre-change result, marked `context.reserved=true` with its `rel_type`.
-2. Domain-expanded chunks are weighted by the **true** relation (`VARIANT_OF`=0.95 ≠ co-mention `EXTRACTED_FROM`=0.70), verified in the fused score.
-3. Reserved-slot selection admits up to `M` qualifying (top-tier rel ≥0.85, cosine ≥0.15) domain chunks into `top_k`; below-floor / non-tier chunks are not reserved.
-4. The reranker **blends** (`α·rerank + (1−α)·fused`) rather than overwrites; reserved chunks are never dropped.
-5. `M` is settable per query from the hybrid-search UI and via the request parameter, defaulting from the server.
-6. Kill-switch (`RESERVED_SLOTS=0`, `ALPHA=1.0`) reproduces today's results exactly.
-7. The co-mention (`EXTRACTED_FROM`) expansion is preserved (augmented, not replaced).
+1. A hybrid query on a known air-defense system (SA-2) returns at least one chunk reached via a **domain** relation (`ASSOCIATED_WITH`/`CUES`/`VARIANT_OF` — a Fan Song chunk) that does **not** appear in the pre-change result, marked `context.reserved=true` with its `rel_type`. The E2E fixture must **guarantee** the SA-2↔Fan Song edge exists in the test graph and **assert** the chunk was absent pre-change.
+2. Domain-expanded chunks are weighted by the **true** relation (`VARIANT_OF`=0.95 ≠ co-mention `EXTRACTED_FROM`=0.70), verified in the stored `context.fused_score_pre_rerank`.
+3. `context.raw_cosine` and `context.fused_score_pre_rerank` are stored on every expanded chunk and logged; tests assert both.
+4. Reserved-slot selection admits up to `M` qualifying (rel ≥0.85 **and** `raw_cosine` ≥0.15) domain chunks into `top_k`; a chunk **below the cosine floor is rejected** (explicit test case), as is a non-tier relation.
+5. The reranker **blends** (`α·rerank + (1−α)·fused`) rather than overwrites; reserved chunks are never dropped.
+6. `M` is settable per query from the hybrid-search UI and via the request parameter, defaulting from the server (clamped to `[0, top_k]`).
+7. `ontology_relation` provenance is **rendered** in the UI label and the agent markdown/sources (not merely present in raw JSON).
+8. **Full rollback** (`DOMAIN_EXPANSION_ENABLED=false` + `RESERVED_SLOTS=0` + `ALPHA=1.0`) reproduces today's results **byte-identically**; a regression test pins this.
+9. The co-mention (`EXTRACTED_FROM`) expansion is preserved (augmented, not replaced).
 
 ## 7. Non-goals
 
