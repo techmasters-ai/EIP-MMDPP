@@ -519,18 +519,25 @@ async def sync_schema_from_ontology(
         )
 
         # (b) Normalized <field>_key UNIQUE index — what UPSERT dedups on
-        # under case-insensitive identity. This index is created BOTH here
+        # under case-insensitive identity. This index is declared BOTH here
         # (always-on schema sync, main.py lifespan) AND idempotently
         # (IF NOT EXISTS) by the Task 3 migration.
-        # VERIFIED on live ArcadeDB: a UNIQUE (LSM_TREE) index permits
-        # MULTIPLE NULLs, so creating it against existing rows whose _key is
-        # still NULL (pre-backfill) succeeds and is inert until Task 3
-        # backfills real values.
-        # Ordering dependency: Task 3 MUST merge the case-collision pairs
-        # BEFORE backfilling _key — otherwise two rows would backfill to the
-        # SAME _key and violate this UNIQUE index. See
-        # docs/superpowers/plans/2026-07-01-case-insensitive-identity.md
-        # Task 3 ("merge → backfill → index").
+        # VERIFIED on live ArcadeDB (LSM_TREE UNIQUE): a *composite* index
+        # skips an entry only when ALL indexed columns are null. This index is
+        # composite — (<field>_key, [document_id,] entity_type) — and
+        # entity_type is always populated, so on the EXISTING graph every
+        # pre-backfill row keys to (null, <entity_type>): identical across all
+        # rows of a type → CREATE INDEX FAILS with a duplicate-key error
+        # ("Duplicated key [null, RADAR_SYSTEM]"). That is why this always-on
+        # creation SILENTLY FAILS (swallowed by _run_ddl_batch) on populated
+        # types until the migration runs, and succeeds only on empty types.
+        # The Task 3 migration is therefore REQUIRED to actually create these
+        # indexes on existing data, and its order is mandatory:
+        #   merge case-collision pairs  → backfill <field>_key to distinct
+        #   non-null values  → THEN create the index (now succeeds).
+        # (Merge must precede backfill or two rows would backfill to the same
+        # _key and violate uniqueness.) See
+        # docs/superpowers/plans/2026-07-01-case-insensitive-identity.md Task 3.
         key_index_fields = [f"{f}_key" for f in key_fields]
         if doc_scoped:
             key_index_fields.append("document_id")
