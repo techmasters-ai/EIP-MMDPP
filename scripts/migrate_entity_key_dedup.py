@@ -572,8 +572,12 @@ def execute_merge(
         )
         client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
 
-    # (5) Delete the (now edge-less) loser vertex.
-    client.command_sync(db, "sql", f"DELETE VERTEX {loser_rid}")
+    # (5) Delete the (now edge-less) loser vertex. ArcadeDB's SQL parser requires
+    # the "DELETE VERTEX FROM <target>" form (a bare "DELETE VERTEX <rid>" fails
+    # with "missing FROM"); this matches the codebase idiom (arcadedb_graph.py:826).
+    # DELETE VERTEX is the graph-safe delete (cleans up any residual edges); the
+    # loser is edge-less here by construction (step 3 re-pointed/deleted them all).
+    client.command_sync(db, "sql", f"DELETE VERTEX FROM {loser_rid}")
 
     # Zero-edge-loss assertion.
     surv_after = client.query_sync(db, "sql", f"SELECT bothE().size() AS ec FROM {surv_rid}")
