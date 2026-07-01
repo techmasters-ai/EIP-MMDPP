@@ -496,6 +496,11 @@ async def sync_schema_from_ontology(
         # columns and ArcadeDB requires the property to exist first.
         # ``document_id`` is skipped: mirrors ``_key_fields`` (Task 1), it's
         # an opaque UUID, not a case/whitespace-variant display string.
+        # Mutual-consistency invariant: this exclusion must match
+        # ``_key_fields`` in arcadedb_graph.py exactly. If a doc-scoped type
+        # ever listed ``document_id`` inside its own identity_fields, BOTH the
+        # write layer and this index would drop document scoping from the
+        # ``_key`` — no live type does this today (air_defense_v3 checked).
         key_fields = [f for f in id_fields if f != "document_id"]
         for field in key_fields:
             upsert_ddl.append(
@@ -514,7 +519,18 @@ async def sync_schema_from_ontology(
         )
 
         # (b) Normalized <field>_key UNIQUE index — what UPSERT dedups on
-        # under case-insensitive identity.
+        # under case-insensitive identity. This index is created BOTH here
+        # (always-on schema sync, main.py lifespan) AND idempotently
+        # (IF NOT EXISTS) by the Task 3 migration.
+        # VERIFIED on live ArcadeDB: a UNIQUE (LSM_TREE) index permits
+        # MULTIPLE NULLs, so creating it against existing rows whose _key is
+        # still NULL (pre-backfill) succeeds and is inert until Task 3
+        # backfills real values.
+        # Ordering dependency: Task 3 MUST merge the case-collision pairs
+        # BEFORE backfilling _key — otherwise two rows would backfill to the
+        # SAME _key and violate this UNIQUE index. See
+        # docs/superpowers/plans/2026-07-01-case-insensitive-identity.md
+        # Task 3 ("merge → backfill → index").
         key_index_fields = [f"{f}_key" for f in key_fields]
         if doc_scoped:
             key_index_fields.append("document_id")
