@@ -15,6 +15,7 @@ from typing import Any
 
 from app.services.arcadedb_client import ArcadeDBClient
 from app.services.arcadedb_schema import _safe_type_name
+from app.services.extraction_merge import norm
 from app.services.graph_store import (
     EntityChunkEdge,
     GraphEntityResult,
@@ -165,9 +166,41 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
     )
 
 
-def _build_where(identity_fields: dict[str, Any]) -> str:
-    """Build a WHERE clause from identity fields using parameter placeholders."""
-    parts = [f"{k} = :{k}" for k in identity_fields]
+def _key_fields(identity_fields: dict[str, Any]) -> dict[str, Any]:
+    """Map each identity field to its normalized ``<field>_key`` (= ``norm(value)``).
+
+    ``document_id`` is skipped: it's an opaque UUID (not a case/whitespace-
+    variant display string), so it keeps participating in the WHERE clause
+    RAW. Every other identity field gets a normalized key so that case- and
+    whitespace-variants (``FAN SONG`` vs ``Fan Song``) resolve to the SAME
+    vertex at write time — the DB-layer twin of the case-insensitive
+    ``LogicalIdentity`` equality added in ``extraction_merge`` (Task 0).
+    """
+    return {
+        f"{k}_key": norm(v)
+        for k, v in identity_fields.items()
+        if k != "document_id"
+    }
+
+
+def _build_where(identity_fields: dict[str, Any], suffix: str = "") -> str:
+    """Build a WHERE clause that matches on the normalized ``<field>_key``.
+
+    Each identity field is matched against its ``<field>_key`` column
+    (populated by the node upsert builders) so a later case/whitespace
+    variant upserts onto — and edges resolve to — the existing vertex.
+    ``document_id`` stays a RAW equality (opaque UUID, document-scope
+    discriminator). The ``<field>_key`` / ``document_id`` params are bound
+    by the caller (node upserts derive them via ``_key_fields``; relationship
+    endpoints derive them inline). ``suffix`` disambiguates param names when
+    the clause is folded into a multi-statement sqlscript batch.
+    """
+    parts: list[str] = []
+    for k in identity_fields:
+        if k == "document_id":
+            parts.append(f"{k} = :{k}{suffix}")
+        else:
+            parts.append(f"{k}_key = :{k}_key{suffix}")
     return " AND ".join(parts)
 
 
@@ -175,6 +208,89 @@ def _build_set(fields: dict[str, Any]) -> str:
     """Build a SET clause from a dict using parameter placeholders."""
     parts = [f"{k} = :{k}" for k in fields]
     return ", ".join(parts)
+
+
+# Display fields that must be preserved FIRST-SEEN (write-once): a later
+# case/whitespace variant of the identity (``FAN SONG`` after ``Fan Song``)
+# must not overwrite the originally-persisted display casing. ``name`` plus
+# every raw identity field are COALESCE'd on update so the first value wins;
+# the normalized ``<field>_key`` columns and the mutable
+# properties/confidence are set unconditionally.
+def _build_node_upsert_clauses(
+    record: NodeRecord,
+    suffix: str = "",
+) -> tuple[str, str, dict[str, Any]]:
+    """Build (set_clause, where_clause, params) for a node UPSERT.
+
+    Shared by the single-node upserts (``suffix=""``) and the batch builder
+    (``suffix=f"_{i}"``). Semantics:
+
+    * WHERE matches on the normalized ``<field>_key`` (via ``_build_where``),
+      so case/whitespace identity variants converge on one vertex.
+    * SET persists the ``<field>_key`` columns (so the WHERE can match a
+      pre-existing row) plus the mutable fields (``entity_type``,
+      ``extraction_confidence``, non-identity properties), which are
+      overwritten on every merge.
+    * SET persists the write-once display fields — ``name`` and every RAW
+      identity field — via ``COALESCE(<field>, :param)`` so the FIRST-seen
+      casing is kept and a later variant never clobbers it. (Previously the
+      raw identity value was implicitly written on INSERT by the UPSERT's
+      WHERE-equality; now the WHERE keys off ``<field>_key`` instead, so the
+      raw display column must be set explicitly.)
+    * ``document_id`` (document-scope discriminator) stays a RAW WHERE match
+      and is written on INSERT by the UPSERT WHERE-equality — it is not a
+      display/case-variant field, so it needs neither a ``_key`` nor COALESCE.
+    """
+    params: dict[str, Any] = {}
+    identity_names = set(record.identity_fields)
+    key_fields = _key_fields(record.identity_fields)
+
+    set_parts: list[str] = []
+
+    # --- mutable fields (overwritten on every merge) ---
+    mutable: dict[str, Any] = {
+        "entity_type": record.entity_type,
+        "extraction_confidence": record.extraction_confidence,
+    }
+    for k, v in record.properties.items():
+        # Identity fields + ``name`` are persisted write-once below; never
+        # emit them here (would both duplicate the SET and clobber first-seen).
+        if k in identity_names or k == "name":
+            continue
+        mutable[k] = v
+    for k, v in mutable.items():
+        pk = f"{k}{suffix}"
+        params[pk] = v
+        set_parts.append(f"{k} = :{pk}")
+
+    # --- write-once display: name ---
+    name_pk = f"name{suffix}"
+    params[name_pk] = record.name
+    set_parts.append(f"name = COALESCE(name, :{name_pk})")
+
+    # --- write-once display: raw identity fields (document_id excepted) ---
+    for k, v in record.identity_fields.items():
+        if k == "document_id":
+            continue
+        pk = f"{k}_raw{suffix}"
+        params[pk] = v
+        set_parts.append(f"{k} = COALESCE({k}, :{pk})")
+
+    # --- normalized key columns (deterministic; safe to set every write) ---
+    for k, v in key_fields.items():
+        pk = f"{k}{suffix}"
+        params[pk] = v
+        set_parts.append(f"{k} = :{pk}")
+
+    # --- WHERE (normalized keys + raw document_id); bind its params ---
+    where_clause = _build_where(record.identity_fields, suffix)
+    for k, v in record.identity_fields.items():
+        if k == "document_id":
+            params[f"{k}{suffix}"] = v
+        # non-document_id key params already bound in the key-columns loop.
+
+    set_clause = ", ".join(set_parts)
+    return set_clause, where_clause, params
 
 
 def _build_upsert_node_script(
@@ -194,29 +310,14 @@ def _build_upsert_node_script(
     params: dict[str, Any] = {}
 
     for i, record in enumerate(records):
-        set_fields: dict[str, Any] = {
-            "name": record.name,
-            "entity_type": record.entity_type,
-            "extraction_confidence": record.extraction_confidence,
-        }
-        set_fields.update(record.properties)
-
-        set_parts: list[str] = []
-        for k, v in set_fields.items():
-            pk = f"{k}_{i}"
-            params[pk] = v
-            set_parts.append(f"{k} = :{pk}")
-
-        where_parts: list[str] = []
-        for k, v in record.identity_fields.items():
-            pk = f"{k}_{i}"
-            # Identity fields may overlap with set fields — same key, same value,
-            # so reusing the param key is safe.
-            params[pk] = v
-            where_parts.append(f"{k} = :{pk}")
-
-        set_clause = ", ".join(set_parts)
-        where_clause = " AND ".join(where_parts)
+        # Normalized-key WHERE + write-once display SET (COALESCE) + persisted
+        # <field>_key columns. See _build_node_upsert_clauses. entity_type is
+        # part of the SET (mutable), so :entity_type_{i} is available for the
+        # extra ``AND entity_type = ...`` guard on the WHERE below.
+        set_clause, where_clause, rec_params = _build_node_upsert_clauses(
+            record, suffix=f"_{i}",
+        )
+        params.update(rec_params)
 
         # ArcadeDB sqlscript returns only the LAST statement's result from
         # a plain ";"-joined batch (manual, "SQL Script" section, p. 275).
@@ -237,6 +338,35 @@ def _build_upsert_node_script(
     return_clause = "RETURN [" + ", ".join(f"$v{i}" for i in range(len(records))) + "]"
     script = ";\n".join(statements) + ";\n" + return_clause
     return script, params
+
+
+def _build_endpoint_where_parts(
+    identity: dict[str, Any],
+    prefix: str,
+    params: dict[str, Any],
+    suffix: str = "",
+) -> list[str]:
+    """Return WHERE parts resolving a relationship endpoint on ``<field>_key``.
+
+    Mirrors node identity resolution: each endpoint identity field is matched
+    against the vertex's normalized ``<field>_key`` column (bound to
+    ``norm(value)``) so an edge whose endpoint is ``FAN SONG`` attaches to the
+    same vertex the merged ``Fan Song`` node upserted onto. ``document_id`` is
+    kept a RAW equality (opaque scope UUID). ``prefix`` (``f_`` / ``t_``) and
+    ``suffix`` (row index in a batch) keep from/to params from colliding.
+    Mutates ``params`` with the bound values.
+    """
+    parts: list[str] = []
+    for k, v in identity.items():
+        if k == "document_id":
+            pk = f"{prefix}{k}{suffix}"
+            params[pk] = v
+            parts.append(f"{k} = :{pk}")
+        else:
+            pk = f"{prefix}{k}_key{suffix}"
+            params[pk] = norm(v)
+            parts.append(f"{k}_key = :{pk}")
+    return parts
 
 
 def _is_all_int_list(value: Any) -> bool:
@@ -307,17 +437,15 @@ def _build_upsert_relationship_script(
         params[run_id_param_key] = provenance.pipeline_run_id
 
     for i, record in enumerate(records):
-        from_where_parts: list[str] = []
-        for k, v in record.from_identity.items():
-            pk = f"f_{k}_{i}"
-            params[pk] = v
-            from_where_parts.append(f"{k} = :{pk}")
-
-        to_where_parts: list[str] = []
-        for k, v in record.to_identity.items():
-            pk = f"t_{k}_{i}"
-            params[pk] = v
-            to_where_parts.append(f"{k} = :{pk}")
+        # Resolve endpoints on normalized <field>_key so a case/whitespace
+        # variant endpoint attaches to the merged vertex (see
+        # _build_endpoint_where_parts).
+        from_where_parts = _build_endpoint_where_parts(
+            record.from_identity, "f_", params, f"_{i}",
+        )
+        to_where_parts = _build_endpoint_where_parts(
+            record.to_identity, "t_", params, f"_{i}",
+        )
 
         conf_key = f"extraction_confidence_{i}"
         params[conf_key] = record.extraction_confidence
@@ -905,22 +1033,16 @@ class ArcadeDBGraphStore:
         return rid
 
     async def _upsert_node_impl(self, record: NodeRecord) -> str:
-        set_fields: dict[str, Any] = {
-            "name": record.name,
-            "entity_type": record.entity_type,
-            "extraction_confidence": record.extraction_confidence,
-        }
-        set_fields.update(record.properties)
-
-        where_clause = _build_where(record.identity_fields)
-        set_clause = _build_set(set_fields)
+        # Normalized-key WHERE + write-once display SET + persisted
+        # <field>_key columns (see _build_node_upsert_clauses). entity_type is
+        # a mutable SET field, so :entity_type is bound for the extra guard.
+        set_clause, where_clause, params = _build_node_upsert_clauses(record)
 
         sql = (
             f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
             f"updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )
-        params = {**set_fields, **record.identity_fields}
 
         result = await self._client.command(
             self._database, "sql", sql, params,
@@ -1082,10 +1204,16 @@ class ArcadeDBGraphStore:
         ):
             return ""
 
-        # Use prefixed param keys to avoid collision when from_identity and
-        # to_identity have the same field names (e.g., both have "name").
-        from_parts = [f"{k} = :f_{k}" for k in record.from_identity]
-        to_parts = [f"{k} = :t_{k}" for k in record.to_identity]
+        # Resolve endpoints on normalized <field>_key (prefixed f_/t_ to avoid
+        # collision when from_identity and to_identity share field names), so a
+        # case/whitespace-variant endpoint attaches to the merged vertex.
+        endpoint_params: dict[str, Any] = {}
+        from_parts = _build_endpoint_where_parts(
+            record.from_identity, "f_", endpoint_params,
+        )
+        to_parts = _build_endpoint_where_parts(
+            record.to_identity, "t_", endpoint_params,
+        )
         from_where = " AND ".join(from_parts)
         to_where = " AND ".join(to_parts)
 
@@ -1111,8 +1239,7 @@ class ArcadeDBGraphStore:
             f"created_at = sysdate(), updated_at = sysdate(){extra_props}"
         )
         params = {
-            **{f"f_{k}": v for k, v in record.from_identity.items()},
-            **{f"t_{k}": v for k, v in record.to_identity.items()},
+            **endpoint_params,
             "extraction_confidence": record.extraction_confidence,
             **doc_id_param,
             **extra_params,
@@ -2522,22 +2649,16 @@ class ArcadeDBGraphStore:
         return rid
 
     def _upsert_node_impl_sync(self, record: NodeRecord) -> str:
-        set_fields: dict[str, Any] = {
-            "name": record.name,
-            "entity_type": record.entity_type,
-            "extraction_confidence": record.extraction_confidence,
-        }
-        set_fields.update(record.properties)
-
-        where_clause = _build_where(record.identity_fields)
-        set_clause = _build_set(set_fields)
+        # Normalized-key WHERE + write-once display SET + persisted
+        # <field>_key columns (see _build_node_upsert_clauses). entity_type is
+        # a mutable SET field, so :entity_type is bound for the extra guard.
+        set_clause, where_clause, params = _build_node_upsert_clauses(record)
 
         sql = (
             f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
             f"updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )
-        params = {**set_fields, **record.identity_fields}
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
 

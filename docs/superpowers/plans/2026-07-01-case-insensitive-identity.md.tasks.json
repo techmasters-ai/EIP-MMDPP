@@ -4,13 +4,13 @@
     {
       "id": 10,
       "subject": "Task 0: norm() + LogicalIdentity in-memory normalization",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Shared norm() + normalized identity key so FAN SONG/Fan Song are the same LogicalIdentity (merge in memory), while raw values still drive the display name.\n\n**Files:** Modify app/services/extraction_merge.py; Test tests/services/test_identity_norm.py (create)\n\n**Acceptance Criteria:** norm trims/casefolds/collapses; case-variant LogicalIdentity == and hash-equal; identity_values_dict/identity_tuple stay RAW.\n\n**Verify:** python3 -m pytest tests/services/test_identity_norm.py -v\n\n```json:metadata\n{\"files\": [\"app/services/extraction_merge.py\", \"tests/services/test_identity_norm.py\"], \"verifyCommand\": \"python3 -m pytest tests/services/test_identity_norm.py -v\", \"acceptanceCriteria\": [\"norm trims/casefolds/collapses\", \"case-variant LogicalIdentity == and hash-equal\", \"identity values stay raw for display\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 11,
       "subject": "Task 1: DB write paths derive+match normalized _key",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [10],
       "description": "**Goal:** Every DB node-write path and relationship endpoint resolves on normalized <field>_key.\n\n**Files:** Modify app/services/arcadedb_graph.py (_build_where, _build_upsert_node_script, _upsert_node_impl_sync, async); Modify app/workers/pipeline.py (only if needed); Test tests/services/test_arcadedb_upsert_key.py (create)\n\n**Acceptance Criteria:** shared _key derivation used by all node paths + endpoints; WHERE on <field>_key; display first-seen; relationship endpoints match on _key.\n\n**Verify:** python3 -m pytest tests/services/test_arcadedb_upsert_key.py -v\n\n```json:metadata\n{\"files\": [\"app/services/arcadedb_graph.py\", \"app/workers/pipeline.py\", \"tests/services/test_arcadedb_upsert_key.py\"], \"verifyCommand\": \"python3 -m pytest tests/services/test_arcadedb_upsert_key.py -v\", \"acceptanceCriteria\": [\"shared _key derivation used by all node paths + endpoints\", \"WHERE on <field>_key; display first-seen\", \"relationship endpoints match on _key\"], \"modelTier\": \"complex\"}\n```"
     },
