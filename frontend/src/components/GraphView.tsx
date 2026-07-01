@@ -67,12 +67,22 @@ export function toGraphElements(
 const LAYOUT = {
   name: "cose",
   animate: false,
+  randomize: true, // start from random positions -> avoids the initial pile-up
   nodeDimensionsIncludeLabels: true,
-  nodeRepulsion: () => 8000,
-  idealEdgeLength: () => 120,
-  edgeElasticity: () => 100,
-  gravity: 0.25,
+  fit: true,
   padding: 40,
+  // Stronger repulsion + explicit overlap avoidance so dense clusters
+  // (e.g. SECTION CHILD_OF chains, HAS_PROVENANCE hubs) spread out instead
+  // of piling on top of each other.
+  nodeRepulsion: () => 40000,
+  nodeOverlap: 24,
+  idealEdgeLength: () => 150,
+  edgeElasticity: () => 80,
+  gravity: 0.12, // weaker center pull -> less clumping
+  componentSpacing: 140, // push disconnected clusters/floaters apart
+  numIter: 2000, // more iterations to actually converge
+  coolingFactor: 0.95,
+  initialTemp: 250,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
