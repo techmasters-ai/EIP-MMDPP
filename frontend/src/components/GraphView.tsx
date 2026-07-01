@@ -6,6 +6,24 @@ import { GraphTooltip } from "./GraphTooltip";
 import type { GraphNeighborhoodResponse } from "../api/client";
 import { getEntityCategory } from "../constants/entityTypes";
 
+/** Human-readable label for a node.
+ *
+ * SECTION nodes store a `section_number` in their `name` field (often a
+ * synthetic hierarchical value like "0.44"), so their real title lives in
+ * `heading`. Prefer that; the synthetic document-root section (number "0",
+ * no heading) gets a friendly label instead of a bare "0".
+ */
+function nodeDisplayName(node: Record<string, unknown>): string {
+  const name = String(node.name ?? node.id ?? "");
+  if (String(node.entity_type ?? "") === "SECTION") {
+    const heading = String(node.heading ?? "").trim();
+    if (heading) return heading;
+    if (String(node.section_number ?? "") === "0") return "Document root";
+    return name ? `§ ${name}` : "Section";
+  }
+  return name;
+}
+
 /** Convert API response to Cytoscape elements.
  *
  * Nodes are keyed by their UUID `id` property (not name) so that
@@ -26,10 +44,11 @@ export function toGraphElements(
     if (!nodeId || nodeIds.has(nodeId)) continue;
     nodeIds.add(nodeId);
     const entityType = (node.entity_type as string) || "UNKNOWN";
-    // Show name + type to distinguish same-name entities
+    // Show a readable label (heading for sections) + type on the center node
+    const baseLabel = nodeDisplayName(node);
     const displayName = name === centerName && entityType !== "UNKNOWN"
-      ? `${name} (${entityType})`
-      : name;
+      ? `${baseLabel} (${entityType})`
+      : baseLabel;
     const label = displayName.length > 25 ? displayName.slice(0, 23) + "\u2026" : displayName;
     elements.push({
       data: { id: nodeId, label, ...node },
