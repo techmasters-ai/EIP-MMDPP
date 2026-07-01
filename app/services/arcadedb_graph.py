@@ -182,14 +182,16 @@ GRAPH_VIEW_NODE_TYPES: frozenset[str] = frozenset({
     "ELECTRONIC_WARFARE_SYSTEM", "FIRE_CONTROL_SYSTEM", "LAUNCHER_SYSTEM",
     "INTEGRATED_AIR_DEFENSE_SYSTEM", "WEAPON_SYSTEM", "EQUIPMENT_SYSTEM",
     "PLATFORM", "SUBSYSTEM", "COMPONENT", "ORGANIZATION",
-    # Document content
+    # Document content (structural). TEXT_BLOCK + IMAGE are intentionally
+    # OMITTED: at hop-2 they fan out through shared Documents and dominate the
+    # canvas (636 of 781 nodes for Fan Song); keeping only the structural
+    # content nodes leaves the ontology + document skeleton.
     "Document", "DOCUMENT", "Collection", "SECTION", "FIGURE", "TABLE_REF",
-    "IMAGE", "TEXT_BLOCK",
     # Meta
     "Alias", "CommunityReport",
 })
-# Dropped node types (raw chunks): TextChunk, ImageChunk, ExtractionChunk,
-# TrustedTextChunk.
+# Dropped node types: raw chunks (TextChunk, ImageChunk, ExtractionChunk,
+# TrustedTextChunk) + document-body content (TEXT_BLOCK, IMAGE).
 
 GRAPH_VIEW_EDGE_TYPES: frozenset[str] = frozenset({
     # Domain ontology (entity <-> entity)
