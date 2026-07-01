@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+"""One-time migration: case-insensitive entity identity (``<field>_key``).
+
+Brings the EXISTING production graph up to the case-insensitive-identity
+scheme (feature branch ``feat/case-insensitive-identity``, Tasks 0-2) WITHOUT
+a re-ingest. Three ORDERED phases (the order is mandatory):
+
+  1. MERGE case-collision pairs. Two vertices whose identity fields differ
+     only by case/whitespace (e.g. ``FAN SONG`` vs ``Fan Song``) would, once
+     ``<field>_key = norm(<field>)`` is backfilled, collapse onto the SAME
+     ``_key`` and violate the UNIQUE ``<field>_key`` index. So we merge them
+     FIRST: pick a survivor, re-point every one of the loser's edges onto the
+     survivor (preserving edge properties + direction), then delete the loser
+     vertex.
+  2. BACKFILL ``<field>_key`` on every existing vertex of each indexed
+     domain-entity type. ``norm()`` is computed in PYTHON per row (the exact
+     function the write layer uses) — never reimplemented in SQL — so the
+     stored keys are byte-identical to what fresh upserts write.
+  3. INDEX — ensure the ``<field>_key`` UNIQUE index exists (idempotent,
+     ``IF NOT EXISTS``). The always-on schema sync may already have created it
+     on a deployment running the new code; creating again is a safe no-op.
+
+Types + identity fields are DERIVED from the ontology the SAME way the schema
+builder does (``arcadedb_schema.sync_schema_from_ontology`` Phase 6b +
+``arcadedb_graph._key_fields``) so this stays correct if the ontology changes:
+every entity type that declares ``identity_fields`` gets a ``<field>_key`` for
+each identity field EXCEPT ``document_id`` (opaque UUID, kept raw).
+
+SAFETY
+------
+* Default behavior (no flags) is DRY-RUN — zero writes. The destructive path
+  requires an explicit ``--execute`` and prints a blast-radius summary first.
+* Merge PRECEDES backfill (else two collision rows backfill to the same key
+  and violate the UNIQUE index). Backfill precedes index for the same reason.
+* Guards against edge loss: for every merged pair we assert
+  ``recreated + deduped == loser_edge_count`` (every loser edge is either
+  re-created on the survivor or folded into an existing duplicate) and, after
+  the merge, ``survivor_edges_after == survivor_edges_before + recreated``.
+* Only GLOBAL-scope domain entities are auto-merged. If any case-collision is
+  detected in a document-scoped / structural type it is REPORTED and (in
+  ``--execute``) the run ABORTS before any write — those have different edge
+  topology and are out of this migration's scope.
+
+RUN
+---
+In-container (recommended — same ArcadeDB hostname + creds the write layer
+uses; ``scripts/`` is not bind-mounted, so copy it in first):
+
+    docker cp scripts/migrate_entity_key_dedup.py \
+        eip-mmdpp-api-1:/app/scripts/migrate_entity_key_dedup.py
+    docker exec eip-mmdpp-api-1 \
+        python /app/scripts/migrate_entity_key_dedup.py --dry-run
+    # after reviewing the dry-run:
+    docker exec eip-mmdpp-api-1 \
+        python /app/scripts/migrate_entity_key_dedup.py --execute
+
+From the host (ArcadeDB is on localhost:2480 — the in-container hostname
+``arcadedb`` does not resolve here, so override the URL):
+
+    python scripts/migrate_entity_key_dedup.py --dry-run \
+        --arcadedb-url http://localhost:2480
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
+# Make the repo root (parent of scripts/) importable whether this runs from the
+# repo root on the host or from /app/scripts in the api container.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from app.config import get_settings  # noqa: E402
+from app.services.arcadedb_client import ArcadeDBClient  # noqa: E402
+from app.services.arcadedb_graph import _sql_list_set_fragment  # noqa: E402
+from app.services.arcadedb_schema import _safe_type_name  # noqa: E402
+from app.services.extraction_merge import norm  # noqa: E402
+from ontology_bundles.air_defense_v3.introspect import build_ontology_dict  # noqa: E402
+
+# Property keys that never count toward "data richness" when choosing a merge
+# survivor (identity / bookkeeping / normalized-key columns are added per type).
+_META_KEYS = frozenset({
+    "@rid", "@type", "@cat", "@class", "@version", "rid",
+    "name", "id", "entity_type", "canonical_name", "extraction_confidence",
+    "created_at", "updated_at", "document_id",
+})
+
+
+# ---------------------------------------------------------------------------
+# Ontology-derived type table (mirrors arcadedb_schema Phase 6b + _key_fields)
+# ---------------------------------------------------------------------------
+
+def derive_indexed_types() -> list[dict[str, Any]]:
+    """Return the indexed entity types + their identity/key fields.
+
+    Derived from ``build_ontology_dict()`` EXACTLY as the schema builder
+    (``sync_schema_from_ontology`` Phase 6b) derives them:
+
+      * a type participates iff it declares ``identity_fields`` (component
+        classes with none are skipped — they have no upsert/index path);
+      * ``key_fields`` = identity fields minus ``document_id`` (mirrors
+        ``arcadedb_graph._key_fields``);
+      * ``doc_scoped`` iff ``identity_scope == 'document'`` and the type does
+        not already carry ``document_id`` in its identity fields — the key
+        index then closes on ``document_id`` + ``entity_type``.
+    """
+    ont = build_ontology_dict()
+    out: list[dict[str, Any]] = []
+    for e in ont.get("entity_types", []):
+        id_fields = list(e.get("identity_fields") or [])
+        if not id_fields:
+            continue
+        scope = e.get("identity_scope", "document")
+        out.append({
+            "etype": _safe_type_name(e["name"]),
+            "id_fields": id_fields,
+            "key_fields": [f for f in id_fields if f != "document_id"],
+            "doc_scoped": scope == "document" and "document_id" not in id_fields,
+            "scope": scope,
+        })
+    return out
+
+
+def key_index_name(t: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(ddl, auto_index_name)`` for a type's ``<field>_key`` UNIQUE index.
+
+    Mirrors the Phase 6b key-index DDL and ArcadeDB's ``Type[f1,f2]``
+    auto-naming (no spaces) so we can probe ``schema:indexes`` for existence.
+    """
+    fields = [f"{f}_key" for f in t["key_fields"]]
+    if t["doc_scoped"]:
+        fields.append("document_id")
+    fields.append("entity_type")
+    ddl = f"CREATE INDEX IF NOT EXISTS ON {t['etype']} ({', '.join(fields)}) UNIQUE"
+    name = f"{t['etype']}[{','.join(fields)}]"
+    return ddl, name
+
+
+# ---------------------------------------------------------------------------
+# Collision detection + survivor selection
+# ---------------------------------------------------------------------------
+
+def _rid_sort_key(rid: str) -> tuple[int, int]:
+    """Numeric sort key for a ``#bucket:pos`` RID (lowest-@rid tiebreak)."""
+    try:
+        bucket, pos = rid.lstrip("#").split(":")
+        return int(bucket), int(pos)
+    except Exception:
+        return (1 << 62, 1 << 62)
+
+
+def detect_collisions(
+    client: ArcadeDBClient, db: str, t: dict[str, Any],
+) -> list[list[str]]:
+    """Return groups of RIDs (len > 1) that collide on the normalized key.
+
+    A group is the set of rows that would map to the SAME ``(<field>_key...,
+    document_id?)`` tuple once ``_key`` is backfilled — i.e. exactly what would
+    violate the UNIQUE ``<field>_key`` index. ``norm()`` is computed in Python
+    (same as the write layer).
+    """
+    key_fields = t["key_fields"]
+    select_cols = ["@rid AS rid"] + list(key_fields)
+    if t["doc_scoped"]:
+        select_cols.append("document_id")
+    rows = client.query_sync(
+        db, "sql", f"SELECT {', '.join(select_cols)} FROM {t['etype']}",
+    )
+    groups: dict[tuple, list[str]] = {}
+    for r in rows:
+        key = tuple(norm(r.get(f)) for f in key_fields)
+        if t["doc_scoped"]:
+            key = key + (r.get("document_id"),)
+        groups.setdefault(key, []).append(r["rid"])
+    return [rids for rids in groups.values() if len(rids) > 1]
+
+
+def _richness(row: dict[str, Any], t: dict[str, Any]) -> int:
+    """Count populated (non-null / non-empty) DOMAIN properties on a row.
+
+    Excludes identity fields, ``name``, bookkeeping columns and ``_key``
+    columns — what remains is the entity's actual data payload (specs like
+    ``nominal_rf_mhz`` / ``tx_peak_power_kw``). Higher = keep as survivor.
+    """
+    exclude = set(_META_KEYS) | set(t["id_fields"]) | {f"{f}_key" for f in t["key_fields"]}
+    n = 0
+    for k, v in row.items():
+        if k in exclude or k.startswith("@"):
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        if isinstance(v, (list, dict)) and len(v) == 0:
+            continue
+        n += 1
+    return n
+
+
+def choose_survivor(
+    client: ArcadeDBClient, db: str, t: dict[str, Any], rids: list[str],
+) -> tuple[str, list[str], dict[str, tuple[int, int]]]:
+    """Pick the survivor for a collision group.
+
+    Tiebreak order (documented): (1) most populated domain properties
+    (non-null specs); (2) more edges; (3) lowest @rid. Returns
+    ``(survivor_rid, loser_rids, stats)`` where ``stats[rid] = (richness,
+    edge_count)``.
+    """
+    rid_list = ", ".join(rids)
+    rows = client.query_sync(
+        db, "sql", f"SELECT *, @rid AS rid FROM {t['etype']} WHERE @rid IN [{rid_list}]",
+    )
+    by_rid = {r["rid"]: r for r in rows}
+    stats: dict[str, tuple[int, int]] = {}
+    for rid in rids:
+        ec_res = client.query_sync(
+            db, "sql", f"SELECT bothE().size() AS ec FROM {rid}",
+        )
+        edge_count = int(ec_res[0]["ec"]) if ec_res else 0
+        stats[rid] = (_richness(by_rid.get(rid, {}), t), edge_count)
+    ordered = sorted(
+        rids,
+        key=lambda r: (-stats[r][0], -stats[r][1], _rid_sort_key(r)),
+    )
+    return ordered[0], ordered[1:], stats
+
+
+# ---------------------------------------------------------------------------
+# Edge introspection + re-point
+# ---------------------------------------------------------------------------
+
+def _edge_sig(edge: dict[str, Any], anchor_rid: str) -> tuple[str, str, str]:
+    """(edge_type, direction-relative-to-anchor, other-endpoint-rid)."""
+    if edge.get("@out") == anchor_rid:
+        return edge.get("@type"), "OUT", edge.get("@in")
+    return edge.get("@type"), "IN", edge.get("@out")
+
+
+def _survivor_sig_set(
+    client: ArcadeDBClient, db: str, surv_rid: str,
+) -> set[tuple[str, str, str]]:
+    edges = client.query_sync(db, "sql", f"SELECT expand(bothE()) FROM {surv_rid}")
+    return {_edge_sig(e, surv_rid) for e in edges}
+
+
+def plan_merge(
+    client: ArcadeDBClient, db: str, surv_rid: str, loser_rid: str,
+) -> dict[str, Any]:
+    """Compute (read-only) the re-point plan for one loser → survivor.
+
+    Returns loser edge snapshot, per-type recreate/dedup counts, and the
+    survivor's before edge count. No writes.
+    """
+    loser_edges = client.query_sync(db, "sql", f"SELECT expand(bothE()) FROM {loser_rid}")
+    surv_before = client.query_sync(db, "sql", f"SELECT bothE().size() AS ec FROM {surv_rid}")
+    surv_before_ct = int(surv_before[0]["ec"]) if surv_before else 0
+    surv_sigs = _survivor_sig_set(client, db, surv_rid)
+
+    recreate: list[dict[str, Any]] = []
+    dedup: list[dict[str, Any]] = []
+    by_type_recreate: dict[str, int] = {}
+    by_type_dedup: dict[str, int] = {}
+    for e in loser_edges:
+        etype, direction, other = _edge_sig(e, loser_rid)
+        if (etype, direction, other) in surv_sigs:
+            dedup.append(e)
+            by_type_dedup[etype] = by_type_dedup.get(etype, 0) + 1
+        else:
+            recreate.append(e)
+            by_type_recreate[etype] = by_type_recreate.get(etype, 0) + 1
+    return {
+        "loser_edges": loser_edges,
+        "loser_edge_count": len(loser_edges),
+        "surv_before_ct": surv_before_ct,
+        "recreate": recreate,
+        "dedup": dedup,
+        "by_type_recreate": by_type_recreate,
+        "by_type_dedup": by_type_dedup,
+    }
+
+
+def _copy_edge_set(edge: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Build a SET clause (+ params) copying a loser edge's properties.
+
+    All-int lists (e.g. ``source_pages`` / ``page_numbers``) are inlined as SQL
+    literals to dodge ArcadeDB's bound-numeric-array nesting bug (mirrors
+    ``arcadedb_graph._sql_list_set_fragment``); everything else is bound.
+    ``@``-prefixed system fields are skipped.
+    """
+    parts: list[str] = []
+    params: dict[str, Any] = {}
+    for k, v in edge.items():
+        if k.startswith("@"):
+            continue
+        parts.append(_sql_list_set_fragment(k, v, params, f"p_{k}"))
+    return (", ".join(parts) if parts else ""), params
+
+
+def execute_merge(
+    client: ArcadeDBClient, db: str, surv_rid: str, loser_rid: str, plan: dict[str, Any],
+) -> None:
+    """Perform the re-point + delete for one loser → survivor (WRITES).
+
+    For each loser edge: if the survivor already has an equivalent
+    ``(type, direction, other)`` edge (a duplicate), fold the loser edge's
+    ``document_ids`` lineage into the survivor's existing edge (idempotent
+    per-id append) and delete the loser edge; otherwise re-create the edge on
+    the survivor (preserving properties + direction) and delete the loser
+    edge. Finally delete the loser vertex. Asserts zero edge loss.
+    """
+    for e in plan["dedup"]:
+        etype, direction, other = _edge_sig(e, loser_rid)
+        new_from, new_to = (surv_rid, other) if direction == "OUT" else (other, surv_rid)
+        existing = client.query_sync(
+            db, "sql",
+            f"SELECT @rid AS rid FROM {etype} WHERE @out = {new_from} AND @in = {new_to} LIMIT 1",
+        )
+        if existing:
+            surv_edge_rid = existing[0]["rid"]
+            for doc_id in (e.get("document_ids") or []):
+                client.command_sync(
+                    db, "sql",
+                    f"UPDATE {surv_edge_rid} SET document_ids = "
+                    f"(CASE WHEN document_ids CONTAINS :d THEN document_ids "
+                    f"ELSE document_ids || [:d] END)",
+                    {"d": doc_id},
+                )
+        client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
+
+    for e in plan["recreate"]:
+        etype, direction, other = _edge_sig(e, loser_rid)
+        new_from, new_to = (surv_rid, other) if direction == "OUT" else (other, surv_rid)
+        set_clause, params = _copy_edge_set(e)
+        set_sql = f" SET {set_clause}" if set_clause else ""
+        client.command_sync(
+            db, "sql",
+            f"CREATE EDGE {etype} FROM {new_from} TO {new_to}{set_sql}",
+            params or None,
+        )
+        client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
+
+    # Delete the (now edge-less) loser vertex.
+    client.command_sync(db, "sql", f"DELETE VERTEX {loser_rid}")
+
+    # Zero-edge-loss assertion.
+    surv_after = client.query_sync(db, "sql", f"SELECT bothE().size() AS ec FROM {surv_rid}")
+    surv_after_ct = int(surv_after[0]["ec"]) if surv_after else 0
+    expected = plan["surv_before_ct"] + len(plan["recreate"])
+    if surv_after_ct != expected:
+        raise RuntimeError(
+            f"EDGE LOSS GUARD tripped for survivor {surv_rid}: "
+            f"after={surv_after_ct} expected={expected} "
+            f"(before={plan['surv_before_ct']} recreated={len(plan['recreate'])} "
+            f"deduped={len(plan['dedup'])})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phases
+# ---------------------------------------------------------------------------
+
+def phase_merge(
+    client: ArcadeDBClient, db: str, types: list[dict[str, Any]], dry_run: bool,
+) -> int:
+    """Phase 1 — detect + merge case-collision groups. Returns merges done/planned."""
+    print("\n" + "=" * 78)
+    print("PHASE 1 — MERGE case-collision vertices")
+    print("=" * 78)
+
+    blocking: list[str] = []
+    total = 0
+    for t in types:
+        groups = detect_collisions(client, db, t)
+        if not groups:
+            continue
+        if t["scope"] != "global":
+            for g in groups:
+                blocking.append(
+                    f"  !! {t['etype']} (scope={t['scope']}) collision on {len(g)} rows: {g}"
+                )
+            continue
+        print(f"\n[{t['etype']}] {len(groups)} collision group(s):")
+        for rids in groups:
+            surv, losers, stats = choose_survivor(client, db, t, rids)
+            surv_name = client.query_sync(
+                db, "sql",
+                f"SELECT {', '.join(t['key_fields'])} FROM {surv}",
+            )
+            label = " / ".join(
+                str(surv_name[0].get(f)) for f in t["key_fields"]
+            ) if surv_name else "?"
+            print(f"  collision key -> survivor {surv} ({label})")
+            print(
+                f"    tiebreak: survivor richness={stats[surv][0]} edges={stats[surv][1]} "
+                f"(rule: most populated specs, then most edges, then lowest @rid)"
+            )
+            for rid in rids:
+                mark = "SURVIVOR" if rid == surv else "loser   "
+                print(f"      {mark} {rid}: richness={stats[rid][0]} edges={stats[rid][1]}")
+            for loser in losers:
+                plan = plan_merge(client, db, surv, loser)
+                total += 1
+                print(
+                    f"    re-point loser {loser}: {plan['loser_edge_count']} edges "
+                    f"-> recreate {sum(plan['by_type_recreate'].values())} "
+                    f"{dict(plan['by_type_recreate'])}, "
+                    f"dedup {sum(plan['by_type_dedup'].values())} "
+                    f"{dict(plan['by_type_dedup'])}"
+                )
+                acct = len(plan["recreate"]) + len(plan["dedup"])
+                assert acct == plan["loser_edge_count"], (
+                    f"edge accounting mismatch for {loser}: "
+                    f"{acct} != {plan['loser_edge_count']}"
+                )
+                print(
+                    f"      survivor edges: before={plan['surv_before_ct']} "
+                    f"-> after={plan['surv_before_ct'] + len(plan['recreate'])} "
+                    f"(loss guard: recreate+dedup={acct} == loser edges="
+                    f"{plan['loser_edge_count']})"
+                )
+                print(f"      would DELETE loser vertex {loser}")
+                if not dry_run:
+                    execute_merge(client, db, surv, loser, plan)
+                    print(f"      [EXECUTED] merged {loser} -> {surv}")
+
+    if blocking:
+        print("\nCOLLISIONS IN NON-GLOBAL / STRUCTURAL TYPES (out of scope):")
+        for line in blocking:
+            print(line)
+        if not dry_run:
+            raise RuntimeError(
+                "Aborting before any backfill: unexpected collisions in "
+                "document-scoped/structural types (see above). These are NOT "
+                "auto-merged by this migration."
+            )
+        print("  (dry-run: reported only; --execute would ABORT here)")
+
+    if total == 0:
+        print("\n  no global-domain case-collisions found — nothing to merge.")
+    return total
+
+
+def phase_backfill(
+    client: ArcadeDBClient, db: str, types: list[dict[str, Any]], dry_run: bool,
+) -> None:
+    """Phase 2 — backfill ``<field>_key = norm(<field>)`` on all rows."""
+    print("\n" + "=" * 78)
+    print("PHASE 2 — BACKFILL <field>_key (norm computed in Python)")
+    print("=" * 78)
+    print(f"{'TYPE':<30} {'FIELD':<18} {'rows':>6} {'would_set':>10} "
+          f"{'already':>8} {'null_skip':>9}")
+    print("-" * 84)
+    for t in types:
+        for field in t["key_fields"]:
+            rows = client.query_sync(
+                db, "sql",
+                f"SELECT @rid AS rid, {field} AS raw, {field}_key AS cur FROM {t['etype']}",
+            )
+            would = already = nullskip = 0
+            for r in rows:
+                raw = r.get("raw")
+                if raw is None:
+                    nullskip += 1
+                    continue
+                desired = norm(raw)
+                if r.get("cur") == desired:
+                    already += 1
+                    continue
+                would += 1
+                if not dry_run:
+                    client.command_sync(
+                        db, "sql",
+                        f"UPDATE {t['etype']} SET {field}_key = :k WHERE @rid = {r['rid']}",
+                        {"k": desired},
+                    )
+            print(f"{t['etype']:<30} {field:<18} {len(rows):>6} {would:>10} "
+                  f"{already:>8} {nullskip:>9}")
+
+
+def phase_index(
+    client: ArcadeDBClient, db: str, types: list[dict[str, Any]], dry_run: bool,
+) -> None:
+    """Phase 3 — ensure the ``<field>_key`` UNIQUE index exists (idempotent)."""
+    print("\n" + "=" * 78)
+    print("PHASE 3 — ENSURE <field>_key UNIQUE index (IF NOT EXISTS)")
+    print("=" * 78)
+    existing = {
+        r.get("name")
+        for r in client.query_sync(db, "sql", "SELECT name FROM schema:indexes")
+    }
+    for t in types:
+        ddl, name = key_index_name(t)
+        present = name in existing
+        status = "EXISTS" if present else "MISSING -> would CREATE"
+        print(f"  {name:<48} {status}")
+        if not dry_run and not present:
+            for field in t["key_fields"]:
+                client.command_sync(
+                    db, "sql",
+                    f"CREATE PROPERTY {t['etype']}.{field}_key IF NOT EXISTS STRING",
+                )
+            client.command_sync(db, "sql", ddl)
+            print(f"    [EXECUTED] {ddl}")
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dry-run", action="store_true", help="Inspect + print plan; ZERO writes (default).")
+    ap.add_argument("--execute", action="store_true", help="Perform the destructive migration (writes).")
+    ap.add_argument("--arcadedb-url", default=None,
+                    help="Override ArcadeDB base URL (host runs: http://localhost:2480).")
+    args = ap.parse_args()
+
+    if args.dry_run and args.execute:
+        ap.error("pass at most one of --dry-run / --execute")
+    dry_run = not args.execute  # default (no flags) => dry-run
+
+    settings = get_settings()
+    base_url = args.arcadedb_url or settings.arcadedb_url
+    client = ArcadeDBClient(
+        base_url=base_url,
+        username=settings.arcadedb_user,
+        password=settings.arcadedb_password,
+    )
+    db = settings.arcadedb_database
+    types = derive_indexed_types()
+
+    mode = "DRY-RUN (no writes)" if dry_run else "EXECUTE (WRITES)"
+    print("=" * 78)
+    print("case-insensitive-identity migration — merge -> backfill -> index")
+    print("=" * 78)
+    print(f"mode      : {mode}")
+    print(f"arcadedb  : {base_url}  db={db}")
+    print(f"types     : {len(types)} indexed entity types with identity fields")
+
+    if not dry_run:
+        # Blast-radius summary BEFORE touching anything.
+        print("\n" + "!" * 78)
+        print("BLAST RADIUS (about to WRITE):")
+        merges = 0
+        for t in types:
+            if t["scope"] != "global":
+                continue
+            for g in detect_collisions(client, db, t):
+                merges += len(g) - 1
+        row_total = 0
+        for t in types:
+            for _f in t["key_fields"]:
+                cnt = client.query_sync(db, "sql", f"SELECT count(*) AS c FROM {t['etype']}")
+                row_total += int(cnt[0]["c"]) if cnt else 0
+        print(f"  * merge/delete up to {merges} loser vertex(es) (edges re-pointed onto survivors)")
+        print(f"  * backfill <field>_key across ~{row_total} vertex rows")
+        print(f"  * create any missing <field>_key UNIQUE indexes")
+        print("!" * 78)
+
+    phase_merge(client, db, types, dry_run)
+    phase_backfill(client, db, types, dry_run)
+    phase_index(client, db, types, dry_run)
+
+    print("\n" + "=" * 78)
+    print(f"DONE ({mode}).")
+    if dry_run:
+        print("Review the plan above, then re-run with --execute to apply.")
+    print("=" * 78)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
