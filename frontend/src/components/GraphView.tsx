@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 // @ts-expect-error — react-cytoscapejs has no type declarations
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
@@ -133,6 +133,7 @@ interface GraphViewProps {
 export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [tooltip, setTooltip] = useState<{
     visible: boolean;
     x: number;
@@ -180,8 +181,30 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
     [onNodeClick],
   );
 
+  // When the window is expanded/restored, the container's box changes size;
+  // tell Cytoscape to re-measure and re-fit so the graph fills the new area.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    requestAnimationFrame(() => {
+      cy.resize();
+      cy.fit(undefined, 30);
+    });
+  }, [expanded]);
+
   return (
-    <div className="graph-view-container" ref={containerRef}>
+    <div
+      className={`graph-view-container${expanded ? " graph-view-expanded" : ""}`}
+      ref={containerRef}
+    >
+      <button
+        className="graph-view-expand btn btn-ghost btn-sm"
+        onClick={() => setExpanded((e) => !e)}
+        title={expanded ? "Restore size" : "Expand"}
+        aria-label={expanded ? "Restore graph size" : "Expand graph"}
+      >
+        {expanded ? "🗗" : "⛶"}
+      </button>
       <button className="graph-view-close btn btn-ghost btn-sm" onClick={onClose}>
         ✕
       </button>
@@ -196,7 +219,7 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
         // event to passive and cytoscape can't preventDefault, so the
         // outer page scrolls instead of the graph zooming. Higher
         // values zoom faster per wheel notch (lower = smoother/slower).
-        wheelSensitivity={0.6}
+        wheelSensitivity={0.4}
         userZoomingEnabled={true}
         userPanningEnabled={true}
         boxSelectionEnabled={false}
