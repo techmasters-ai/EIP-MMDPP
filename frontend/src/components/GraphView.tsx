@@ -1,10 +1,28 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 // @ts-expect-error — react-cytoscapejs has no type declarations
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { GraphTooltip } from "./GraphTooltip";
 import type { GraphNeighborhoodResponse } from "../api/client";
 import { getEntityCategory } from "../constants/entityTypes";
+
+/** Human-readable label for a node.
+ *
+ * SECTION nodes store a `section_number` in their `name` field (often a
+ * synthetic hierarchical value like "0.44"), so their real title lives in
+ * `heading`. Prefer that; the synthetic document-root section (number "0",
+ * no heading) gets a friendly label instead of a bare "0".
+ */
+function nodeDisplayName(node: Record<string, unknown>): string {
+  const name = String(node.name ?? node.id ?? "");
+  if (String(node.entity_type ?? "") === "SECTION") {
+    const heading = String(node.heading ?? "").trim();
+    if (heading) return heading;
+    if (String(node.section_number ?? "") === "0") return "Document root";
+    return name ? `§ ${name}` : "Section";
+  }
+  return name;
+}
 
 /** Convert API response to Cytoscape elements.
  *
@@ -26,10 +44,11 @@ export function toGraphElements(
     if (!nodeId || nodeIds.has(nodeId)) continue;
     nodeIds.add(nodeId);
     const entityType = (node.entity_type as string) || "UNKNOWN";
-    // Show name + type to distinguish same-name entities
+    // Show a readable label (heading for sections) + type on the center node
+    const baseLabel = nodeDisplayName(node);
     const displayName = name === centerName && entityType !== "UNKNOWN"
-      ? `${name} (${entityType})`
-      : name;
+      ? `${baseLabel} (${entityType})`
+      : baseLabel;
     const label = displayName.length > 25 ? displayName.slice(0, 23) + "\u2026" : displayName;
     elements.push({
       data: { id: nodeId, label, ...node },
@@ -67,12 +86,22 @@ export function toGraphElements(
 const LAYOUT = {
   name: "cose",
   animate: false,
+  randomize: true, // start from random positions -> avoids the initial pile-up
   nodeDimensionsIncludeLabels: true,
-  nodeRepulsion: () => 8000,
-  idealEdgeLength: () => 120,
-  edgeElasticity: () => 100,
-  gravity: 0.25,
+  fit: true,
   padding: 40,
+  // Stronger repulsion + explicit overlap avoidance so dense clusters
+  // (e.g. SECTION CHILD_OF chains, HAS_PROVENANCE hubs) spread out instead
+  // of piling on top of each other.
+  nodeRepulsion: () => 40000,
+  nodeOverlap: 24,
+  idealEdgeLength: () => 150,
+  edgeElasticity: () => 80,
+  gravity: 0.12, // weaker center pull -> less clumping
+  componentSpacing: 140, // push disconnected clusters/floaters apart
+  numIter: 2000, // more iterations to actually converge
+  coolingFactor: 0.95,
+  initialTemp: 250,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -133,6 +162,7 @@ interface GraphViewProps {
 export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [tooltip, setTooltip] = useState<{
     visible: boolean;
     x: number;
@@ -180,8 +210,30 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
     [onNodeClick],
   );
 
+  // When the window is expanded/restored, the container's box changes size;
+  // tell Cytoscape to re-measure and re-fit so the graph fills the new area.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    requestAnimationFrame(() => {
+      cy.resize();
+      cy.fit(undefined, 30);
+    });
+  }, [expanded]);
+
   return (
-    <div className="graph-view-container" ref={containerRef}>
+    <div
+      className={`graph-view-container${expanded ? " graph-view-expanded" : ""}`}
+      ref={containerRef}
+    >
+      <button
+        className="graph-view-expand btn btn-ghost btn-sm"
+        onClick={() => setExpanded((e) => !e)}
+        title={expanded ? "Restore size" : "Expand"}
+        aria-label={expanded ? "Restore graph size" : "Expand graph"}
+      >
+        {expanded ? "🗗" : "⛶"}
+      </button>
       <button className="graph-view-close btn btn-ghost btn-sm" onClick={onClose}>
         ✕
       </button>
@@ -194,9 +246,9 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
         // Setting wheelSensitivity explicitly registers a non-passive
         // wheel listener; without it modern browsers default the wheel
         // event to passive and cytoscape can't preventDefault, so the
-        // outer page scrolls instead of the graph zooming. Lower
-        // values mean smoother zoom steps.
-        wheelSensitivity={0.2}
+        // outer page scrolls instead of the graph zooming. Higher
+        // values zoom faster per wheel notch (lower = smoother/slower).
+        wheelSensitivity={0.5}
         userZoomingEnabled={true}
         userPanningEnabled={true}
         boxSelectionEnabled={false}

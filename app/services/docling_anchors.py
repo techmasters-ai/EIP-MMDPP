@@ -339,7 +339,16 @@ def walk(
         sibling_counters[parent_tuple] += 1
         idx = sibling_counters[parent_tuple]
         parent_section = section_by_path.get(parent_tuple)
-        parent_number = parent_section.section_number if parent_section else None
+        # The synthetic root section (empty path (), number "0") must NOT leak a
+        # "0." prefix into its children: top-level sections are numbered flat
+        # (1, 2, 3 ...) so numbering is consistent across documents whether or
+        # not a synthetic root was seeded. Only a genuine ancestor section
+        # (non-empty parent path) contributes its number as a prefix.
+        parent_number = (
+            parent_section.section_number
+            if (parent_section and parent_tuple)
+            else None
+        )
         section_number = f"{parent_number}.{idx}" if parent_number else str(idx)
         section_by_path[path_tuple] = SectionEntity(
             section_number=section_number,

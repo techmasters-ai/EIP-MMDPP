@@ -420,6 +420,10 @@ def test_walker_pre_heading_picture_lazy_seeds_root_section():
 
     sections = _sections_by_number(merged)
     assert "0" in sections, "root fallback SECTION(section_number='0') missing"
+    # The synthetic root must NOT prefix its children: "Section 1" is numbered
+    # flat "1", never "0.1" (regression guard for the 0.N leak).
+    assert "1" in sections, f"heading should be flat '1', got {sorted(sections)}"
+    assert "0.1" not in sections, "synthetic root leaked a '0.' prefix into a child"
 
 
 # ---------------------------------------------------------------------------

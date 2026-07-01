@@ -166,6 +166,54 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# Graph Explorer view filter (user-curated, type-based — never keyed on
+# entity/equipment names). The neighbourhood visualisation
+# (get_neighborhood_graph / POST /v1/graph/neighborhood) keeps only these node
+# + edge TYPES so the canvas shows the ontology + document structure instead of
+# thousands of raw document-chunk nodes and their layout-adjacency edges.
+# An edge renders only when BOTH endpoints are kept node types, so provenance
+# edges that point at the dropped *Chunk nodes (EXTRACTED_FROM/MENTIONED_IN/
+# CONTAINS_TEXT) fall out automatically.
+# ---------------------------------------------------------------------------
+GRAPH_VIEW_NODE_TYPES: frozenset[str] = frozenset({
+    # Domain entities (the ontology)
+    "RADAR_SYSTEM", "MISSILE_SYSTEM", "AIR_DEFENSE_ARTILLERY_SYSTEM",
+    "ELECTRONIC_WARFARE_SYSTEM", "FIRE_CONTROL_SYSTEM", "LAUNCHER_SYSTEM",
+    "INTEGRATED_AIR_DEFENSE_SYSTEM", "WEAPON_SYSTEM", "EQUIPMENT_SYSTEM",
+    "PLATFORM", "SUBSYSTEM", "COMPONENT", "ORGANIZATION",
+    # Document content (structural). TEXT_BLOCK + IMAGE are intentionally
+    # OMITTED: at hop-2 they fan out through shared Documents and dominate the
+    # canvas (636 of 781 nodes for Fan Song); keeping only the structural
+    # content nodes leaves the ontology + document skeleton.
+    "Document", "DOCUMENT", "Collection", "SECTION", "FIGURE", "TABLE_REF",
+    # Meta
+    "Alias", "CommunityReport",
+})
+# Dropped node types: raw chunks (TextChunk, ImageChunk, ExtractionChunk,
+# TrustedTextChunk) + document-body content (TEXT_BLOCK, IMAGE).
+
+GRAPH_VIEW_EDGE_TYPES: frozenset[str] = frozenset({
+    # Domain ontology (entity <-> entity)
+    "ASSOCIATED_WITH", "CUES", "DETECTS", "TRACKS", "ENGAGES", "GUIDES",
+    "LAUNCHES", "DEFENDS", "DEPLOYED_ON", "INSTALLED_ON", "OPERATED_BY",
+    "MANUFACTURED_BY", "DESIGNATES", "SUPPORTS_ENGAGEMENT_OF", "VARIANT_OF",
+    "SUPERSEDES", "DERIVED_FROM", "HAS_COMPONENT", "HAS_SUBSYSTEM", "PART_OF",
+    "CHILD_OF", "IS_A", "INSTANCE_OF",
+    # Alias
+    "HAS_ALIAS", "ALIAS_OF",
+    # Entity -> source provenance
+    "EXTRACTED_FROM", "MENTIONED_IN", "HAS_PROVENANCE",
+    # Document structure / containment
+    "HAS_SECTION", "HAS_FIGURE", "HAS_TABLE", "HAS_IMAGE", "CONTAINS",
+    "CONTAINS_IMAGE", "CONTAINS_TEXT", "BELONGS_TO",
+    # Trusted-data / review
+    "REVIEWED_BY",
+})
+# Dropped edge types (chunk/layout adjacency): NEXT_CHUNK, NEAR_TEXT,
+# SAME_PAGE, SAME_SECTION, SAME_ARTIFACT.
+
+
 def _key_fields(identity_fields: dict[str, Any]) -> dict[str, Any]:
     """Map each identity field to its normalized ``<field>_key`` (= ``norm(value)``).
 
@@ -1493,8 +1541,20 @@ class ArcadeDBGraphStore:
         node_id: str,
         depth: int = 1,
         rel_types: list[str] | None = None,
+        node_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         """Return neighbourhood as a {nodes, edges} dict.
+
+        Nodes are the DEDUPLICATED k-hop neighbourhood of *node_id* (the root
+        included). Edges are EVERY edge whose *both* endpoints fall inside that
+        node set — not just the root's own edges — so neighbours render
+        connected to one another (e.g. chunk -> Document -> entity) instead of
+        as isolated leaves hanging off the root.
+
+        *rel_types* restricts which edge types are traversed/returned;
+        *node_types* keeps only nodes of those classes (the root is always
+        kept). Because an edge is returned only when both endpoints survive the
+        node filter, provenance edges to dropped chunk nodes fall out too.
 
         *node_id* may be an ArcadeDB RID or UUID string.
         """
@@ -1502,42 +1562,88 @@ class ArcadeDBGraphStore:
         if not rid:
             return {"nodes": [], "edges": []}
 
-        # Get neighbor nodes
+        # 1. Discover the neighbourhood node RIDs via the (edge-type-filtered)
+        #    traversal, including the root.
         entities = await self.get_neighborhood(node_id, depth, rel_types)
+        rid_set = {rid} | {str(e.node_id) for e in entities if e.node_id}
 
-        # Get edges — query outgoing + incoming edges from the root vertex
+        # 2. Fetch each node's data + @type (class). Keep only kept node types
+        #    (root always kept). Capturing @type also lets us label content /
+        #    chunk nodes that carry no ``entity_type`` field (previously blank).
+        nodes_by_id: dict[str, dict] = {}
+        all_rids = list(rid_set)
+        batch = 400
+        for i in range(0, len(all_rids), batch):
+            in_clause = ", ".join(all_rids[i : i + batch])
+            rows = await self._client.query(
+                self._database, "sql",
+                f"SELECT *, @rid AS node_id, @type AS node_class FROM [{in_clause}]",
+            )
+            for r in rows:
+                nid = str(r.get("node_id", ""))
+                if not nid or nid in nodes_by_id:
+                    continue
+                cls = str(r.get("node_class", "") or "")
+                if node_types is not None and nid != rid and cls not in node_types:
+                    continue
+                ent = _to_entity(r)
+                props = {k: v for k, v in ent.properties.items() if k != "node_class"}
+                nodes_by_id[nid] = {
+                    "id": nid,
+                    "name": ent.name,
+                    "entity_type": ent.entity_type or cls,
+                    **props,
+                }
+        node_ids = set(nodes_by_id.keys())
+
+        # 2. Fetch every edge touching any node in the set, then keep only the
+        #    INTERNAL edges (both endpoints in the set), deduplicated by @rid.
+        #    Batch the RID list to bound each query. Previously only the root's
+        #    own bothE() was returned, so neighbours appeared disconnected.
         if rel_types:
             edge_list = ", ".join(f"'{t}'" for t in rel_types)
             edge_traversal = f"bothE({edge_list})"
         else:
             edge_traversal = "bothE()"
 
-        edge_sql = f"SELECT *, @rid AS edge_rid FROM (SELECT expand({edge_traversal}) FROM {rid})"
-        edge_rows = await self._client.query(self._database, "sql", edge_sql)
+        rid_list = list(node_ids)
+        edges_by_id: dict[str, dict] = {}
+        batch = 400
+        for i in range(0, len(rid_list), batch):
+            in_clause = ", ".join(rid_list[i : i + batch])
+            edge_sql = (
+                f"SELECT *, @rid AS edge_rid "
+                f"FROM (SELECT expand({edge_traversal}) FROM [{in_clause}])"
+            )
+            try:
+                edge_rows = await self._client.query(self._database, "sql", edge_sql)
+            except Exception:
+                continue
+            for r in edge_rows:
+                out_rid = str(r.get("@out", r.get("out", "")))
+                in_rid = str(r.get("@in", r.get("in", "")))
+                if out_rid not in node_ids or in_rid not in node_ids:
+                    continue  # edge leaves the neighbourhood — skip
+                eid = str(r.get("edge_rid", ""))
+                if not eid or eid in edges_by_id:
+                    continue
+                raw_prov = r.get("provenance")
+                if isinstance(raw_prov, str):
+                    try:
+                        provenance = json.loads(raw_prov)
+                    except (ValueError, TypeError):
+                        provenance = None
+                else:
+                    provenance = raw_prov  # already a dict or None
+                edges_by_id[eid] = {
+                    "id": eid,
+                    "rel_type": str(r.get("@type", r.get("@class", ""))),
+                    "from": out_rid,
+                    "to": in_rid,
+                    "provenance": provenance,
+                }
 
-        nodes: list[dict] = [
-            {"id": e.node_id, "name": e.name, "entity_type": e.entity_type, **e.properties}
-            for e in entities
-        ]
-        edges: list[dict] = []
-        for r in edge_rows:
-            raw_prov = r.get("provenance")
-            if isinstance(raw_prov, str):
-                try:
-                    provenance = json.loads(raw_prov)
-                except (ValueError, TypeError):
-                    provenance = None
-            else:
-                provenance = raw_prov  # already a dict or None
-            edges.append({
-                "id": str(r.get("edge_rid", "")),
-                "rel_type": str(r.get("@type", r.get("@class", ""))),
-                "from": str(r.get("@out", r.get("out", ""))),
-                "to": str(r.get("@in", r.get("in", ""))),
-                "provenance": provenance,
-            })
-
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": list(nodes_by_id.values()), "edges": list(edges_by_id.values())}
 
     async def get_directed_traversal(
         self,

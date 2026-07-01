@@ -6,6 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session, get_graph_store
+from app.services.arcadedb_graph import (
+    GRAPH_VIEW_EDGE_TYPES,
+    GRAPH_VIEW_NODE_TYPES,
+)
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
@@ -160,8 +164,14 @@ async def get_neighborhood(
     if entity is None:
         return GraphNeighborhoodResponse(center=None, nodes=[], edges=[])
 
+    # Apply the curated Graph Explorer view filter: keep the ontology +
+    # document-structure node/edge types, drop raw document chunks and their
+    # layout-adjacency edges (SAME_PAGE/NEXT_CHUNK/...).
     result = await graph_store.get_neighborhood_graph(
-        entity.node_id, depth=body.hop_count,
+        entity.node_id,
+        depth=body.hop_count,
+        rel_types=list(GRAPH_VIEW_EDGE_TYPES),
+        node_types=GRAPH_VIEW_NODE_TYPES,
     )
 
     center = {
