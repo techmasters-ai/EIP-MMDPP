@@ -1,7 +1,7 @@
 # Case-Insensitive Entity Identity — Design
 
 - **Date:** 2026-07-01
-- **Status:** Approved (brainstorming, v2 after review) → pending implementation plan
+- **Status:** Approved (brainstorming, v3 after 2 review rounds) → ready for implementation plan
 - **Scope:** entity identity normalization at the `LogicalIdentity` (merge) layer + the ArcadeDB
   upsert/index layer. **Code fix only** — no re-ingest.
 
@@ -55,36 +55,58 @@ provenance aggregation, edge/relationship resolution, audit IDs, and RID maps
 normalizes, then `FAN SONG` and `Fan Song` stay **separate `MergedEntityRecord`s** in memory
 and later collide on the DB upsert (last-write-wins → lost fields/provenance).
 
-- The identity **key** used for equality / hashing / merge / edge-resolution / audit
-  serialization is `norm()`-applied to each identity field value.
-- The **raw first-seen** identity values are preserved separately for display.
-- Effect: within a run, `FAN SONG` and `Fan Song` produce the **same** `LogicalIdentity` →
-  they **merge into one** `MergedEntityRecord` (aggregating fields + provenance) before write.
+- Add a **separate normalized key** (`norm()` applied to each identity field value) used for
+  equality / hashing / merge / edge-resolution / audit serialization. **Do NOT normalize
+  `identity_tuple` / `identity_values_dict()` in place** — those still hold the **raw** values
+  and feed `build_display_label()` → `NodeRecord.name` (`extraction_merge.py:482`,
+  `pipeline.py:1528`). Normalizing them would casefold the display name (review finding #3).
+- The **raw first-seen** identity values are preserved for display; a merge update from a later
+  case variant must **not** overwrite the display casing (first-seen wins).
+- Effect: within a run, `FAN SONG` and `Fan Song` produce the **same** normalized key →
+  they **merge into one** `MergedEntityRecord` (aggregating fields + provenance), keeping the
+  first-seen display casing, before write.
 
-### Component 2 — Normalized `_key` property + unique index + upsert  *(review finding #4)*
+### Component 2 — Normalized `_key` property + unique index + all write paths  *(review findings #2, #4)*
 
-For cross-run dedup (doc A ingested now, doc B later), the DB upsert must also match on the
-normalized key.
+For cross-run dedup (doc A ingested now, doc B later), every DB write path must set and match on
+the normalized key.
 
 - Schema build: **`CREATE PROPERTY <type>.<identity_field>_key STRING`** for each domain-entity
   identity field, **before** the unique-index DDL (`app/services/arcadedb_schema.py:471`).
 - UNIQUE index on the **normalized** `_key` field(s) + `entity_type` (global scope preserved).
-- The upsert (`_upsert_node_impl_sync`, `app/services/arcadedb_graph.py`) computes and sets the
-  `_key` field(s) and matches `WHERE` on them.
+- **All node-write paths** must compute+set the `_key` field(s) and match `WHERE` on them —
+  not just one function. Covers: the **batch** builder `_build_upsert_node_script`
+  (`arcadedb_graph.py:180`, used by `upsert_nodes_batch_sync` — the production path via
+  `pipeline.py:1541/7811`), the single sync `_upsert_node_impl_sync`, and the async single-node
+  upsert. Centralize `_key` derivation so all paths share it.
+- **Relationship endpoint resolution** must also match on the normalized key. `_build_where`
+  (`arcadedb_graph.py:168`) builds both node identity clauses (line 915) **and** relationship
+  endpoint clauses from `RelationshipRecord.from_identity`/`to_identity` (lines 311/317). If
+  endpoints resolve on raw identity while nodes dedup on normalized, edges won't connect to the
+  merged vertex. The `from_identity`/`to_identity` dicts (produced upstream, `pipeline.py:2573`)
+  must carry the normalized `_key` field(s), and `_build_where` must use them.
 - **Display fields (`name`, `system_name`) are preserved first-seen** — the upsert must not
-  overwrite them on update (set-on-insert only).
+  overwrite them on update (set-on-insert only for display fields).
 
-### Component 3 — Merge the 2 existing case-pairs (enables the new unique index)
+### Component 3 — One-time migration on the existing graph *(review finding #1)*
 
-The new normalized-key UNIQUE index **cannot be created** while the 2 existing case-collisions
-exist (they'd violate uniqueness). A **tiny, bounded** targeted merge (2 radar pairs only — NOT
-a graph-wide operation) runs once before/at index creation:
+With **no re-ingest**, existing vertices have a `NULL` `_key`, so a new `WHERE _key = …` upsert
+would miss every old row and re-create duplicates. So the migration must backfill `_key` on
+**all** existing vertices of each indexed domain type, in this order:
 
-- For each pair (`Fan Song`/`FAN SONG`, `Spoon Rest`/`SPOON REST`): keep the vertex with data
-  (non-null specs), transfer the other's edges (relationships, `EXTRACTED_FROM`, aliases) onto
-  it, set its `_key`, then delete the empty duplicate.
-- This is the only data-touching step; it is destructive on 2 vertices and must be explicitly
-  confirmed at execution time.
+1. **Merge the 2 existing case-collisions** (`Fan Song`/`FAN SONG`, `Spoon Rest`/`SPOON REST`):
+   keep the vertex with data, transfer the other's edges (relationships, `EXTRACTED_FROM`,
+   aliases) onto it, then delete the empty duplicate. *(The only destructive step — 2 vertices,
+   bounded; explicitly confirmed at execution time.)*
+2. **Non-destructive `_key` backfill for ALL existing vertices** of each indexed domain type:
+   `UPDATE <type> SET <field>_key = norm(<field>)` (an idempotent update over every row). This
+   also fixes existing **relationship endpoints** if any endpoint identity is stored denormalized
+   (verify edges resolve to the backfilled vertices).
+3. **Create the UNIQUE index** on the `_key` field(s) — now creatable (collisions merged,
+   `_key` populated).
+
+Step 2 must precede step 3 (index) and step 1 (merge) must precede step 2 (so the merge doesn't
+leave a colliding `_key`). Steps 2–3 are non-destructive; step 1 is the only destructive part.
 
 ---
 
@@ -96,8 +118,10 @@ a graph-wide operation) runs once before/at index creation:
   entities — the fix must NOT collapse distinct-designator entities that share a `name`.
 - **Merged Fan Song** carries `nominal_rf_mhz`/`tx_peak_power_kw` and the union of both former
   vertices' `EXTRACTED_FROM` lineage.
+- **Backfill complete:** no existing vertex of an indexed domain type has a `NULL` `_key`
+  (`SELECT count(*) … WHERE <field>_key IS NULL` = 0), so old rows are matchable.
 - **Future-proof:** re-extracting a document that mentions `FAN SONG` upserts onto the existing
-  `fan song` `_key` (no new vertex).
+  `fan song` `_key` (no new vertex) — and its relationship endpoints resolve to that same vertex.
 
 ## Testing
 
