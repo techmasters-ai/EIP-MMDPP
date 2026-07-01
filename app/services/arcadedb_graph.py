@@ -269,8 +269,14 @@ def _build_node_upsert_clauses(
     set_parts.append(f"name = COALESCE(name, :{name_pk})")
 
     # --- write-once display: raw identity fields (document_id excepted) ---
+    # ``name`` is skipped here: when it is itself an identity field (e.g.
+    # ORGANIZATION / PLATFORM / EQUIPMENT_SYSTEM whose sole identity is
+    # ``name``) the dedicated write-once name block above already emits it.
+    # Emitting it again would double the ``name`` column in one SET (both
+    # binding the same first-seen value) — redundant SQL that leans on the
+    # engine tolerating a duplicate SET column. Skip to emit ``name`` once.
     for k, v in record.identity_fields.items():
-        if k == "document_id":
+        if k == "document_id" or k == "name":
             continue
         pk = f"{k}_raw{suffix}"
         params[pk] = v

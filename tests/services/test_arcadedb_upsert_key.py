@@ -10,6 +10,8 @@ existing vertex, while the raw display fields are preserved first-seen.
 """
 from __future__ import annotations
 
+import re
+
 from app.services.arcadedb_graph import (
     _build_node_upsert_clauses,
     _build_upsert_node_script,
@@ -136,6 +138,31 @@ def test_node_clauses_document_scope_keeps_document_id_raw():
     # document_id is neither normalized nor COALESCE'd as a display field.
     assert "document_id_key" not in set_clause
     assert "COALESCE(document_id" not in set_clause
+
+
+def test_node_clauses_name_identity_type_emits_name_once():
+    # Entity types whose SOLE identity field IS ``name`` (ORGANIZATION,
+    # PLATFORM, EQUIPMENT_SYSTEM, ...) must not double-emit the name column:
+    # the write-once name block and the raw-identity loop previously both
+    # fired for ``name``. Assert it appears exactly once, still first-seen.
+    rec = NodeRecord(
+        entity_type="PLATFORM",
+        identity_fields={"name": "MiG-21"},
+        name="MiG-21",
+    )
+    set_clause, where_clause, params = _build_node_upsert_clauses(rec)
+    # Count real name-column SETs: `name = ` but not `name_key = ` / `..._name = `.
+    name_col_sets = re.findall(r"(?:^|, )name = ", set_clause)
+    assert len(name_col_sets) == 1, f"name emitted != once: {set_clause}"
+    assert "name = COALESCE(name, :name)" in set_clause
+    # No stray raw-name param from the identity loop.
+    assert "name_raw" not in set_clause
+    assert "name = COALESCE(name, :name_raw)" not in set_clause
+    # name_key still persisted + WHERE matches on it.
+    assert "name_key = :name_key" in set_clause
+    assert where_clause == "name_key = :name_key"
+    assert params["name_key"] == norm("MiG-21")
+    assert params["name"] == "MiG-21"
 
 
 def test_node_clauses_property_named_like_identity_not_duplicated():
