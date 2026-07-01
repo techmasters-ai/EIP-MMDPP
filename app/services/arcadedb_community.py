@@ -177,6 +177,42 @@ async def run_community_detection(
     }
 
 
+_INTERNAL_ENTITY_FIELDS = {
+    "name", "system_name", "canonical_name", "entity_type",
+    "extraction_confidence", "updated_at",
+}
+
+
+async def _fetch_member_field_values(
+    graph_store: Any, members: list[dict[str, str]]
+) -> dict[str, dict]:
+    """Fetch each member entity's extracted field values, keyed by node_rid.
+
+    Without this the community report LLM sees only entity names + relationships,
+    so real specs (nominal_rf_mhz, tx_peak_power_kw, ...) never reach the report
+    or Global Research — even though they are stored on the entity vertex.
+    """
+    rids = [m["node_rid"] for m in members if m.get("node_rid")]
+    if not rids:
+        return {}
+    out: dict[str, dict] = {}
+    try:
+        rows = await graph_store.execute_query(f"SELECT FROM [{', '.join(rids)}]")
+    except Exception as exc:
+        logger.warning("Failed to fetch member field values: %s", exc)
+        return {}
+    for row in rows or []:
+        rid = str(row.get("@rid", ""))
+        fields = {
+            k: v for k, v in row.items()
+            if not k.startswith("@") and not k.startswith("_")
+            and k not in _INTERNAL_ENTITY_FIELDS and v not in (None, "", [])
+        }
+        if fields:
+            out[rid] = fields
+    return out
+
+
 async def _generate_community_report(
     graph_store: Any,
     community_id: int,
@@ -188,9 +224,19 @@ async def _generate_community_report(
 
     prompt_template = settings.community_report_llm_prompt or _DEFAULT_PROMPT
 
-    entities_text = "\n".join(
-        f"- {m['name']} ({m['entity_type']})" for m in members
-    )
+    # Enrich each member with its extracted field values (specs), so the report
+    # (and Global Research downstream) can cite real technical data.
+    field_map = await _fetch_member_field_values(graph_store, members)
+
+    def _member_line(m: dict) -> str:
+        line = f"- {m['name']} ({m['entity_type']})"
+        fields = field_map.get(str(m.get("node_rid", "")))
+        if fields:
+            specs = ", ".join(f"{k}={v}" for k, v in sorted(fields.items()))
+            line += f" [{specs}]"
+        return line
+
+    entities_text = "\n".join(_member_line(m) for m in members)
 
     # Fetch real relationships between community members
     relationships_text = "(no relationships found among members)"
