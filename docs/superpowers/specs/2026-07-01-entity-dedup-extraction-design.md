@@ -1,128 +1,121 @@
-# Extraction-Time Entity Dedup — Design
+# Case-Insensitive Entity Identity — Design
 
 - **Date:** 2026-07-01
-- **Status:** Approved (brainstorming) → pending implementation plan
-- **Scope:** entity identity/upsert in extraction commit + schema index build; remediation via re-ingest
+- **Status:** Approved (brainstorming, v2 after review) → pending implementation plan
+- **Scope:** entity identity normalization at the `LogicalIdentity` (merge) layer + the ArcadeDB
+  upsert/index layer. **Code fix only** — no re-ingest.
 
-## Problem
+## Problem (corrected after review)
 
-The knowledge graph contains many duplicate entity vertices for the same real-world
-designator: **`Guideline` = 16 vertices**, **`Fan Song` = ~6** (3 `FAN SONG` + 3 `Fan Song`),
-`Spoon Rest` similarly. This fragments provenance, dilutes Louvain communities, and splits
-extracted specs across copies (only one `Fan Song` vertex carries `nominal_rf_mhz` /
-`tx_peak_power_kw`; the rest are empty).
+Earlier framing ("entities are document-scoped → 16 'Guideline' duplicates") was a
+**misdiagnosis**. Verified against the deployed graph (`air_defense_v3_narrowing_v1`):
 
-### Root cause (verified)
+- Entities are **already global-scoped**: the live indexes are
+  `RADAR_SYSTEM[system_name, entity_type]` and `MISSILE_SYSTEM[system_name, entity_type]` —
+  **no `document_id`**. No document-scope bug exists.
+- The "16 Guideline" rows are **not duplicates**: all 16 have *different* `system_name`
+  values (SA-2, V-750, V-750V, V-751, V-755, V-757, V-759, V-760, …) — 16 **distinct** SA-2
+  missile variants that share the NATO reporting name "Guideline" in the `name` field.
+  Grouping on `name` (a shared reporting name) falsely conflated them.
+- The **only real duplication** is **case-sensitivity of the identity field** (`system_name`).
+  Grouping by case-normalized `system_name`: **RADAR_SYSTEM = 2 true dups** (`fan song`,
+  `spoon rest`), **MISSILE_SYSTEM = 0**.
 
-A **default-value mismatch** across the identity-scope resolution:
-
-- Domain schemas author entities as global — `radar_power_rf.py:34`, `missile_identity.py:38`,
-  `radar_identity.py:41`, etc. all set `identity_scope="global"`.
-- `introspect.py:110` also **defaults** to `"global"`, and lines `111-113` only write the
-  `identity_scope` key into the compiled ontology when it is **non-global** (global is
-  omitted as the assumed default).
-- But the consumers default a **missing** key to `"document"`:
-  - `extraction_merge.py` (LogicalIdentity scope resolution, ~lines 616/632/670/772) →
-    `LogicalIdentity.as_upsert_identity_dict()` appends `document_id` for `scope=="document"`.
-  - `arcadedb_schema.py:476` → the UPSERT UNIQUE index gets `document_id` appended.
-  - `docling_anchors.py:496` → same default.
-
-So a global-authored domain entity is **silently document-scoped**: its upsert identity
-becomes `(identity_fields, document_id, entity_type)` → **one vertex per document**. A
-designator mentioned in 16 documents → 16 vertices. Cross-document
-`canonicalize_document_entities` only adds `HAS_ALIAS` edges; it never merges the vertices.
-
-Separately, identity matching is **case/whitespace-sensitive**, so even when global,
-`FAN SONG` and `Fan Song` remain two vertices.
+So the genuine defect: two vertices for one entity when the identity differs only in
+case/whitespace (`FAN SONG` vs `Fan Song`; `SPOON REST` vs `Spoon Rest`).
 
 ## Goal
 
-Domain entities dedupe **at write time** across (a) documents and (b) case/whitespace, so one
-real-world designator = one vertex carrying merged provenance and specs. Remediate existing
-data by **re-ingest** (clean slate — no in-place merge script).
+Make entity identity **case/whitespace-insensitive** so extraction never creates
+case-variant duplicates — at both the in-memory merge layer and the DB upsert layer. Clean up
+the 2 existing case-pairs so the new unique index can be created. **No re-ingest.**
 
 ## Non-goals
 
-- In-place merge migration of existing duplicates (rejected in favor of re-ingest).
-- Changing structural-entity scoping (SECTION / FIGURE / TABLE / DOCUMENT stay `document`).
-- A canonical-casing/“preferred display name” algorithm — display name is **first-seen** casing.
-- Re-designing canonicalization's alias/fuzzy layers (orthogonal).
+- Any `identity_scope` / document-vs-global change (entities are correctly global; DOCUMENT is
+  intentionally global via `document_number` — leave scoping alone).
+- A full re-ingest or graph wipe.
+- Deduping distinct variants that share a `name` reporting value (they are correctly separate).
+- A canonical-casing display algorithm — display value is **first-seen**.
+- Normalizing component/content identities (`is_entity=False`) — normalization applies to
+  **domain entity identities only**.
 
 ---
 
 ## Design
 
-### Component 1 — Fix the global/document default mismatch
+`norm(x) = " ".join(str(x).strip().casefold().split())` (trim, casefold, collapse internal
+whitespace).
 
-- **`introspect.py`:** always emit `identity_scope` into the compiled ontology entry (remove
-  the "omit when global" special-case at `:111-113`) — the compiled ontology becomes the single
-  explicit source of truth; no consumer relies on a default.
-- **Align consumer fallbacks to `"global"`** (belt-and-suspenders, in case a path bypasses the
-  compiled ontology): `arcadedb_schema.py:476`, `extraction_merge.py` (the ~4 scope-resolution
-  sites), `docling_anchors.py:496` — change `.get("identity_scope", "document")` →
-  `.get("identity_scope", "global")`.
-- Structural types explicitly set `identity_scope="document"`, so they are unaffected.
-- **Result:** domain-entity upsert identity = `(identity_fields, entity_type)` — no
-  `document_id` → cross-document dedup.
+### Component 1 — Normalize at the `LogicalIdentity` (merge) layer  *(required — review finding #3)*
 
-### Component 2 — Case/whitespace-normalized identity
+`LogicalIdentity` currently uses **raw** identity values for equality, hashing, merge,
+provenance aggregation, edge/relationship resolution, audit IDs, and RID maps
+(`app/services/extraction_merge.py:631`, `app/workers/pipeline.py:1589`). If only the DB layer
+normalizes, then `FAN SONG` and `Fan Song` stay **separate `MergedEntityRecord`s** in memory
+and later collide on the DB upsert (last-write-wins → lost fields/provenance).
 
-- Define `norm(x) = " ".join(str(x).strip().casefold().split())` (trim, casefold, collapse
-  internal whitespace).
-- Store a **normalized identity value** on the vertex for each identity field (e.g.
-  `system_name_key = norm(system_name)`), and build the UNIQUE index + upsert `WHERE` on the
-  **normalized** field(s) + `entity_type` (global scope from Component 1).
-- Preserve the original **display name** (`name` / `system_name`) as **first-seen**: the upsert
-  must NOT overwrite the display name on update (only set it on insert). Concretely, keep the
-  display fields out of the UPSERT `SET`-on-update path (e.g. set them only when the record is
-  new, or via a create-only column), so the first casing seen wins deterministically per
-  ingest order.
-- `FAN SONG`, `Fan Song`, ` Fan  Song ` → identical `_key` → one vertex.
+- The identity **key** used for equality / hashing / merge / edge-resolution / audit
+  serialization is `norm()`-applied to each identity field value.
+- The **raw first-seen** identity values are preserved separately for display.
+- Effect: within a run, `FAN SONG` and `Fan Song` produce the **same** `LogicalIdentity` →
+  they **merge into one** `MergedEntityRecord` (aggregating fields + provenance) before write.
 
-### Component 3 — Schema/index build (fresh graph)
+### Component 2 — Normalized `_key` property + unique index + upsert  *(review finding #4)*
 
-- The corrected `arcadedb_schema.py` upsert-index phase emits the new **global + normalized**
-  UNIQUE index DDL. Because remediation is a **fresh re-ingest** into an empty graph, there is
-  **no in-place index swap** — the schema is built correctly from scratch.
+For cross-run dedup (doc A ingested now, doc B later), the DB upsert must also match on the
+normalized key.
 
-### Component 4 — Remediation (re-ingest)
+- Schema build: **`CREATE PROPERTY <type>.<identity_field>_key STRING`** for each domain-entity
+  identity field, **before** the unique-index DDL (`app/services/arcadedb_schema.py:471`).
+- UNIQUE index on the **normalized** `_key` field(s) + `entity_type` (global scope preserved).
+- The upsert (`_upsert_node_impl_sync`, `app/services/arcadedb_graph.py`) computes and sets the
+  `_key` field(s) and matches `WHERE` on them.
+- **Display fields (`name`, `system_name`) are preserved first-seen** — the upsert must not
+  overwrite them on update (set-on-insert only).
 
-1. Land Components 1–3 (code).
-2. **Blow away the graph data** (destructive — gated behind explicit execution-time
-   confirmation; use the project's standard teardown/reset, not per-document `/cancel`).
-3. **Re-ingest all ~21 documents** through the normal pipeline → global, normalized,
-   deduped entities from the start.
-4. **Re-run community detection** on the clean graph (produces reports over deduped entities).
+### Component 3 — Merge the 2 existing case-pairs (enables the new unique index)
+
+The new normalized-key UNIQUE index **cannot be created** while the 2 existing case-collisions
+exist (they'd violate uniqueness). A **tiny, bounded** targeted merge (2 radar pairs only — NOT
+a graph-wide operation) runs once before/at index creation:
+
+- For each pair (`Fan Song`/`FAN SONG`, `Spoon Rest`/`SPOON REST`): keep the vertex with data
+  (non-null specs), transfer the other's edges (relationships, `EXTRACTED_FROM`, aliases) onto
+  it, set its `_key`, then delete the empty duplicate.
+- This is the only data-touching step; it is destructive on 2 vertices and must be explicitly
+  confirmed at execution time.
 
 ---
 
-## Verification
+## Verification  *(review finding #5 — group by normalized key, not raw name)*
 
-- **No duplicates:** for each domain type, `SELECT name, count(*) … GROUP BY name` → every
-  count = 1. `Guideline` = 1 (was 16); `Fan Song` = 1 (was ~6); `Spoon Rest` = 1.
-- **Merged provenance & specs:** the single `Fan Song` vertex carries `nominal_rf_mhz` /
-  `tx_peak_power_kw`, and its `EXTRACTED_FROM` lineage points to **all** of its source
-  documents (upsert-merge preserved every document's edges).
-- **Case merge:** no `FAN SONG` vertex distinct from `Fan Song`.
-- **Downstream:** community detection produces reports; Global Research "Fan Song" returns a
-  synthesis that cites the specs.
+- **True dups gone:** `SELECT <field>_key, count(*) … GROUP BY <field>_key` per domain type →
+  every count = 1. Specifically `fan song` and `spoon rest` each resolve to **one** vertex.
+- **Variants preserved:** the 16 SA-2 variants (distinct `system_name`) remain **16** separate
+  entities — the fix must NOT collapse distinct-designator entities that share a `name`.
+- **Merged Fan Song** carries `nominal_rf_mhz`/`tx_peak_power_kw` and the union of both former
+  vertices' `EXTRACTED_FROM` lineage.
+- **Future-proof:** re-extracting a document that mentions `FAN SONG` upserts onto the existing
+  `fan song` `_key` (no new vertex).
 
 ## Testing
 
-- **Unit:** `norm()` (trim/casefold/whitespace); identity-scope resolution returns `global`
-  for a domain type and `document` for a structural type given a compiled ontology entry.
-- **Integration:** re-ingest a **2-document** fixture where the same designator appears in both
-  and in different casing → assert exactly **one** vertex, with `EXTRACTED_FROM` provenance
-  from **both** documents and the display name = the first-seen casing.
-- **Regression:** structural entities (SECTION/FIGURE/TABLE) remain document-scoped (still one
-  per document) — the fix must not collapse them across documents.
+- **Unit:** `norm()`; `LogicalIdentity` equality/hash — two case/whitespace variants of the
+  same identity are equal and merge into one record; distinct `system_name`s stay distinct.
+- **Integration:** extract a fixture where one designator appears in two casings across two
+  chunks/docs → exactly **one** `MergedEntityRecord` → **one** vertex, provenance from both.
+- **Regression:** distinct variants sharing a `name` (e.g. two missiles both named "Guideline"
+  with different `system_name`) remain **two** vertices.
 
 ## Risks / notes
 
-- **Destructive wipe** is required for remediation — must be explicitly confirmed at execution
-  time (per project rule on destructive actions).
-- **Full re-extraction** of ~21 docs is time-consuming (hours) and re-runs community detection.
-- **Display-name determinism** depends on ingest order (first-seen casing); acceptable per
-  design decision. If a canonical-casing rule is wanted later, it's an additive follow-up.
-- The narrowed sibling bundles inherit the fix via the shared `introspect.py`
-  (air_defense_v3 is the source of truth; propagate per project convention).
+- The **2-vertex targeted merge** (Component 3) is the only destructive step; explicitly
+  confirmed at execution time. It is required for the unique index to be creatable.
+- Normalization applies to **domain entity identities only**; component/content classes
+  (`is_entity=False`) are excluded (review finding #6).
+- First-seen display casing depends on ingest order — accepted; a canonical-casing rule is a
+  possible additive follow-up.
+- `air_defense_v3` is the source-of-truth bundle; the identity-normalization logic lives in
+  shared code (`extraction_merge.py` / `arcadedb_schema.py` / `arcadedb_graph.py`), so it
+  applies across bundles without per-bundle edits.
