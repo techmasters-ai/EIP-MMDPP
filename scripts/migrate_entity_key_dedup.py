@@ -29,13 +29,42 @@ each identity field EXCEPT ``document_id`` (opaque UUID, kept raw).
 SAFETY
 ------
 * Default behavior (no flags) is DRY-RUN — zero writes. The destructive path
-  requires an explicit ``--execute`` and prints a blast-radius summary first.
+  requires BOTH ``--execute`` AND the explicit ``--yes-i-have-a-backup``
+  confirmation flag (works non-interactively under ``docker exec``); with
+  ``--execute`` alone the script prints the blast radius + this warning and
+  REFUSES to write.
+* BEFORE running ``--execute``: (a) take an ArcadeDB backup/snapshot — the
+  merge DELETEs loser vertices/edges and those cannot be recovered; and
+  (b) PAUSE ingestion so there are no concurrent writers. The zero-edge-loss
+  guard assumes a STABLE survivor edge count between the plan read and the
+  execute writes; a concurrent writer would invalidate it.
+* Re-running after a partial failure is idempotent for the BACKFILL and INDEX
+  phases, but already-deleted merge data cannot be restored — which is exactly
+  why every loser's vertex- and edge-level lineage is MERGED onto the survivor
+  BEFORE the loser is deleted.
+* Lineage preservation (this project's "complete data lineage" rule):
+  - Vertex merge: every LIST property on the loser (``_evidence_ids``,
+    ``_page_numbers``, ``_evidence_texts``, ``source_*``, ...) is UNION'd
+    (dedup) into the survivor's same property; SCALAR/other properties fill
+    the survivor only when it is null — a non-null survivor value (specs,
+    first-seen display casing) is NEVER overwritten.
+  - Edge dedup fold: when the survivor already has an equivalent edge, ALL
+    list-valued lineage on the loser's duplicate edge (``document_ids``,
+    ``source_pages``, ``source_chunk_ids``, ``source_self_refs``, ...) is
+    union'd into the survivor's edge and ``extraction_confidence`` is raised
+    to the max — not just ``document_ids``.
+  - Numeric arrays are written via the same ``_sql_list_set_fragment`` path
+    the write layer uses (dodges ArcadeDB's bound-numeric-array nesting bug).
 * Merge PRECEDES backfill (else two collision rows backfill to the same key
   and violate the UNIQUE index). Backfill precedes index for the same reason.
-* Guards against edge loss: for every merged pair we assert
-  ``recreated + deduped == loser_edge_count`` (every loser edge is either
-  re-created on the survivor or folded into an existing duplicate) and, after
-  the merge, ``survivor_edges_after == survivor_edges_before + recreated``.
+* Guards against edge loss: for every merged pair we require
+  ``recreated + deduped + self_dropped == loser_edge_count`` (every loser edge
+  is re-created on the survivor, folded into an existing duplicate, or dropped
+  as a self-reference) and, after the merge,
+  ``survivor_edges_after == survivor_edges_before + recreated``.
+* Self-referential edges (a loser edge whose OTHER endpoint is the survivor or
+  the loser itself) are DROPPED with a logged warning rather than recreated —
+  re-pointing one would fabricate a survivor self-loop that never existed.
 * Only GLOBAL-scope domain entities are auto-merged. If any case-collision is
   detected in a document-scoped / structural type it is REPORTED and (in
   ``--execute``) the run ABORTS before any write — those have different edge
@@ -50,9 +79,9 @@ uses; ``scripts/`` is not bind-mounted, so copy it in first):
         eip-mmdpp-api-1:/app/scripts/migrate_entity_key_dedup.py
     docker exec eip-mmdpp-api-1 \
         python /app/scripts/migrate_entity_key_dedup.py --dry-run
-    # after reviewing the dry-run:
+    # after reviewing the dry-run AND taking a backup + pausing ingestion:
     docker exec eip-mmdpp-api-1 \
-        python /app/scripts/migrate_entity_key_dedup.py --execute
+        python /app/scripts/migrate_entity_key_dedup.py --execute --yes-i-have-a-backup
 
 From the host (ArcadeDB is on localhost:2480 — the in-container hostname
 ``arcadedb`` does not resolve here, so override the URL):
@@ -64,6 +93,7 @@ From the host (ArcadeDB is on localhost:2480 — the in-container hostname
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -118,6 +148,10 @@ def derive_indexed_types() -> list[dict[str, Any]]:
         out.append({
             "etype": _safe_type_name(e["name"]),
             "id_fields": id_fields,
+            # PIN: this `!= "document_id"` filter MUST stay identical to
+            # arcadedb_graph._key_fields (the write layer) and the schema
+            # builder's Phase 6b key_fields — else backfill keys and the write
+            # layer would diverge.
             "key_fields": [f for f in id_fields if f != "document_id"],
             "doc_scoped": scope == "document" and "document_id" not in id_fields,
             "scope": scope,
@@ -231,6 +265,158 @@ def choose_survivor(
 
 
 # ---------------------------------------------------------------------------
+# Lineage merge helpers (vertex + edge) — "complete data lineage" rule
+# ---------------------------------------------------------------------------
+
+# System/bookkeeping edge columns never folded during a dedup merge.
+_EDGE_META = frozenset({
+    "@rid", "@type", "@cat", "@class", "@in", "@out", "@version",
+    "created_at", "updated_at",
+})
+
+
+def _as_list(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    return list(v) if isinstance(v, list) else [v]
+
+
+def _union_list(existing: Any, incoming: Any) -> tuple[list[Any], list[Any]]:
+    """Order-preserving union of two lists; returns (full_union, added_items).
+
+    Dedup is by canonical JSON so lists-of-scalars AND lists-of-dicts (e.g.
+    ``_field_evidence`` rows, provenance records) dedup correctly.
+    """
+    out = _as_list(existing)
+    seen = {json.dumps(x, sort_keys=True, default=str) for x in out}
+    added: list[Any] = []
+    for x in _as_list(incoming):
+        k = json.dumps(x, sort_keys=True, default=str)
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+            added.append(x)
+    return out, added
+
+
+def _vertex_merge_excludes(t: dict[str, Any]) -> set[str]:
+    """Columns that must NOT be touched by a vertex lineage merge.
+
+    Identity fields + ``name`` + the ``<field>_key`` columns are write-once
+    display/identity (survivor keeps first-seen casing); the rest are
+    system/bookkeeping.
+    """
+    return (
+        {"@rid", "@type", "@cat", "@class", "@version", "name",
+         "entity_type", "created_at", "updated_at"}
+        | set(t["id_fields"])
+        | {f"{f}_key" for f in t["key_fields"]}
+    )
+
+
+def plan_vertex_merge(
+    surv_row: dict[str, Any], loser_row: dict[str, Any], t: dict[str, Any],
+) -> tuple[list[tuple[str, list[Any], list[Any]]], list[tuple[str, Any]], list[tuple[str, Any, Any]]]:
+    """Read-only vertex lineage merge plan.
+
+    Returns ``(list_merges, scalar_fills, skipped)``:
+      * ``list_merges``  : ``(prop, added_items, full_union)`` — LIST props
+        union'd into the survivor (dedup); ``full_union`` is the value to SET.
+      * ``scalar_fills`` : ``(prop, value)`` — scalar/other props the survivor
+        is MISSING (null) that the loser can fill.
+      * ``skipped``      : ``(prop, loser_value, survivor_value)`` — non-null
+        survivor scalar/other kept as-is (survivor-wins; loser value logged so
+        nothing is silently dropped).
+    """
+    exclude = _vertex_merge_excludes(t)
+    list_merges: list[tuple[str, list[Any], list[Any]]] = []
+    scalar_fills: list[tuple[str, Any]] = []
+    skipped: list[tuple[str, Any, Any]] = []
+    for k, lv in loser_row.items():
+        if k in exclude or k.startswith("@") or lv is None:
+            continue
+        sv = surv_row.get(k)
+        if isinstance(lv, list):
+            full, added = _union_list(sv, lv)
+            if added:
+                list_merges.append((k, added, full))
+        elif sv is None:
+            scalar_fills.append((k, lv))
+        elif sv != lv:
+            skipped.append((k, lv, sv))
+    return list_merges, scalar_fills, skipped
+
+
+def execute_vertex_merge(
+    client: ArcadeDBClient, db: str, surv_rid: str,
+    list_merges: list[tuple[str, list[Any], list[Any]]],
+    scalar_fills: list[tuple[str, Any]],
+) -> None:
+    """Apply a vertex lineage merge onto the survivor (WRITES)."""
+    for prop, _added, full in list_merges:
+        params: dict[str, Any] = {}
+        frag = _sql_list_set_fragment(prop, full, params, f"v_{prop}")
+        client.command_sync(db, "sql", f"UPDATE {surv_rid} SET {frag}", params or None)
+    for prop, val in scalar_fills:
+        client.command_sync(db, "sql", f"UPDATE {surv_rid} SET {prop} = :v", {"v": val})
+
+
+def classify_edge_fold(
+    surv_edge: dict[str, Any], loser_edge: dict[str, Any],
+) -> tuple[dict[str, list[Any]], dict[str, Any], tuple[Any, Any] | None, dict[str, list[Any]]]:
+    """Read-only fold plan for a loser DUPLICATE edge into the survivor's edge.
+
+    Returns ``(list_adds, scalar_fills, conf_change, full_lists)``:
+      * ``list_adds``   : ``{prop: [added items]}`` (for display)
+      * ``scalar_fills``: ``{prop: value}`` scalar props the survivor edge lacks
+      * ``conf_change`` : ``(old, new)`` if extraction_confidence would rise
+      * ``full_lists``  : ``{prop: full unioned list}`` (for the SET on execute)
+    """
+    list_adds: dict[str, list[Any]] = {}
+    scalar_fills: dict[str, Any] = {}
+    full_lists: dict[str, list[Any]] = {}
+    conf_change: tuple[Any, Any] | None = None
+    for k, lv in loser_edge.items():
+        if k in _EDGE_META or k.startswith("@") or lv is None:
+            continue
+        sv = surv_edge.get(k)
+        if k == "extraction_confidence":
+            candidates = [x for x in (sv, lv) if x is not None]
+            newv = max(candidates) if candidates else lv
+            if sv is None or newv != sv:
+                conf_change = (sv, newv)
+        elif isinstance(lv, list):
+            full, added = _union_list(sv, lv)
+            if added:
+                list_adds[k] = added
+                full_lists[k] = full
+        elif sv is None:
+            scalar_fills[k] = lv
+    return list_adds, scalar_fills, conf_change, full_lists
+
+
+def execute_edge_fold(
+    client: ArcadeDBClient, db: str, surv_edge_rid: str, loser_edge: dict[str, Any],
+) -> None:
+    """Fold a loser duplicate edge's lineage into the survivor's edge (WRITES)."""
+    surv_rows = client.query_sync(db, "sql", f"SELECT FROM {surv_edge_rid}")
+    surv_edge = surv_rows[0] if surv_rows else {}
+    _adds, scalar_fills, conf_change, full_lists = classify_edge_fold(surv_edge, loser_edge)
+    for k, full in full_lists.items():
+        params: dict[str, Any] = {}
+        frag = _sql_list_set_fragment(k, full, params, f"e_{k}")
+        client.command_sync(db, "sql", f"UPDATE {surv_edge_rid} SET {frag}", params or None)
+    for k, v in scalar_fills.items():
+        client.command_sync(db, "sql", f"UPDATE {surv_edge_rid} SET {k} = :v", {"v": v})
+    if conf_change is not None:
+        client.command_sync(
+            db, "sql",
+            f"UPDATE {surv_edge_rid} SET extraction_confidence = :v",
+            {"v": conf_change[1]},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Edge introspection + re-point
 # ---------------------------------------------------------------------------
 
@@ -249,12 +435,12 @@ def _survivor_sig_set(
 
 
 def plan_merge(
-    client: ArcadeDBClient, db: str, surv_rid: str, loser_rid: str,
+    client: ArcadeDBClient, db: str, t: dict[str, Any], surv_rid: str, loser_rid: str,
 ) -> dict[str, Any]:
-    """Compute (read-only) the re-point plan for one loser → survivor.
+    """Compute (read-only) the full merge plan for one loser → survivor.
 
-    Returns loser edge snapshot, per-type recreate/dedup counts, and the
-    survivor's before edge count. No writes.
+    Covers edge re-point (recreate / dedup-fold / self-ref-drop) AND the
+    vertex-level lineage merge. No writes.
     """
     loser_edges = client.query_sync(db, "sql", f"SELECT expand(bothE()) FROM {loser_rid}")
     surv_before = client.query_sync(db, "sql", f"SELECT bothE().size() AS ec FROM {surv_rid}")
@@ -263,24 +449,58 @@ def plan_merge(
 
     recreate: list[dict[str, Any]] = []
     dedup: list[dict[str, Any]] = []
+    self_ref: list[dict[str, Any]] = []
     by_type_recreate: dict[str, int] = {}
     by_type_dedup: dict[str, int] = {}
+    self_ref_info: list[tuple[str, str, str, str]] = []
+    dedup_previews: list[dict[str, Any]] = []
     for e in loser_edges:
         etype, direction, other = _edge_sig(e, loser_rid)
+        # (M6) Self-referential: the other endpoint IS the survivor or the loser
+        # itself. Re-pointing would fabricate a survivor self-loop that never
+        # existed; DROP it instead (counted separately for the loss guard).
+        if other in (surv_rid, loser_rid):
+            self_ref.append(e)
+            reason = ("loser self-loop" if other == loser_rid
+                      else "loser->survivor edge (would become survivor self-loop)")
+            self_ref_info.append((etype, direction, other, reason))
+            continue
         if (etype, direction, other) in surv_sigs:
             dedup.append(e)
             by_type_dedup[etype] = by_type_dedup.get(etype, 0) + 1
+            new_from, new_to = (surv_rid, other) if direction == "OUT" else (other, surv_rid)
+            match = client.query_sync(
+                db, "sql",
+                f"SELECT FROM {etype} WHERE @out = {new_from} AND @in = {new_to} LIMIT 1",
+            )
+            surv_edge = match[0] if match else {}
+            adds, fills, conf, _full = classify_edge_fold(surv_edge, e)
+            dedup_previews.append({
+                "etype": etype, "direction": direction, "other": other,
+                "surv_edge_rid": surv_edge.get("@rid"),
+                "list_adds": adds, "scalar_fills": fills, "conf_change": conf,
+            })
         else:
             recreate.append(e)
             by_type_recreate[etype] = by_type_recreate.get(etype, 0) + 1
+
+    surv_row = (client.query_sync(db, "sql", f"SELECT FROM {surv_rid}") or [{}])[0]
+    loser_row = (client.query_sync(db, "sql", f"SELECT FROM {loser_rid}") or [{}])[0]
+    v_list, v_scalar, v_skipped = plan_vertex_merge(surv_row, loser_row, t)
+
     return {
-        "loser_edges": loser_edges,
         "loser_edge_count": len(loser_edges),
         "surv_before_ct": surv_before_ct,
         "recreate": recreate,
         "dedup": dedup,
+        "self_ref": self_ref,
         "by_type_recreate": by_type_recreate,
         "by_type_dedup": by_type_dedup,
+        "self_ref_info": self_ref_info,
+        "dedup_previews": dedup_previews,
+        "vertex_list_merges": v_list,
+        "vertex_scalar_fills": v_scalar,
+        "vertex_skipped": v_skipped,
     }
 
 
@@ -302,17 +522,32 @@ def _copy_edge_set(edge: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def execute_merge(
-    client: ArcadeDBClient, db: str, surv_rid: str, loser_rid: str, plan: dict[str, Any],
+    client: ArcadeDBClient, db: str, t: dict[str, Any],
+    surv_rid: str, loser_rid: str, plan: dict[str, Any],
 ) -> None:
-    """Perform the re-point + delete for one loser → survivor (WRITES).
+    """Perform the lineage merge + edge re-point + delete (WRITES).
 
-    For each loser edge: if the survivor already has an equivalent
-    ``(type, direction, other)`` edge (a duplicate), fold the loser edge's
-    ``document_ids`` lineage into the survivor's existing edge (idempotent
-    per-id append) and delete the loser edge; otherwise re-create the edge on
-    the survivor (preserving properties + direction) and delete the loser
-    edge. Finally delete the loser vertex. Asserts zero edge loss.
+    Order: (1) merge the loser's vertex-level lineage onto the survivor
+    (list-union additive props; fill survivor-null scalars) BEFORE the vertex
+    is deleted; (2) drop self-referential loser edges; (3) fold duplicate
+    loser edges' FULL lineage into the survivor's matching edge (list-union of
+    document_ids/source_*/…, max extraction_confidence), then drop them;
+    (4) recreate the remaining loser edges on the survivor preserving props +
+    direction; (5) delete the (now edge-less) loser vertex. Asserts zero edge
+    loss (recreate + dedup + self_dropped == loser edges).
     """
+    # (1) Vertex lineage merge — MUST precede DELETE VERTEX.
+    execute_vertex_merge(
+        client, db, surv_rid,
+        plan["vertex_list_merges"], plan["vertex_scalar_fills"],
+    )
+
+    # (2) Self-referential edges — drop (never recreate a fabricated self-loop).
+    for e in plan["self_ref"]:
+        etype = e.get("@type")
+        client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
+
+    # (3) Duplicate edges — fold full lineage into the survivor's edge, then drop.
     for e in plan["dedup"]:
         etype, direction, other = _edge_sig(e, loser_rid)
         new_from, new_to = (surv_rid, other) if direction == "OUT" else (other, surv_rid)
@@ -321,17 +556,10 @@ def execute_merge(
             f"SELECT @rid AS rid FROM {etype} WHERE @out = {new_from} AND @in = {new_to} LIMIT 1",
         )
         if existing:
-            surv_edge_rid = existing[0]["rid"]
-            for doc_id in (e.get("document_ids") or []):
-                client.command_sync(
-                    db, "sql",
-                    f"UPDATE {surv_edge_rid} SET document_ids = "
-                    f"(CASE WHEN document_ids CONTAINS :d THEN document_ids "
-                    f"ELSE document_ids || [:d] END)",
-                    {"d": doc_id},
-                )
+            execute_edge_fold(client, db, existing[0]["rid"], e)
         client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
 
+    # (4) Recreate the rest on the survivor, preserving props + direction.
     for e in plan["recreate"]:
         etype, direction, other = _edge_sig(e, loser_rid)
         new_from, new_to = (surv_rid, other) if direction == "OUT" else (other, surv_rid)
@@ -344,7 +572,7 @@ def execute_merge(
         )
         client.command_sync(db, "sql", f"DELETE FROM {etype} WHERE @rid = {e['@rid']}")
 
-    # Delete the (now edge-less) loser vertex.
+    # (5) Delete the (now edge-less) loser vertex.
     client.command_sync(db, "sql", f"DELETE VERTEX {loser_rid}")
 
     # Zero-edge-loss assertion.
@@ -356,7 +584,7 @@ def execute_merge(
             f"EDGE LOSS GUARD tripped for survivor {surv_rid}: "
             f"after={surv_after_ct} expected={expected} "
             f"(before={plan['surv_before_ct']} recreated={len(plan['recreate'])} "
-            f"deduped={len(plan['dedup'])})"
+            f"deduped={len(plan['dedup'])} self_dropped={len(plan['self_ref'])})"
         )
 
 
@@ -403,29 +631,62 @@ def phase_merge(
                 mark = "SURVIVOR" if rid == surv else "loser   "
                 print(f"      {mark} {rid}: richness={stats[rid][0]} edges={stats[rid][1]}")
             for loser in losers:
-                plan = plan_merge(client, db, surv, loser)
+                plan = plan_merge(client, db, t, surv, loser)
                 total += 1
                 print(
                     f"    re-point loser {loser}: {plan['loser_edge_count']} edges "
                     f"-> recreate {sum(plan['by_type_recreate'].values())} "
                     f"{dict(plan['by_type_recreate'])}, "
                     f"dedup {sum(plan['by_type_dedup'].values())} "
-                    f"{dict(plan['by_type_dedup'])}"
+                    f"{dict(plan['by_type_dedup'])}, "
+                    f"self-ref {len(plan['self_ref'])}"
                 )
-                acct = len(plan["recreate"]) + len(plan["dedup"])
-                assert acct == plan["loser_edge_count"], (
-                    f"edge accounting mismatch for {loser}: "
-                    f"{acct} != {plan['loser_edge_count']}"
-                )
+                # --- vertex-level lineage merge (applied BEFORE loser delete) ---
+                if plan["vertex_list_merges"] or plan["vertex_scalar_fills"]:
+                    for prop, added, _full in plan["vertex_list_merges"]:
+                        print(f"      vertex lineage: survivor {surv} += {prop} {added} (list union)")
+                    for prop, val in plan["vertex_scalar_fills"]:
+                        print(f"      vertex lineage: survivor {surv} .{prop} = {val!r} (was null; filled)")
+                else:
+                    print(f"      vertex lineage: nothing additive to merge from {loser}")
+                for prop, lval, sval in plan["vertex_skipped"]:
+                    print(
+                        f"      vertex lineage: KEEP survivor .{prop}={sval!r} "
+                        f"(loser had {lval!r}; survivor-wins, not overwritten)"
+                    )
+                # --- duplicate-edge FULL lineage fold previews ---
+                for dp in plan["dedup_previews"]:
+                    bits: list[str] = []
+                    if dp["list_adds"]:
+                        bits.append("lists " + ", ".join(f"{k}+{v}" for k, v in dp["list_adds"].items()))
+                    if dp["scalar_fills"]:
+                        bits.append("scalars " + ", ".join(f"{k}={v!r}" for k, v in dp["scalar_fills"].items()))
+                    if dp["conf_change"]:
+                        bits.append(f"confidence {dp['conf_change'][0]}->{dp['conf_change'][1]}")
+                    detail = "; ".join(bits) if bits else "no new lineage (subset of survivor edge)"
+                    print(
+                        f"      edge fold: loser {dp['etype']} {dp['direction']} -> {dp['other']} "
+                        f"folds into survivor edge {dp['surv_edge_rid']} [{detail}]"
+                    )
+                # --- self-referential edge visibility (M6) ---
+                for etype, direction, other, reason in plan["self_ref_info"]:
+                    print(f"      !! SELF-REF edge DROPPED: {etype} {direction} -> {other} ({reason})")
+                # --- edge-loss guard (raise, not assert; safe under python -O) ---
+                acct = len(plan["recreate"]) + len(plan["dedup"]) + len(plan["self_ref"])
+                if acct != plan["loser_edge_count"]:
+                    raise RuntimeError(
+                        f"edge accounting mismatch for {loser}: recreate+dedup+self_ref="
+                        f"{acct} != loser edges={plan['loser_edge_count']}"
+                    )
                 print(
                     f"      survivor edges: before={plan['surv_before_ct']} "
                     f"-> after={plan['surv_before_ct'] + len(plan['recreate'])} "
-                    f"(loss guard: recreate+dedup={acct} == loser edges="
+                    f"(loss guard: recreate+dedup+self_ref={acct} == loser edges="
                     f"{plan['loser_edge_count']})"
                 )
-                print(f"      would DELETE loser vertex {loser}")
+                print(f"      would DELETE loser vertex {loser} (AFTER its lineage is merged above)")
                 if not dry_run:
-                    execute_merge(client, db, surv, loser, plan)
+                    execute_merge(client, db, t, surv, loser, plan)
                     print(f"      [EXECUTED] merged {loser} -> {surv}")
 
     if blocking:
@@ -516,6 +777,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="Inspect + print plan; ZERO writes (default).")
     ap.add_argument("--execute", action="store_true", help="Perform the destructive migration (writes).")
+    ap.add_argument("--yes-i-have-a-backup", action="store_true",
+                    help="REQUIRED with --execute: confirms you took an ArcadeDB "
+                         "backup and paused ingestion. Without it --execute refuses to write.")
     ap.add_argument("--arcadedb-url", default=None,
                     help="Override ArcadeDB base URL (host runs: http://localhost:2480).")
     args = ap.parse_args()
@@ -544,8 +808,6 @@ def main() -> int:
 
     if not dry_run:
         # Blast-radius summary BEFORE touching anything.
-        print("\n" + "!" * 78)
-        print("BLAST RADIUS (about to WRITE):")
         merges = 0
         for t in types:
             if t["scope"] != "global":
@@ -557,10 +819,23 @@ def main() -> int:
             for _f in t["key_fields"]:
                 cnt = client.query_sync(db, "sql", f"SELECT count(*) AS c FROM {t['etype']}")
                 row_total += int(cnt[0]["c"]) if cnt else 0
-        print(f"  * merge/delete up to {merges} loser vertex(es) (edges re-pointed onto survivors)")
+        print("\n" + "!" * 78)
+        print("BLAST RADIUS (DESTRUCTIVE — merge DELETEs cannot be undone):")
+        print(f"  * merge/delete up to {merges} loser vertex(es); each loser's vertex- and")
+        print("    edge-level lineage is UNION-merged onto its survivor FIRST, then deleted")
         print(f"  * backfill <field>_key across ~{row_total} vertex rows")
-        print(f"  * create any missing <field>_key UNIQUE indexes")
+        print("  * create any missing <field>_key UNIQUE indexes")
+        print("REQUIRED BEFORE EXECUTE:")
+        print("  1. Take an ArcadeDB backup/snapshot (deleted merge data is unrecoverable).")
+        print("  2. Pause ingestion — NO concurrent writers (the edge-loss guard assumes a")
+        print("     stable survivor edge count between the plan read and the execute writes).")
         print("!" * 78)
+        if not args.yes_i_have_a_backup:
+            print("\nREFUSING TO WRITE: --execute requires --yes-i-have-a-backup.")
+            print("Re-run once you have taken a backup and paused ingestion:")
+            print("  ... migrate_entity_key_dedup.py --execute --yes-i-have-a-backup")
+            return 2
+        print("\nConfirmation received (--yes-i-have-a-backup). Proceeding with writes.\n")
 
     phase_merge(client, db, types, dry_run)
     phase_backfill(client, db, types, dry_run)
@@ -569,7 +844,8 @@ def main() -> int:
     print("\n" + "=" * 78)
     print(f"DONE ({mode}).")
     if dry_run:
-        print("Review the plan above, then re-run with --execute to apply.")
+        print("Review the plan above. After taking a backup + pausing ingestion, apply with:")
+        print("  ... migrate_entity_key_dedup.py --execute --yes-i-have-a-backup")
     print("=" * 78)
     return 0
 
