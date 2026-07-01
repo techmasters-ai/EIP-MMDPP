@@ -83,7 +83,13 @@ class LogicalIdentity:
 
     @property
     def norm_key(self) -> tuple:
-        """Case/whitespace-insensitive key used for equality and hashing."""
+        """Case/whitespace-insensitive key used for equality and hashing.
+
+        Casefold-merge is intentional: two identity values that casefold
+        identically WILL merge (accepted per spec — identity fields are
+        proper-noun designators). ``document_id`` is kept RAW (it's a UUID,
+        not a display string) and only participates for document scope.
+        """
         base = tuple(norm(v) for v in self.identity_tuple)
         return (
             self.entity_type,
