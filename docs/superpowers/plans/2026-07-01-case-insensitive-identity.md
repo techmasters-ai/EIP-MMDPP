@@ -232,6 +232,28 @@ def _key_fields(identity_fields: dict) -> dict:
 
 ---
 
+## Deferred follow-up (out of this plan's scope — surfaced by Task 1 review)
+
+- **Read/resolve path is still case-sensitive.** `_build_resolve_root_entity_sql`
+  (`app/services/arcadedb_graph.py:713`) matches raw `WHERE name = :name`. It powers
+  retrieval query→root-entity resolution (`query_profiles.py:577/800/851`, the `/graph`
+  resolve API) and extraction-time canonicalization (`canonicalization.py:97`). After this
+  plan, writes dedup case-insensitively but a resolve-by-name lookup for `"fan song"` still
+  misses a vertex stored as `"Fan Song"`. The spec scopes this plan to the merge + upsert/index
+  layers, so the read side is intentionally deferred. Follow-up: normalize `resolve_root_entity`
+  (and the full-text name path) against a `name_key`/normalized comparison. Track as a separate
+  retrieval-layer change; decide with the user before implementing (touches retrieval behavior).
+- **A second raw-`name` resolver (write-side fallback).** `batch_create_entity_chunk_edges_sync`
+  (`app/services/arcadedb_graph.py:3197`) resolves the `EXTRACTED_FROM` source vertex via
+  `WHERE name = :name AND entity_type = …` (raw, un-normalized) — same class as the read-path
+  item above. Low severity: production takes the RID path (`source_rid` from the post-merge
+  `mention.rid`/`node.rid`, case-agnostic); the name path fires only when `source_rid is None` and
+  already logs a WARNING. Normalize it alongside the read/resolve follow-up.
+- **Hardening (optional):** add a defensive assertion in the schema builder for the hypothetical
+  case where a doc-scoped type lists `document_id` inside its own `identity_fields` — the `_key`
+  index would then drop document scoping while the write WHERE keeps it raw (divergent). No live
+  air_defense_v3 type does this today; the invariant is currently only comment-pinned.
+
 ## Rollout note
 
 Tasks 0–2 are safe code changes (tested, no data touch). Task 3 is the one-time destructive migration (2-vertex merge) + graph-wide backfill + index creation — run once, gated on explicit confirmation. No re-ingest. If anything regresses, the `_key` unique index can be dropped and the raw-field indexes still exist (Task 2 keeps them), reverting to pre-change upsert behavior.

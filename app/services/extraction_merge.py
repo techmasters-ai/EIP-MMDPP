@@ -51,12 +51,28 @@ class RelationshipRejectionReason(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+def norm(value: Any) -> str:
+    """Case/whitespace-insensitive identity key: trim, casefold, collapse whitespace.
+
+    Used to compare LogicalIdentity values so that entities differing only
+    by case or incidental whitespace (e.g. ``FAN SONG`` vs ``Fan Song``)
+    merge into a single record instead of creating duplicate vertices.
+    """
+    return " ".join(str(value).strip().casefold().split()) if value is not None else ""
+
+
+@dataclass(frozen=True, eq=False)
 class LogicalIdentity:
     """Hashable identity for an extracted entity.
 
     Frozen so instances can be used as dict keys in the merge index.
     Spec §3.6.
+
+    Equality/hash are case/whitespace-insensitive (routed through
+    ``norm_key``) so that two identities differing only by case or
+    incidental whitespace merge into one record. ``identity_tuple`` /
+    ``identity_values_dict()`` remain the RAW first-seen values — they
+    feed ``build_display_label()`` and must not be normalized in place.
     """
 
     entity_type: str
@@ -64,6 +80,30 @@ class LogicalIdentity:
     identity_tuple: tuple[Any, ...]        # parallel values
     scope: Literal["document", "global"]
     document_id: str | None               # populated iff scope == "document"
+
+    @property
+    def norm_key(self) -> tuple:
+        """Case/whitespace-insensitive key used for equality and hashing.
+
+        Casefold-merge is intentional: two identity values that casefold
+        identically WILL merge (accepted per spec — identity fields are
+        proper-noun designators). ``document_id`` is kept RAW (it's a UUID,
+        not a display string) and only participates for document scope.
+        """
+        base = tuple(norm(v) for v in self.identity_tuple)
+        return (
+            self.entity_type,
+            base,
+            self.document_id if self.scope == "document" else None,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, LogicalIdentity):
+            return NotImplemented
+        return self.norm_key == other.norm_key
+
+    def __hash__(self) -> int:
+        return hash(self.norm_key)
 
     def identity_values_dict(self) -> dict[str, Any]:
         """Identity field names zipped with values. Does NOT include document_id."""

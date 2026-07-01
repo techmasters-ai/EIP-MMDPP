@@ -468,19 +468,83 @@ async def sync_schema_from_ontology(
     #   * Components (identity_fields=[]) have nothing indexable for UPSERT
     #     and are skipped — they don't go through upsert_nodes_batch_sync,
     #     they're embedded via the A0-1 walker.
+    #
+    # Case-insensitive identity (Task 2): the write layer (Task 1,
+    # ``app/services/arcadedb_graph.py::_key_fields``) now matches/persists a
+    # normalized ``<field>_key`` (= ``norm(value)``) alongside every raw
+    # identity field so case/whitespace variants (``FAN SONG`` vs
+    # ``Fan Song``) converge on one vertex. This block declares that
+    # ``<field>_key`` property (STRING, mirrors the Phase 1 CREATE PROPERTY
+    # idiom exactly) and a UNIQUE index over the normalized keys, so
+    # ArcadeDB UPSERT can dedup on ``<field>_key`` the same way it already
+    # dedups on the raw field below. The raw-field UNIQUE index is
+    # intentionally KEPT (other code may still read it; it's also a
+    # rollback fallback) — this is additive, not a replacement.
+    # ``document_id`` is never ``_key``-normalized (opaque UUID, not a
+    # case/whitespace-variant display string) — mirrors ``_key_fields``.
     upsert_ddl: list[str] = []
     for e in ontology.get("entity_types", []):
         id_fields: list[str] = list(e.get("identity_fields") or [])
         if not id_fields:
             continue  # component-class — no upsert path, no index needed
+        etype = _safe_type_name(e["name"])
         scope = e.get("identity_scope", "document")
+        doc_scoped = scope == "document" and "document_id" not in id_fields
+
+        # (a) CREATE PROPERTY for every normalized <field>_key, BEFORE any
+        # index DDL for this type — the key index below references these
+        # columns and ArcadeDB requires the property to exist first.
+        # ``document_id`` is skipped: mirrors ``_key_fields`` (Task 1), it's
+        # an opaque UUID, not a case/whitespace-variant display string.
+        # Mutual-consistency invariant: this exclusion must match
+        # ``_key_fields`` in arcadedb_graph.py exactly. If a doc-scoped type
+        # ever listed ``document_id`` inside its own identity_fields, BOTH the
+        # write layer and this index would drop document scoping from the
+        # ``_key`` — no live type does this today (air_defense_v3 checked).
+        key_fields = [f for f in id_fields if f != "document_id"]
+        for field in key_fields:
+            upsert_ddl.append(
+                f"CREATE PROPERTY {etype}.{field}_key IF NOT EXISTS STRING"
+            )
+
+        # Raw-field UNIQUE index (unchanged, kept for rollback fallback and
+        # other readers).
         fields = list(id_fields)
-        if scope == "document" and "document_id" not in fields:
+        if doc_scoped:
             fields.append("document_id")
         fields.append("entity_type")
         upsert_ddl.append(
-            f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} "
+            f"CREATE INDEX IF NOT EXISTS ON {etype} "
             f"({', '.join(fields)}) UNIQUE"
+        )
+
+        # (b) Normalized <field>_key UNIQUE index — what UPSERT dedups on
+        # under case-insensitive identity. This index is declared BOTH here
+        # (always-on schema sync, main.py lifespan) AND idempotently
+        # (IF NOT EXISTS) by the Task 3 migration.
+        # VERIFIED on live ArcadeDB (LSM_TREE UNIQUE): a *composite* index
+        # skips an entry only when ALL indexed columns are null. This index is
+        # composite — (<field>_key, [document_id,] entity_type) — and
+        # entity_type is always populated, so on the EXISTING graph every
+        # pre-backfill row keys to (null, <entity_type>): identical across all
+        # rows of a type → CREATE INDEX FAILS with a duplicate-key error
+        # ("Duplicated key [null, RADAR_SYSTEM]"). That is why this always-on
+        # creation SILENTLY FAILS (swallowed by _run_ddl_batch) on populated
+        # types until the migration runs, and succeeds only on empty types.
+        # The Task 3 migration is therefore REQUIRED to actually create these
+        # indexes on existing data, and its order is mandatory:
+        #   merge case-collision pairs  → backfill <field>_key to distinct
+        #   non-null values  → THEN create the index (now succeeds).
+        # (Merge must precede backfill or two rows would backfill to the same
+        # _key and violate uniqueness.) See
+        # docs/superpowers/plans/2026-07-01-case-insensitive-identity.md Task 3.
+        key_index_fields = [f"{f}_key" for f in key_fields]
+        if doc_scoped:
+            key_index_fields.append("document_id")
+        key_index_fields.append("entity_type")
+        upsert_ddl.append(
+            f"CREATE INDEX IF NOT EXISTS ON {etype} "
+            f"({', '.join(key_index_fields)}) UNIQUE"
         )
     await _run_ddl_batch(client, database, upsert_ddl, phase="upsert_indexes", report=report)
     report.indexes_created += len(upsert_ddl)

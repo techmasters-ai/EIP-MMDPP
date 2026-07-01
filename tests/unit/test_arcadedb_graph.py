@@ -478,12 +478,14 @@ class TestSyncVariants:
         # Each per-edge script contains exactly one CREATE EDGE.
         assert scripts[0].count("CREATE EDGE USES") == 1
         assert scripts[1].count("CREATE EDGE USES") == 1
-        # Params carry the single edge's identity (no cross-row suffix needed
-        # since each script handles one record).
-        assert params_list[0]["f_name_0"] == "APG-77"
-        assert params_list[0]["t_name_0"] == "AIM-120"
-        assert params_list[1]["f_name_0"] == "APG-63"
-        assert params_list[1]["t_name_0"] == "AIM-9"
+        # Params carry the single edge's identity resolved on the normalized
+        # <field>_key (case-insensitive-identity: endpoints attach to the
+        # merged vertex). Values are norm()'d; no cross-row suffix needed
+        # since each script handles one record.
+        assert params_list[0]["f_name_key_0"] == "apg-77"
+        assert params_list[0]["t_name_key_0"] == "aim-120"
+        assert params_list[1]["f_name_key_0"] == "apg-63"
+        assert params_list[1]["t_name_key_0"] == "aim-9"
 
     def test_create_text_chunks_batch_sync_folds_embedding(self):
         """Batch chunk create should fold the embedding into CREATE VERTEX."""

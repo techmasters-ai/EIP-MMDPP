@@ -550,9 +550,13 @@ def test_live_source_pages_stays_flat_and_contains_matches():
         "CREATE EDGE TYPE SpE IF NOT EXISTS; "
         "CREATE PROPERTY SpE.source_pages IF NOT EXISTS LIST")
     try:
+        # Endpoints now resolve on the normalized <field>_key (case-insensitive
+        # identity), so the throwaway vertices must carry id_key exactly as the
+        # node-upsert path would persist it (norm('R1')='r1', norm('M1')='m1').
         cmd("sqlscript",
             "DELETE FROM SpE; DELETE FROM SpV; "
-            "CREATE VERTEX SpV SET id='R1'; CREATE VERTEX SpV SET id='M1'")
+            "CREATE VERTEX SpV SET id='R1', id_key='r1'; "
+            "CREATE VERTEX SpV SET id='M1', id_key='m1'")
 
         rec = _make_record(
             from_type="SpV",

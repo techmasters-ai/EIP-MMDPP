@@ -4,34 +4,34 @@
     {
       "id": 10,
       "subject": "Task 0: norm() + LogicalIdentity in-memory normalization",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Shared norm() + normalized identity key so FAN SONG/Fan Song are the same LogicalIdentity (merge in memory), while raw values still drive the display name.\n\n**Files:** Modify app/services/extraction_merge.py; Test tests/services/test_identity_norm.py (create)\n\n**Acceptance Criteria:** norm trims/casefolds/collapses; case-variant LogicalIdentity == and hash-equal; identity_values_dict/identity_tuple stay RAW.\n\n**Verify:** python3 -m pytest tests/services/test_identity_norm.py -v\n\n```json:metadata\n{\"files\": [\"app/services/extraction_merge.py\", \"tests/services/test_identity_norm.py\"], \"verifyCommand\": \"python3 -m pytest tests/services/test_identity_norm.py -v\", \"acceptanceCriteria\": [\"norm trims/casefolds/collapses\", \"case-variant LogicalIdentity == and hash-equal\", \"identity values stay raw for display\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 11,
       "subject": "Task 1: DB write paths derive+match normalized _key",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [10],
       "description": "**Goal:** Every DB node-write path and relationship endpoint resolves on normalized <field>_key.\n\n**Files:** Modify app/services/arcadedb_graph.py (_build_where, _build_upsert_node_script, _upsert_node_impl_sync, async); Modify app/workers/pipeline.py (only if needed); Test tests/services/test_arcadedb_upsert_key.py (create)\n\n**Acceptance Criteria:** shared _key derivation used by all node paths + endpoints; WHERE on <field>_key; display first-seen; relationship endpoints match on _key.\n\n**Verify:** python3 -m pytest tests/services/test_arcadedb_upsert_key.py -v\n\n```json:metadata\n{\"files\": [\"app/services/arcadedb_graph.py\", \"app/workers/pipeline.py\", \"tests/services/test_arcadedb_upsert_key.py\"], \"verifyCommand\": \"python3 -m pytest tests/services/test_arcadedb_upsert_key.py -v\", \"acceptanceCriteria\": [\"shared _key derivation used by all node paths + endpoints\", \"WHERE on <field>_key; display first-seen\", \"relationship endpoints match on _key\"], \"modelTier\": \"complex\"}\n```"
     },
     {
       "id": 12,
       "subject": "Task 2: Schema _key property + unique index",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [11],
       "description": "**Goal:** Schema builder declares <field>_key STRING + UNIQUE index on the normalized key.\n\n**Files:** Modify app/services/arcadedb_schema.py (~:471); Test tests/services/test_schema_key_ddl.py (create)\n\n**Acceptance Criteria:** _key property DDL before index; UNIQUE index on _key fields (+ document_id for doc-scoped) + entity_type; components (identity_fields=[]) skipped.\n\n**Verify:** python3 -m pytest tests/services/test_schema_key_ddl.py -v\n\n```json:metadata\n{\"files\": [\"app/services/arcadedb_schema.py\", \"tests/services/test_schema_key_ddl.py\"], \"verifyCommand\": \"python3 -m pytest tests/services/test_schema_key_ddl.py -v\", \"acceptanceCriteria\": [\"_key property DDL before index\", \"UNIQUE index on _key fields\", \"components skipped\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 13,
       "subject": "Task 3: One-time migration (merge pairs → backfill → index)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [12],
       "description": "**USER-ORDERED GATE — NON-SKIPPABLE.** Destructive merge + graph-wide backfill on the live DB; close only after every acceptanceCriteria item is independently re-validated with captured output.\n\n**Goal:** Bring the existing graph to the new scheme without re-ingest: merge 2 case-collisions, backfill _key on all existing domain vertices, then create the unique index.\n\n**Files:** Create scripts/migrate_entity_key_dedup.py\n\n**Acceptance Criteria:** 2 case-pairs merged (zero edges lost, 2 vertices removed); no null _key on any indexed domain vertex; _key UNIQUE index created; 16 Guideline variants still 16.\n\n**Verify:** docker exec eip-mmdpp-api-1 python scripts/migrate_entity_key_dedup.py --dry-run (then live after user confirm) + Task 4 checks\n\n```json:metadata\n{\"files\": [\"scripts/migrate_entity_key_dedup.py\"], \"verifyCommand\": \"docker exec eip-mmdpp-api-1 python scripts/migrate_entity_key_dedup.py --dry-run\", \"acceptanceCriteria\": [\"2 case-pairs merged, zero edges lost\", \"no null _key on any indexed domain vertex\", \"_key unique index created\", \"16 Guideline variants still 16 vertices\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requiresUserSpecification\": false, \"gateScope\": \"migration\", \"modelTier\": \"complex\"}\n```"
     },
     {
       "id": 14,
       "subject": "Task 4: Verification gate (dedup works, variants preserved)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [13],
       "description": "**USER-ORDERED GATE — NON-SKIPPABLE.** Requested across two review rounds; close only after every acceptanceCriteria item is independently re-validated with captured output.\n\n**Goal:** Prove case-dedup works end to end, existing data is clean, distinct variants preserved.\n\n**Files:** Test tests/integration/test_entity_dedup.py\n\n**Acceptance Criteria:** group by normalized key → fan song=1, spoon rest=1; merged Fan Song keeps specs + all EXTRACTED_FROM; 16 Guideline variants stay 16; no null _key; upsert FAN SONG hits existing vertex + edges resolve.\n\n**Verify:** python3 -m pytest tests/integration/test_entity_dedup.py -v + captured graph queries\n\n```json:metadata\n{\"files\": [\"tests/integration/test_entity_dedup.py\"], \"verifyCommand\": \"python3 -m pytest tests/integration/test_entity_dedup.py -v\", \"acceptanceCriteria\": [\"fan song/spoon rest each 1 vertex by normalized key\", \"merged Fan Song keeps specs + all EXTRACTED_FROM\", \"16 Guideline variants stay 16\", \"no null _key\", \"upsert FAN SONG hits existing vertex + edges resolve\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"requiresUserSpecification\": false, \"gateScope\": \"verification\", \"requireEvidenceTokens\": [[\"before\", \"raw-name\", \"2 case-pairs\"], [\"after\", \"normalized-key\", \"1 per designator\"]], \"modelTier\": \"complex\"}\n```"
     }
