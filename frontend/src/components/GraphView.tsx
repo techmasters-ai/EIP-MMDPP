@@ -229,7 +229,7 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
         // event to passive and cytoscape can't preventDefault, so the
         // outer page scrolls instead of the graph zooming. Higher
         // values zoom faster per wheel notch (lower = smoother/slower).
-        wheelSensitivity={0.4}
+        wheelSensitivity={0.5}
         userZoomingEnabled={true}
         userPanningEnabled={true}
         boxSelectionEnabled={false}
