@@ -243,6 +243,16 @@ def _key_fields(identity_fields: dict) -> dict:
   layers, so the read side is intentionally deferred. Follow-up: normalize `resolve_root_entity`
   (and the full-text name path) against a `name_key`/normalized comparison. Track as a separate
   retrieval-layer change; decide with the user before implementing (touches retrieval behavior).
+- **A second raw-`name` resolver (write-side fallback).** `batch_create_entity_chunk_edges_sync`
+  (`app/services/arcadedb_graph.py:3197`) resolves the `EXTRACTED_FROM` source vertex via
+  `WHERE name = :name AND entity_type = …` (raw, un-normalized) — same class as the read-path
+  item above. Low severity: production takes the RID path (`source_rid` from the post-merge
+  `mention.rid`/`node.rid`, case-agnostic); the name path fires only when `source_rid is None` and
+  already logs a WARNING. Normalize it alongside the read/resolve follow-up.
+- **Hardening (optional):** add a defensive assertion in the schema builder for the hypothetical
+  case where a doc-scoped type lists `document_id` inside its own `identity_fields` — the `_key`
+  index would then drop document scoping while the write WHERE keeps it raw (divergent). No live
+  air_defense_v3 type does this today; the invariant is currently only comment-pinned.
 
 ## Rollout note
 
