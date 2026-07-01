@@ -194,9 +194,9 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
         // Setting wheelSensitivity explicitly registers a non-passive
         // wheel listener; without it modern browsers default the wheel
         // event to passive and cytoscape can't preventDefault, so the
-        // outer page scrolls instead of the graph zooming. Lower
-        // values mean smoother zoom steps.
-        wheelSensitivity={0.2}
+        // outer page scrolls instead of the graph zooming. Higher
+        // values zoom faster per wheel notch (lower = smoother/slower).
+        wheelSensitivity={0.6}
         userZoomingEnabled={true}
         userPanningEnabled={true}
         boxSelectionEnabled={false}

@@ -1496,48 +1496,83 @@ class ArcadeDBGraphStore:
     ) -> dict[str, Any]:
         """Return neighbourhood as a {nodes, edges} dict.
 
+        Nodes are the DEDUPLICATED k-hop neighbourhood of *node_id* (the root
+        included). Edges are EVERY edge whose *both* endpoints fall inside that
+        node set — not just the root's own edges — so neighbours render
+        connected to one another (e.g. chunk -> Document -> entity) instead of
+        as isolated leaves hanging off the root.
+
         *node_id* may be an ArcadeDB RID or UUID string.
         """
         rid = await self._resolve_rid(node_id)
         if not rid:
             return {"nodes": [], "edges": []}
 
-        # Get neighbor nodes
+        # 1. Collect neighbourhood nodes, deduplicated by @rid, root first.
         entities = await self.get_neighborhood(node_id, depth, rel_types)
+        root_rows = await self._client.query(
+            self._database, "sql", f"SELECT *, @rid AS node_id FROM {rid}"
+        )
+        nodes_by_id: dict[str, dict] = {}
+        for e in [_to_entity(r) for r in root_rows] + entities:
+            nid = str(e.node_id)
+            if nid and nid not in nodes_by_id:
+                nodes_by_id[nid] = {
+                    "id": nid,
+                    "name": e.name,
+                    "entity_type": e.entity_type,
+                    **e.properties,
+                }
+        node_ids = set(nodes_by_id.keys())
 
-        # Get edges — query outgoing + incoming edges from the root vertex
+        # 2. Fetch every edge touching any node in the set, then keep only the
+        #    INTERNAL edges (both endpoints in the set), deduplicated by @rid.
+        #    Batch the RID list to bound each query. Previously only the root's
+        #    own bothE() was returned, so neighbours appeared disconnected.
         if rel_types:
             edge_list = ", ".join(f"'{t}'" for t in rel_types)
             edge_traversal = f"bothE({edge_list})"
         else:
             edge_traversal = "bothE()"
 
-        edge_sql = f"SELECT *, @rid AS edge_rid FROM (SELECT expand({edge_traversal}) FROM {rid})"
-        edge_rows = await self._client.query(self._database, "sql", edge_sql)
+        rid_list = list(node_ids)
+        edges_by_id: dict[str, dict] = {}
+        batch = 400
+        for i in range(0, len(rid_list), batch):
+            in_clause = ", ".join(rid_list[i : i + batch])
+            edge_sql = (
+                f"SELECT *, @rid AS edge_rid "
+                f"FROM (SELECT expand({edge_traversal}) FROM [{in_clause}])"
+            )
+            try:
+                edge_rows = await self._client.query(self._database, "sql", edge_sql)
+            except Exception:
+                continue
+            for r in edge_rows:
+                out_rid = str(r.get("@out", r.get("out", "")))
+                in_rid = str(r.get("@in", r.get("in", "")))
+                if out_rid not in node_ids or in_rid not in node_ids:
+                    continue  # edge leaves the neighbourhood — skip
+                eid = str(r.get("edge_rid", ""))
+                if not eid or eid in edges_by_id:
+                    continue
+                raw_prov = r.get("provenance")
+                if isinstance(raw_prov, str):
+                    try:
+                        provenance = json.loads(raw_prov)
+                    except (ValueError, TypeError):
+                        provenance = None
+                else:
+                    provenance = raw_prov  # already a dict or None
+                edges_by_id[eid] = {
+                    "id": eid,
+                    "rel_type": str(r.get("@type", r.get("@class", ""))),
+                    "from": out_rid,
+                    "to": in_rid,
+                    "provenance": provenance,
+                }
 
-        nodes: list[dict] = [
-            {"id": e.node_id, "name": e.name, "entity_type": e.entity_type, **e.properties}
-            for e in entities
-        ]
-        edges: list[dict] = []
-        for r in edge_rows:
-            raw_prov = r.get("provenance")
-            if isinstance(raw_prov, str):
-                try:
-                    provenance = json.loads(raw_prov)
-                except (ValueError, TypeError):
-                    provenance = None
-            else:
-                provenance = raw_prov  # already a dict or None
-            edges.append({
-                "id": str(r.get("edge_rid", "")),
-                "rel_type": str(r.get("@type", r.get("@class", ""))),
-                "from": str(r.get("@out", r.get("out", ""))),
-                "to": str(r.get("@in", r.get("in", ""))),
-                "provenance": provenance,
-            })
-
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": list(nodes_by_id.values()), "edges": list(edges_by_id.values())}
 
     async def get_directed_traversal(
         self,
