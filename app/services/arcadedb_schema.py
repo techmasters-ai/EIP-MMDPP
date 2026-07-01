@@ -468,19 +468,60 @@ async def sync_schema_from_ontology(
     #   * Components (identity_fields=[]) have nothing indexable for UPSERT
     #     and are skipped — they don't go through upsert_nodes_batch_sync,
     #     they're embedded via the A0-1 walker.
+    #
+    # Case-insensitive identity (Task 2): the write layer (Task 1,
+    # ``app/services/arcadedb_graph.py::_key_fields``) now matches/persists a
+    # normalized ``<field>_key`` (= ``norm(value)``) alongside every raw
+    # identity field so case/whitespace variants (``FAN SONG`` vs
+    # ``Fan Song``) converge on one vertex. This block declares that
+    # ``<field>_key`` property (STRING, mirrors the Phase 1 CREATE PROPERTY
+    # idiom exactly) and a UNIQUE index over the normalized keys, so
+    # ArcadeDB UPSERT can dedup on ``<field>_key`` the same way it already
+    # dedups on the raw field below. The raw-field UNIQUE index is
+    # intentionally KEPT (other code may still read it; it's also a
+    # rollback fallback) — this is additive, not a replacement.
+    # ``document_id`` is never ``_key``-normalized (opaque UUID, not a
+    # case/whitespace-variant display string) — mirrors ``_key_fields``.
     upsert_ddl: list[str] = []
     for e in ontology.get("entity_types", []):
         id_fields: list[str] = list(e.get("identity_fields") or [])
         if not id_fields:
             continue  # component-class — no upsert path, no index needed
+        etype = _safe_type_name(e["name"])
         scope = e.get("identity_scope", "document")
+        doc_scoped = scope == "document" and "document_id" not in id_fields
+
+        # (a) CREATE PROPERTY for every normalized <field>_key, BEFORE any
+        # index DDL for this type — the key index below references these
+        # columns and ArcadeDB requires the property to exist first.
+        # ``document_id`` is skipped: mirrors ``_key_fields`` (Task 1), it's
+        # an opaque UUID, not a case/whitespace-variant display string.
+        key_fields = [f for f in id_fields if f != "document_id"]
+        for field in key_fields:
+            upsert_ddl.append(
+                f"CREATE PROPERTY {etype}.{field}_key IF NOT EXISTS STRING"
+            )
+
+        # Raw-field UNIQUE index (unchanged, kept for rollback fallback and
+        # other readers).
         fields = list(id_fields)
-        if scope == "document" and "document_id" not in fields:
+        if doc_scoped:
             fields.append("document_id")
         fields.append("entity_type")
         upsert_ddl.append(
-            f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} "
+            f"CREATE INDEX IF NOT EXISTS ON {etype} "
             f"({', '.join(fields)}) UNIQUE"
+        )
+
+        # (b) Normalized <field>_key UNIQUE index — what UPSERT dedups on
+        # under case-insensitive identity.
+        key_index_fields = [f"{f}_key" for f in key_fields]
+        if doc_scoped:
+            key_index_fields.append("document_id")
+        key_index_fields.append("entity_type")
+        upsert_ddl.append(
+            f"CREATE INDEX IF NOT EXISTS ON {etype} "
+            f"({', '.join(key_index_fields)}) UNIQUE"
         )
     await _run_ddl_batch(client, database, upsert_ddl, phase="upsert_indexes", report=report)
     report.indexes_created += len(upsert_ddl)
