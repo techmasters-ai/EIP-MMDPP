@@ -42,7 +42,7 @@ def test_section_response_default_field_groups_empty():
     from app.schemas.graph_store import GraphEntityResult
 
     resp = QueryProfileSectionResponse(
-        registry_id=None, profile_id="p", profile_label="P",
+        profile_id="p", profile_label="P",
         resolved_root=GraphEntityResult(name="X", entity_type="RADAR_SYSTEM"),
         total=0,
     )

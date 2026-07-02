@@ -213,7 +213,6 @@ class QueryProfileSearchRequest(APIModel):
 
 
 class QueryProfileSectionResponse(APIModel):
-    registry_id: Optional[uuid.UUID] = None
     profile_id: str
     profile_label: str
     resolved_root: GraphEntityResult
@@ -234,7 +233,6 @@ class QueryProfileDossierSection(APIModel):
 
 
 class QueryProfileDossierResponse(APIModel):
-    registry_id: Optional[uuid.UUID] = None
     profile_id: str
     profile_label: str
     resolved_root: GraphEntityResult

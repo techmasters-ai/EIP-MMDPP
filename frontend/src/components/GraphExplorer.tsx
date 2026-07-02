@@ -16,7 +16,7 @@ import {
 import { uniqueSorted } from "../utils/ontologyHelpers";
 import type cytoscape from "cytoscape";
 import { GraphView, toGraphElements } from "./GraphView";
-import { QueryProfilesPage } from "./QueryProfileRegistryPage";
+import { QueryProfilesPage } from "./QueryProfilesPage";
 
 const DEFAULT_ENTITY_TYPES = [
   "EQUIPMENT_SYSTEM",

@@ -919,7 +919,6 @@ async def execute_section_search(
             )
         total = sum(len(g.fields) for g in field_groups) + len(related_systems)
         return QueryProfileSectionResponse(
-            registry_id=None,
             profile_id=_p_key(profile),
             profile_label=_p_label(profile),
             resolved_root=resolved,
@@ -937,7 +936,6 @@ async def execute_section_search(
         )
 
     return QueryProfileSectionResponse(
-        registry_id=None,
         profile_id=_p_key(profile),
         profile_label=_p_label(profile),
         resolved_root=resolved,
@@ -1024,7 +1022,6 @@ async def execute_dossier_search(
         )
 
     return QueryProfileDossierResponse(
-        registry_id=None,
         profile_id=_p_key(profile),
         profile_label=_p_label(profile),
         resolved_root=resolved,

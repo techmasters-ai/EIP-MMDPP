@@ -683,7 +683,6 @@ export interface GraphProfileEntityResult {
 }
 
 export interface QueryProfileSectionResponse {
-  registry_id?: string | null;
   profile_id: string;
   profile_label: string;
   resolved_root: GraphProfileEntityResult;
@@ -704,7 +703,6 @@ export interface QueryProfileDossierSection {
 }
 
 export interface QueryProfileDossierResponse {
-  registry_id?: string | null;
   profile_id: string;
   profile_label: string;
   resolved_root: GraphProfileEntityResult;
@@ -720,11 +718,6 @@ export async function getOntology(): Promise<OntologyResponse> {
 export async function listQueryProfiles(enabledOnly = false): Promise<QueryProfileResponse[]> {
   const url = enabledOnly ? "/v1/query-profiles?enabled_only=true" : "/v1/query-profiles";
   return handleResponse<QueryProfileResponse[]>(await fetch(url));
-}
-
-export async function getQueryProfile(profileKey: string): Promise<QueryProfileResponse> {
-  const res = await fetch(`/v1/query-profiles/${encodeURIComponent(profileKey)}`);
-  return handleResponse<QueryProfileResponse>(res);
 }
 
 export async function createQueryProfile(body: QueryProfileCreate): Promise<QueryProfileResponse> {

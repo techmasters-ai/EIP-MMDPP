@@ -1,5 +1,4 @@
-"""Tests for the refactored load_ontology / load_registry_ontology split.
-Spec §7.3 + §4.6."""
+"""Tests for the refactored load_ontology loader. Spec §7.3 + §4.6."""
 import pytest
 from pathlib import Path
 
@@ -46,11 +45,3 @@ def test_load_ontology_no_longer_accepts_prefer_active():
     from app.services.ontology_templates import load_ontology
     with pytest.raises(TypeError):
         load_ontology(prefer_active=True)
-
-
-def test_load_registry_ontology_exists():
-    """load_registry_ontology is a separate function for version-pinned loads."""
-    from app.services.ontology_templates import load_registry_ontology
-    import inspect
-    sig = inspect.signature(load_registry_ontology)
-    assert "version_id" in sig.parameters

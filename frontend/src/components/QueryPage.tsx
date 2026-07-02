@@ -889,7 +889,6 @@ export function QueryPage() {
             mapGraphProfileItemToResult(item, {
               profile_id: res.profile_id,
               profile_label: res.profile_label,
-              registry_id: res.registry_id,
               resolved_root: res.resolved_root,
             }),
           );
