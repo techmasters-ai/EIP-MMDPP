@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  getActiveQueryProfiles,
+  getOntology,
   ingestGraphEntity,
   ingestGraphRelationship,
   queryGraph,
@@ -10,14 +10,13 @@ import {
   getCommunityReports,
   type IndexingSettings,
   type CommunityReport,
-  type QueryProfileDefinition,
-  type QueryProfileRegistry,
+  type OntologyResponse,
   type QueryResultItem,
 } from "../api/client";
-import { uniqueSorted, normalizeNamedList } from "../utils/ontologyHelpers";
+import { uniqueSorted } from "../utils/ontologyHelpers";
 import type cytoscape from "cytoscape";
 import { GraphView, toGraphElements } from "./GraphView";
-import { QueryProfileRegistryPage } from "./QueryProfileRegistryPage";
+import { QueryProfilesPage } from "./QueryProfileRegistryPage";
 
 const DEFAULT_ENTITY_TYPES = [
   "EQUIPMENT_SYSTEM",
@@ -68,87 +67,21 @@ const DEFAULT_REL_TYPES = [
   "HAS_SEEKER",
 ];
 
-interface ValidationRule {
-  source: string;
-  relationship: string;
-  target: string;
-}
-
-interface OntologyOptions {
-  registryName: string | null;
-  ontologyName: string | null;
+/** Build entity/relationship option lists from the live ontology, falling
+ * back to the hardcoded defaults when the ontology fetch is unavailable. */
+function buildOntologyOptions(ontology: OntologyResponse | null): {
   entityTypes: string[];
   relationshipTypes: string[];
-  validationMatrix: ValidationRule[];
-}
-
-
-function deriveEntityTypes(
-  registry: QueryProfileRegistry | null,
-  profiles: QueryProfileDefinition[],
-): string[] {
-  const ontologyTypes = normalizeNamedList(registry?.ontology_definition?.entity_types);
-  const profileTypes = profiles.flatMap((profile) => [
-    ...profile.root_entity_types,
-    ...profile.target_entity_types,
-  ]);
-  return uniqueSorted([...ontologyTypes, ...profileTypes, ...DEFAULT_ENTITY_TYPES]);
-}
-
-function deriveRelationshipTypes(
-  registry: QueryProfileRegistry | null,
-  profiles: QueryProfileDefinition[],
-): string[] {
-  const ontologyTypes = normalizeNamedList(registry?.ontology_definition?.relationship_types);
-  const profileTypes = profiles.flatMap((profile) =>
-    profile.traversals.flatMap((traversal) =>
-      traversal.steps.flatMap((step) => step.rel_types),
-    ),
-  );
-  return uniqueSorted([...ontologyTypes, ...profileTypes, ...DEFAULT_REL_TYPES]);
-}
-
-function deriveValidationMatrix(registry: QueryProfileRegistry | null): ValidationRule[] {
-  const raw = registry?.ontology_definition?.validation_matrix;
-  if (!Array.isArray(raw)) return [];
-
-  const normalized = raw.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
-    const record = item as Record<string, unknown>;
-    const source = record.source ?? record.source_type;
-    const relationship = record.relationship ?? record.rel_type;
-    const target = record.target ?? record.target_type;
-    if (
-      typeof source !== "string" ||
-      typeof relationship !== "string" ||
-      typeof target !== "string"
-    ) {
-      return [];
-    }
-    return [{
-      source: source.trim(),
-      relationship: relationship.trim(),
-      target: target.trim(),
-    }];
-  });
-
-  return normalized.sort((a, b) => {
-    const left = `${a.source}:${a.relationship}:${a.target}`;
-    const right = `${b.source}:${b.relationship}:${b.target}`;
-    return left.localeCompare(right);
-  });
-}
-
-function buildOntologyOptions(
-  registry: QueryProfileRegistry | null,
-  profiles: QueryProfileDefinition[],
-): OntologyOptions {
+} {
   return {
-    registryName: registry?.name ?? null,
-    ontologyName: (registry?.ontology_name as string | null | undefined) ?? null,
-    entityTypes: deriveEntityTypes(registry, profiles),
-    relationshipTypes: deriveRelationshipTypes(registry, profiles),
-    validationMatrix: deriveValidationMatrix(registry),
+    entityTypes: uniqueSorted([
+      ...(ontology?.entity_types ?? []).map((e) => e.name),
+      ...DEFAULT_ENTITY_TYPES,
+    ]),
+    relationshipTypes: uniqueSorted([
+      ...(ontology?.relationship_types ?? []).map((r) => r.name),
+      ...DEFAULT_REL_TYPES,
+    ]),
   };
 }
 
@@ -164,23 +97,18 @@ const TAB_LABELS: Record<Tab, string> = {
 
 export function GraphExplorer() {
   const [tab, setTab] = useState<Tab>("search");
-  const [ontologyOptions, setOntologyOptions] = useState<OntologyOptions>(() =>
-    buildOntologyOptions(null, []),
-  );
-
-  const refreshOntologyOptions = useCallback(() => {
-    getActiveQueryProfiles()
-      .then((payload) => {
-        setOntologyOptions(buildOntologyOptions(payload.registry, payload.exposed_profiles));
-      })
-      .catch(() => {
-        setOntologyOptions(buildOntologyOptions(null, []));
-      });
-  }, []);
+  const [ontology, setOntology] = useState<OntologyResponse | null>(null);
 
   useEffect(() => {
-    refreshOntologyOptions();
-  }, [refreshOntologyOptions]);
+    getOntology()
+      .then(setOntology)
+      .catch(() => setOntology(null));
+  }, []);
+
+  const { entityTypes, relationshipTypes } = useMemo(
+    () => buildOntologyOptions(ontology),
+    [ontology],
+  );
 
   return (
     <div>
@@ -198,15 +126,11 @@ export function GraphExplorer() {
 
       {tab === "search" && <GraphSearch />}
       {tab === "indexing" && <GlobalSearchIndexingPanel />}
-      {tab === "entity" && <EntityForm entityTypes={ontologyOptions.entityTypes} />}
+      {tab === "entity" && <EntityForm entityTypes={entityTypes} />}
       {tab === "relationship" && (
-        <RelationshipForm
-          entityTypes={ontologyOptions.entityTypes}
-          relationshipTypes={ontologyOptions.relationshipTypes}
-          validationMatrix={ontologyOptions.validationMatrix}
-        />
+        <RelationshipForm entityTypes={entityTypes} relationshipTypes={relationshipTypes} />
       )}
-      {tab === "profiles" && <QueryProfileRegistryPage onOntologyChanged={refreshOntologyOptions} />}
+      {tab === "profiles" && <QueryProfilesPage />}
     </div>
   );
 }
@@ -495,11 +419,9 @@ function EntityForm({ entityTypes }: { entityTypes: string[] }) {
 function RelationshipForm({
   entityTypes,
   relationshipTypes,
-  validationMatrix,
 }: {
   entityTypes: string[];
   relationshipTypes: string[];
-  validationMatrix: ValidationRule[];
 }) {
   const [fromEntity, setFromEntity] = useState("");
   const [fromType, setFromType] = useState(entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
@@ -519,21 +441,11 @@ function RelationshipForm({
     }
   }, [entityTypes, fromType, toType]);
 
-  const filteredRelationshipTypes = React.useMemo(() => {
-    if (validationMatrix.length === 0) {
-      return relationshipTypes;
-    }
-    const matches = validationMatrix
-      .filter((rule) => rule.source === fromType && rule.target === toType)
-      .map((rule) => rule.relationship);
-    return matches.length > 0 ? uniqueSorted(matches) : relationshipTypes;
-  }, [fromType, relationshipTypes, toType, validationMatrix]);
-
   useEffect(() => {
-    if (!filteredRelationshipTypes.includes(relType)) {
-      setRelType(filteredRelationshipTypes[0] ?? relationshipTypes[0] ?? DEFAULT_REL_TYPES[0]);
+    if (!relationshipTypes.includes(relType)) {
+      setRelType(relationshipTypes[0] ?? DEFAULT_REL_TYPES[0]);
     }
-  }, [filteredRelationshipTypes, relType, relationshipTypes]);
+  }, [relType, relationshipTypes]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -584,15 +496,8 @@ function RelationshipForm({
         <div className="field">
           <label>Relationship type</label>
           <select value={relType} onChange={(e) => setRelType(e.target.value)}>
-            {filteredRelationshipTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            {relationshipTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
-          {validationMatrix.length > 0 && (
-            <div className="text-xs text-muted" style={{ marginTop: "0.25rem" }}>
-              {filteredRelationshipTypes.length === relationshipTypes.length
-                ? "Showing all ontology relationship types"
-                : `Filtered by validation matrix for ${fromType} -> ${toType}`}
-            </div>
-          )}
         </div>
 
         <div className="field-row" style={{ gap: "1rem" }}>

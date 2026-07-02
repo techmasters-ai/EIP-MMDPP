@@ -1,25 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  activateQueryProfileRegistry,
-  createQueryProfileRegistry,
-  createRegistryQueryProfile,
-  deleteRegistryQueryProfile,
-  getDefaultQueryProfileTemplate,
-  listQueryProfileRegistries,
+  createQueryProfile,
+  deleteQueryProfile,
+  getOntology,
+  listQueryProfiles,
   listSources,
-  updateQueryProfileRegistry,
-  updateRegistryQueryProfile,
-  type QueryProfileDefinition,
-  type QueryProfileRegistry,
-  type QueryProfileRegistryTemplate,
+  updateQueryProfile,
+  type OntologyResponse,
+  type QueryProfileDefinitionBody,
+  type QueryProfileKind,
+  type QueryProfileResponse,
+  type QueryProfileTraversal,
   type QueryProfileStep,
   type Source,
 } from "../api/client";
-import { uniqueSorted, normalizeNamedList } from "../utils/ontologyHelpers";
-
-function prettyJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
-}
+import { uniqueSorted } from "../utils/ontologyHelpers";
 
 function slugify(value: string): string {
   return value
@@ -34,153 +29,95 @@ function readSelectedOptions(event: React.ChangeEvent<HTMLSelectElement>): strin
   return Array.from(event.target.selectedOptions).map((option) => option.value);
 }
 
-interface RegistryEditorState {
-  name: string;
-  description: string;
-  sourceId: string;
-  ontologyName: string;
-  ontologyVersion: string;
-  ontologyJson: string;
-  isActive: boolean;
-}
-
-interface ProfileDraftTraversal {
-  steps: QueryProfileStep[];
-}
-
 interface ProfileDraft {
-  id: string;
+  profileKey: string;
   label: string;
   description: string;
-  kind: "section" | "section_properties" | "dossier";
-  exposed: boolean;
+  kind: QueryProfileKind;
+  enabled: boolean;
+  sourceId: string; // "" == Global / unscoped (source_id null)
   rootEntityTypes: string[];
   targetEntityTypes: string[];
   sectionProfileIds: string[];
   profileSections: string[];
   includeAssociatedSystems: boolean;
-  traversals: ProfileDraftTraversal[];
+  traversals: QueryProfileTraversal[];
   placeholderQuery: string;
+}
+
+function blankTraversals(): QueryProfileTraversal[] {
+  return [{ steps: [{ direction: "out", rel_types: [], min_hops: 1, max_hops: 1 }] }];
 }
 
 function blankProfileDraft(): ProfileDraft {
   return {
-    id: "",
+    profileKey: "",
     label: "",
     description: "",
-    kind: "section",
-    exposed: true,
+    kind: "section_properties",
+    enabled: true,
+    sourceId: "",
     rootEntityTypes: [],
     targetEntityTypes: [],
     sectionProfileIds: [],
     profileSections: [],
     includeAssociatedSystems: false,
-    traversals: [
-      {
-        steps: [
-          {
-            direction: "out",
-            rel_types: [],
-            min_hops: 1,
-            max_hops: 1,
-          },
-        ],
-      },
-    ],
+    traversals: blankTraversals(),
     placeholderQuery: "",
   };
 }
 
-function editorStateFromTemplate(template: QueryProfileRegistryTemplate): RegistryEditorState {
+function draftFromProfile(profile: QueryProfileResponse): ProfileDraft {
+  const def = profile.definition ?? {};
+  const traversals = def.traversals ?? [];
   return {
-    name: template.name,
-    description: template.description ?? "",
-    sourceId: template.source_id ?? "",
-    ontologyName: template.ontology_name ?? "",
-    ontologyVersion: template.ontology_version ?? "",
-    ontologyJson: prettyJson(template.ontology_definition ?? {}),
-    isActive: template.is_active ?? false,
-  };
-}
-
-function editorStateFromRegistry(registry: QueryProfileRegistry): RegistryEditorState {
-  return {
-    name: registry.name,
-    description: registry.description ?? "",
-    sourceId: registry.source_id ?? "",
-    ontologyName: registry.ontology_name ?? "",
-    ontologyVersion: registry.ontology_version ?? "",
-    ontologyJson: prettyJson(registry.ontology_definition ?? {}),
-    isActive: registry.is_active,
-  };
-}
-
-function draftFromProfile(profile: QueryProfileDefinition): ProfileDraft {
-  return {
-    id: profile.id,
+    profileKey: profile.profile_key,
     label: profile.label,
     description: profile.description ?? "",
     kind: profile.kind,
-    exposed: profile.exposed,
+    enabled: profile.enabled,
+    sourceId: profile.source_id ?? "",
     rootEntityTypes: [...profile.root_entity_types],
-    targetEntityTypes: [...profile.target_entity_types],
-    sectionProfileIds: [...profile.section_profile_ids],
-    profileSections: [...(profile.profile_sections ?? [])],
-    includeAssociatedSystems: profile.include_associated_systems ?? false,
+    targetEntityTypes: [...(def.target_entity_types ?? [])],
+    sectionProfileIds: [...(def.section_profile_ids ?? [])],
+    profileSections: [...(def.profile_sections ?? [])],
+    includeAssociatedSystems: def.include_associated_systems ?? false,
     traversals:
-      profile.traversals.length > 0
-        ? profile.traversals.map((traversal) => ({
+      traversals.length > 0
+        ? traversals.map((traversal) => ({
             steps: traversal.steps.map((step) => ({ ...step, rel_types: [...step.rel_types] })),
           }))
-        : blankProfileDraft().traversals,
-    placeholderQuery: profile.placeholder_query ?? "",
+        : blankTraversals(),
+    placeholderQuery: def.placeholder_query ?? "",
   };
 }
 
-function profileFromDraft(draft: ProfileDraft): QueryProfileDefinition {
-  const id = draft.id.trim() || slugify(draft.label);
+function cleanTraversals(traversals: QueryProfileTraversal[]): QueryProfileTraversal[] {
+  return traversals
+    .map((traversal) => ({
+      steps: traversal.steps
+        .filter((step) => step.rel_types.length > 0)
+        .map((step) => ({
+          ...step,
+          rel_types: uniqueSorted(step.rel_types),
+          min_hops: Math.max(1, Math.min(step.min_hops, step.max_hops)),
+          max_hops: Math.max(step.min_hops, step.max_hops),
+        })),
+    }))
+    .filter((traversal) => traversal.steps.length > 0);
+}
+
+function definitionFromDraft(draft: ProfileDraft): QueryProfileDefinitionBody {
   return {
-    id,
-    label: draft.label.trim(),
-    description: draft.description.trim() || null,
-    kind: draft.kind,
-    exposed: draft.exposed,
-    root_entity_types: uniqueSorted(draft.rootEntityTypes),
     target_entity_types: draft.kind === "section" ? uniqueSorted(draft.targetEntityTypes) : [],
-    traversals:
-      draft.kind === "section"
-        ? draft.traversals
-            .map((traversal) => ({
-              steps: traversal.steps
-                .filter((step) => step.rel_types.length > 0)
-                .map((step) => ({
-                  ...step,
-                  rel_types: uniqueSorted(step.rel_types),
-                  min_hops: Math.max(1, Math.min(step.min_hops, step.max_hops)),
-                  max_hops: Math.max(step.min_hops, step.max_hops),
-                })),
-            }))
-            .filter((traversal) => traversal.steps.length > 0)
-        : [],
+    traversals: draft.kind === "section" ? cleanTraversals(draft.traversals) : [],
     section_profile_ids: draft.kind === "dossier" ? uniqueSorted(draft.sectionProfileIds) : [],
-    profile_sections:
-      draft.kind === "section_properties" ? uniqueSorted(draft.profileSections) : [],
+    profile_sections: draft.kind === "section_properties" ? uniqueSorted(draft.profileSections) : [],
     include_associated_systems:
       draft.kind === "section_properties" ? draft.includeAssociatedSystems : false,
     placeholder_query: draft.placeholderQuery.trim() || null,
   };
 }
-
-const EMPTY_TEMPLATE: QueryProfileRegistryTemplate = {
-  name: "",
-  description: "",
-  source_id: "",
-  ontology_name: "",
-  ontology_version: "",
-  ontology_definition: {},
-  profiles: [],
-  is_active: false,
-};
 
 function MultiSelectField(props: {
   label: string;
@@ -219,111 +156,113 @@ function MultiSelectField(props: {
   );
 }
 
-export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChanged?: () => void } = {}) {
-  const [registries, setRegistries] = useState<QueryProfileRegistry[]>([]);
+function OntologyPanel({ ontology }: { ontology: OntologyResponse | null }) {
+  if (!ontology) {
+    return (
+      <div className="alert alert-info">
+        Loading the live ontology…
+      </div>
+    );
+  }
+  return (
+    <section className="card card-body" style={{ marginBottom: "1rem" }}>
+      <div className="flex-center gap-sm" style={{ marginBottom: "0.5rem" }}>
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Ontology (read-only)</h2>
+        <span className="badge badge-info" style={{ marginLeft: "auto" }}>
+          v{ontology.version}
+        </span>
+      </div>
+      <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+        Served live from the air_defense_v3 source of truth. Query profiles below are authored directly
+        against these entity types, relationship types, and profile sections.
+      </p>
+
+      <div style={{ marginBottom: "0.75rem" }}>
+        <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+          Entity types ({ontology.entity_types.length})
+        </div>
+        <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
+          {ontology.entity_types.map((e) => (
+            <span key={e.name} className="badge badge-success" title={e.label}>
+              {e.name}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: "0.75rem" }}>
+        <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+          Relationship types ({ontology.relationship_types.length})
+        </div>
+        <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
+          {ontology.relationship_types.map((r) => (
+            <span key={r.name} className="badge badge-info">
+              {r.name}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+          Profile sections ({ontology.profile_sections.length})
+        </div>
+        <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
+          {ontology.profile_sections.map((s) => (
+            <span key={s} className="badge">
+              {s}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function QueryProfilesPage() {
+  const [ontology, setOntology] = useState<OntologyResponse | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
-  const [defaultTemplate, setDefaultTemplate] = useState<QueryProfileRegistryTemplate | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pageTab, setPageTab] = useState<"editor" | "registries">("editor");
-  const [editorTab, setEditorTab] = useState<"ontology" | "profiles">("ontology");
-  const [editor, setEditor] = useState<RegistryEditorState>(editorStateFromTemplate(EMPTY_TEMPLATE));
+  const [profiles, setProfiles] = useState<QueryProfileResponse[]>([]);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>(blankProfileDraft());
-  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [editingProfileKey, setEditingProfileKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [activatingId, setActivatingId] = useState<string | null>(null);
-  const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const selectedRegistry = useMemo(
-    () => registries.find((registry) => registry.id === selectedId) ?? null,
-    [registries, selectedId],
+  const entityTypeOptions = useMemo(
+    () => uniqueSorted((ontology?.entity_types ?? []).map((e) => e.name)),
+    [ontology],
   );
-
-  const activeOntologyReady = Boolean(
-    selectedRegistry?.is_active &&
-      selectedRegistry.ontology_definition &&
-      Object.keys(selectedRegistry.ontology_definition).length > 0,
+  const relationshipTypeOptions = useMemo(
+    () => uniqueSorted((ontology?.relationship_types ?? []).map((r) => r.name)),
+    [ontology],
   );
+  const profileSectionOptions = ontology?.profile_sections ?? [];
 
-  const ontologyEntityTypes = useMemo(
-    () => normalizeNamedList(selectedRegistry?.ontology_definition?.entity_types),
-    [selectedRegistry],
-  );
-
-  const ontologyRelationshipTypes = useMemo(
-    () => normalizeNamedList(selectedRegistry?.ontology_definition?.relationship_types),
-    [selectedRegistry],
-  );
-
-  const sectionProfiles = useMemo(
+  const sectionProfileKeys = useMemo(
     () =>
-      (selectedRegistry?.profiles ?? []).filter(
-        (profile) =>
-          profile.kind === "section" || profile.kind === "section_properties",
-      ),
-    [selectedRegistry],
+      profiles
+        .filter((p) => p.kind === "section" || p.kind === "section_properties")
+        .map((p) => p.profile_key),
+    [profiles],
   );
 
-  const starterProfiles = useMemo(() => {
-    const existingIds = new Set((selectedRegistry?.profiles ?? []).map((profile) => profile.id));
-    return (defaultTemplate?.profiles ?? []).filter((profile) => !existingIds.has(profile.id));
-  }, [defaultTemplate, selectedRegistry]);
-
-  const loadRegistryIntoEditor = (registry: QueryProfileRegistry) => {
-    setSelectedId(registry.id);
-    setPageTab("editor");
-    setEditorTab("ontology");
-    setEditor(editorStateFromRegistry(registry));
-    setProfileDraft(blankProfileDraft());
-    setEditingProfileId(null);
-    setSuccess(null);
-    setError(null);
-  };
-
-  const resetEditor = () => {
-    const template = defaultTemplate ?? EMPTY_TEMPLATE;
-    setSelectedId(null);
-    setPageTab("editor");
-    setEditorTab("ontology");
-    setEditor(editorStateFromTemplate(template));
-    setProfileDraft(blankProfileDraft());
-    setEditingProfileId(null);
-    setSuccess(null);
-    setError(null);
-  };
-
-  const loadData = async (preferredRegistryId?: string | null) => {
+  const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [registriesResult, sourcesResult, templateResult] = await Promise.all([
-        listQueryProfileRegistries(),
-        listSources().catch(() => []),
-        getDefaultQueryProfileTemplate(),
+      const [ontologyResult, sourcesResult, profilesResult] = await Promise.all([
+        getOntology(),
+        listSources().catch(() => [] as Source[]),
+        listQueryProfiles(),
       ]);
-      setRegistries(registriesResult);
+      setOntology(ontologyResult);
       setSources(sourcesResult);
-      setDefaultTemplate(templateResult);
-
-      const nextSelectedId = preferredRegistryId ?? selectedId;
-      const nextSelected =
-        (nextSelectedId && registriesResult.find((registry) => registry.id === nextSelectedId)) ||
-        registriesResult[0] ||
-        null;
-
-      if (nextSelected) {
-        loadRegistryIntoEditor(nextSelected);
-      } else {
-        setSelectedId(null);
-        setEditor(editorStateFromTemplate(templateResult));
-        setProfileDraft(blankProfileDraft());
-        setEditingProfileId(null);
-      }
+      setProfiles(profilesResult);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load query profile registries");
+      setError(err instanceof Error ? err.message : "Failed to load query profiles");
     } finally {
       setLoading(false);
     }
@@ -334,17 +273,28 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const parseOntologyDefinition = (): Record<string, unknown> | null => {
-    if (!editor.ontologyJson.trim()) {
-      return null;
-    }
-    return JSON.parse(editor.ontologyJson) as Record<string, unknown>;
+  const resetForm = () => {
+    setProfileDraft(blankProfileDraft());
+    setEditingProfileKey(null);
+    setError(null);
+    setSuccess(null);
   };
 
-  const handleSaveRegistry = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!editor.name.trim()) {
-      setError("Registry name is required");
+  const handleEditProfile = (profile: QueryProfileResponse) => {
+    setProfileDraft(draftFromProfile(profile));
+    setEditingProfileKey(profile.profile_key);
+    setSuccess(null);
+    setError(null);
+  };
+
+  const handleSaveProfile = async () => {
+    if (!profileDraft.label.trim()) {
+      setError("Profile label is required");
+      return;
+    }
+    const profileKey = editingProfileKey ?? (profileDraft.profileKey.trim() || slugify(profileDraft.label));
+    if (!profileKey) {
+      setError("Profile key is required");
       return;
     }
 
@@ -352,129 +302,64 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
     setError(null);
     setSuccess(null);
     try {
-      const ontologyDefinition = parseOntologyDefinition();
-      const payload = {
-        name: editor.name.trim(),
-        description: editor.description.trim() || undefined,
-        source_id: editor.sourceId || null,
-        ontology_name: editor.ontologyName.trim() || undefined,
-        ontology_version: editor.ontologyVersion.trim() || undefined,
-        ontology_definition: ontologyDefinition,
-        is_active: editor.isActive,
-      };
+      const definition = definitionFromDraft(profileDraft);
+      const rootEntityTypes = uniqueSorted(profileDraft.rootEntityTypes);
+      const sourceId = profileDraft.sourceId || null;
 
-      const saved = selectedId
-        ? await updateQueryProfileRegistry(selectedId, payload)
-        : await createQueryProfileRegistry({ ...payload, profiles: [] });
+      if (editingProfileKey) {
+        await updateQueryProfile(editingProfileKey, {
+          label: profileDraft.label.trim(),
+          description: profileDraft.description.trim() || null,
+          kind: profileDraft.kind,
+          root_entity_types: rootEntityTypes,
+          definition,
+          source_id: sourceId,
+          enabled: profileDraft.enabled,
+        });
+      } else {
+        await createQueryProfile({
+          profile_key: profileKey,
+          label: profileDraft.label.trim(),
+          description: profileDraft.description.trim() || null,
+          kind: profileDraft.kind,
+          root_entity_types: rootEntityTypes,
+          definition,
+          source_id: sourceId,
+          enabled: profileDraft.enabled,
+        });
+      }
 
-      await loadData(saved.id);
-      onOntologyChanged?.();
+      await loadData();
       setSuccess(
-        selectedId
-          ? `Updated registry "${saved.name}".`
-          : `Created registry "${saved.name}".`,
+        editingProfileKey
+          ? `Updated query profile "${profileDraft.label.trim()}".`
+          : `Created query profile "${profileDraft.label.trim()}".`,
       );
+      setProfileDraft(blankProfileDraft());
+      setEditingProfileKey(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save registry");
+      setError(err instanceof Error ? err.message : "Failed to save query profile");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleActivate = async (registryId: string) => {
-    setActivatingId(registryId);
+  const handleDeleteProfile = async (profileKey: string) => {
+    setDeletingKey(profileKey);
     setError(null);
     setSuccess(null);
     try {
-      const activated = await activateQueryProfileRegistry(registryId);
-      await loadData(activated.id);
-      onOntologyChanged?.();
-      setSuccess(`Activated registry "${activated.name}".`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to activate registry");
-    } finally {
-      setActivatingId(null);
-    }
-  };
-
-  const handleEditProfile = (profile: QueryProfileDefinition) => {
-    setProfileDraft(draftFromProfile(profile));
-    setEditingProfileId(profile.id);
-    setEditorTab("profiles");
-    setSuccess(null);
-    setError(null);
-  };
-
-  const handleLoadStarterProfile = (profile: QueryProfileDefinition) => {
-    setProfileDraft(draftFromProfile(profile));
-    setEditingProfileId(null);
-    setEditorTab("profiles");
-    setSuccess(null);
-    setError(null);
-  };
-
-  const handleSaveProfile = async () => {
-    if (!selectedRegistry) {
-      setError("Save and activate an ontology registry before creating query profiles");
-      return;
-    }
-    if (!activeOntologyReady) {
-      setError("Query profiles can only be created on an active registry with a saved ontology definition");
-      return;
-    }
-    if (!profileDraft.label.trim()) {
-      setError("Profile label is required");
-      return;
-    }
-
-    const profile = profileFromDraft(profileDraft);
-    if (!profile.id) {
-      setError("Profile id is required");
-      return;
-    }
-
-    setProfileSaving(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      const savedRegistry = editingProfileId
-        ? await updateRegistryQueryProfile(selectedRegistry.id, editingProfileId, profile)
-        : await createRegistryQueryProfile(selectedRegistry.id, profile);
-
-      await loadData(savedRegistry.id);
-      setEditorTab("profiles");
-      setProfileDraft(blankProfileDraft());
-      setEditingProfileId(null);
-      setSuccess(
-        editingProfileId
-          ? `Updated query profile "${profile.label}".`
-          : `Added query profile "${profile.label}".`,
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save query profile");
-    } finally {
-      setProfileSaving(false);
-    }
-  };
-
-  const handleDeleteProfile = async (profileId: string) => {
-    if (!selectedRegistry) return;
-    setDeletingProfileId(profileId);
-    setError(null);
-    setSuccess(null);
-    try {
-      const savedRegistry = await deleteRegistryQueryProfile(selectedRegistry.id, profileId);
-      await loadData(savedRegistry.id);
-      if (editingProfileId === profileId) {
+      await deleteQueryProfile(profileKey);
+      await loadData();
+      if (editingProfileKey === profileKey) {
         setProfileDraft(blankProfileDraft());
-        setEditingProfileId(null);
+        setEditingProfileKey(null);
       }
-      setEditorTab("profiles");
-      setSuccess(`Deleted query profile "${profileId}".`);
+      setSuccess(`Deleted query profile "${profileKey}".`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete query profile");
     } finally {
-      setDeletingProfileId(null);
+      setDeletingKey(null);
     }
   };
 
@@ -517,732 +402,432 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
     }));
   };
 
+  const sourceName = (sourceId?: string | null): string => {
+    if (!sourceId) return "Global";
+    return sources.find((source) => source.id === sourceId)?.name ?? "Scoped source";
+  };
+
   return (
     <div>
-      <div className="tabs" style={{ marginBottom: "1rem" }}>
-        {([
-          ["editor", "Ontology & Query Profiles"],
-          ["registries", "Registries"],
-        ] as const).map(([tabId, label]) => (
+      <OntologyPanel ontology={ontology} />
+
+      <section className="card card-body">
+        <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
+          <h2 style={{ margin: 0, fontSize: "1rem" }}>
+            {editingProfileKey ? `Edit Query Profile: ${editingProfileKey}` : "Create Query Profile"}
+          </h2>
           <button
-            key={tabId}
             type="button"
-            className={`tab-btn${pageTab === tabId ? " active" : ""}`}
-            onClick={() => setPageTab(tabId)}
+            className="btn btn-ghost btn-sm"
+            onClick={() => void loadData()}
+            disabled={loading}
+            style={{ marginLeft: "auto" }}
           >
-            {label}
+            {loading ? "Refreshing…" : "Refresh"}
           </button>
-        ))}
-      </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={resetForm}>
+            New Profile
+          </button>
+        </div>
 
-      {pageTab === "editor" && (
-        <section className="card card-body">
-          <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-            <h2 style={{ margin: 0, fontSize: "1rem" }}>
-              {selectedId ? "Edit Query Profile Registry" : "Create Query Profile Registry"}
-            </h2>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={resetEditor}
-              style={{ marginLeft: "auto" }}
-              disabled={!defaultTemplate}
-            >
-              Load Current Ontology Template
-            </button>
-          </div>
+        <p className="text-sm text-muted" style={{ marginTop: 0 }}>
+          Query profiles are deterministic exact-graph search modes. Each enabled profile appears as a query
+          mode on the Search Documents page.
+        </p>
 
-          <p className="text-sm text-muted" style={{ marginTop: 0 }}>
-            The ontology definition becomes the shared ontology source for ingest, graph extraction context,
-            and ontology-driven search helpers once its registry is active. Query profiles are deterministic search
-            endpoints layered on top of that ontology.
-          </p>
-
-          <form onSubmit={(event) => void handleSaveRegistry(event)}>
-            <div className="field-row" style={{ gap: "1rem" }}>
-              <div className="field" style={{ flex: 1 }}>
-                <label htmlFor="registry-name">Registry name</label>
-                <input
-                  id="registry-name"
-                  type="text"
-                  value={editor.name}
-                  onChange={(event) => setEditor((current) => ({ ...current, name: event.target.value }))}
-                  placeholder="e.g. Military Systems Ontology"
-                />
-              </div>
-              <div className="field" style={{ width: "180px" }}>
-                <label htmlFor="registry-source">Project source</label>
-                <select
-                  id="registry-source"
-                  value={editor.sourceId}
-                  onChange={(event) => setEditor((current) => ({ ...current, sourceId: event.target.value }))}
-                >
-                  <option value="">Global / Unscoped</option>
-                  {sources.map((source) => (
-                    <option key={source.id} value={source.id}>
-                      {source.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="field">
-              <label htmlFor="registry-description">Description</label>
-              <textarea
-                id="registry-description"
-                rows={2}
-                value={editor.description}
-                onChange={(event) => setEditor((current) => ({ ...current, description: event.target.value }))}
-                placeholder="What project or corpus is this registry for?"
-                style={{ width: "100%" }}
-              />
-            </div>
-
-            <div className="field-row" style={{ gap: "1rem" }}>
-              <div className="field" style={{ flex: 1 }}>
-                <label htmlFor="ontology-name">Ontology name</label>
-                <input
-                  id="ontology-name"
-                  type="text"
-                  value={editor.ontologyName}
-                  onChange={(event) => setEditor((current) => ({ ...current, ontologyName: event.target.value }))}
-                  placeholder="e.g. Military Systems + RF"
-                />
-              </div>
-              <div className="field" style={{ width: "180px" }}>
-                <label htmlFor="ontology-version">Ontology version</label>
-                <input
-                  id="ontology-version"
-                  type="text"
-                  value={editor.ontologyVersion}
-                  onChange={(event) => setEditor((current) => ({ ...current, ontologyVersion: event.target.value }))}
-                  placeholder="e.g. 2026.04"
-                />
-              </div>
-            </div>
-
-            <label className="flex-center gap-sm" style={{ marginBottom: "1rem" }}>
-              <input
-                type="checkbox"
-                checked={editor.isActive}
-                onChange={(event) => setEditor((current) => ({ ...current, isActive: event.target.checked }))}
-              />
-              <span className="text-sm">Make this the active registry after saving</span>
-            </label>
-
-            <div className="tabs" style={{ marginBottom: "1rem" }}>
-              <button
-                type="button"
-                className={`tab-btn${editorTab === "ontology" ? " active" : ""}`}
-                onClick={() => setEditorTab("ontology")}
-              >
-                Ontology Definition
-              </button>
-              <button
-                type="button"
-                className={`tab-btn${editorTab === "profiles" ? " active" : ""}`}
-                onClick={() => {
-                  if (activeOntologyReady) {
-                    setEditorTab("profiles");
+        <div className="field-row" style={{ gap: "1rem" }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label htmlFor="profile-label">Profile label</label>
+            <input
+              id="profile-label"
+              type="text"
+              value={profileDraft.label}
+              onChange={(event) =>
+                setProfileDraft((current) => {
+                  const nextLabel = event.target.value;
+                  const nextDraft = { ...current, label: nextLabel };
+                  if (!editingProfileKey && (!current.profileKey || current.profileKey === slugify(current.label))) {
+                    nextDraft.profileKey = slugify(nextLabel);
                   }
-                }}
-                disabled={!activeOntologyReady}
-                title={
-                  activeOntologyReady
-                    ? undefined
-                    : "Save and activate an ontology registry before building query profiles"
+                  return nextDraft;
+                })
+              }
+              placeholder="e.g. System RF Parameters"
+            />
+          </div>
+          <div className="field" style={{ width: "280px" }}>
+            <label htmlFor="profile-key">Profile key</label>
+            <input
+              id="profile-key"
+              type="text"
+              value={profileDraft.profileKey}
+              onChange={(event) =>
+                setProfileDraft((current) => ({ ...current, profileKey: slugify(event.target.value) }))
+              }
+              placeholder="e.g. system_rf_parameters"
+              disabled={Boolean(editingProfileKey)}
+            />
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="profile-description">Description</label>
+          <textarea
+            id="profile-description"
+            rows={2}
+            value={profileDraft.description}
+            onChange={(event) => setProfileDraft((current) => ({ ...current, description: event.target.value }))}
+            placeholder="What should this exact search mode return?"
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div className="field-row" style={{ gap: "1rem" }}>
+          <div className="field" style={{ width: "220px" }}>
+            <label htmlFor="profile-kind">Profile kind</label>
+            <select
+              id="profile-kind"
+              value={profileDraft.kind}
+              onChange={(event) => {
+                const next = event.target.value as QueryProfileKind;
+                setProfileDraft((current) => ({ ...current, kind: next }));
+              }}
+            >
+              <option value="section">Section (traversal)</option>
+              <option value="section_properties">Section properties (flat schema)</option>
+              <option value="dossier">Dossier</option>
+            </select>
+          </div>
+          <div className="field" style={{ width: "220px" }}>
+            <label htmlFor="profile-source">Project source</label>
+            <select
+              id="profile-source"
+              value={profileDraft.sourceId}
+              onChange={(event) => setProfileDraft((current) => ({ ...current, sourceId: event.target.value }))}
+            >
+              <option value="">Global (all sources)</option>
+              {sources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label htmlFor="profile-placeholder">Search placeholder</label>
+            <input
+              id="profile-placeholder"
+              type="text"
+              value={profileDraft.placeholderQuery}
+              onChange={(event) => setProfileDraft((current) => ({ ...current, placeholderQuery: event.target.value }))}
+              placeholder="e.g. SA-2"
+            />
+          </div>
+        </div>
+
+        <label className="flex-center gap-sm" style={{ marginBottom: "1rem" }}>
+          <input
+            type="checkbox"
+            checked={profileDraft.enabled}
+            onChange={(event) => setProfileDraft((current) => ({ ...current, enabled: event.target.checked }))}
+          />
+          <span className="text-sm">Enabled (expose this profile as a Search Documents query mode)</span>
+        </label>
+
+        <div className="field-row" style={{ gap: "1rem", alignItems: "stretch", flexWrap: "wrap" }}>
+          <MultiSelectField
+            id="profile-root-types"
+            label="Root entity types"
+            options={entityTypeOptions}
+            value={profileDraft.rootEntityTypes}
+            onChange={(value) => setProfileDraft((current) => ({ ...current, rootEntityTypes: value }))}
+            helperText={
+              profileDraft.kind === "section_properties"
+                ? "For section-properties profiles, restrict to RADAR_SYSTEM / MISSILE_SYSTEM."
+                : "Optional. Restricts which entity types can be resolved as the search root."
+            }
+          />
+
+          {profileDraft.kind === "section" && (
+            <MultiSelectField
+              id="profile-target-types"
+              label="Target entity types"
+              options={entityTypeOptions}
+              value={profileDraft.targetEntityTypes}
+              onChange={(value) => setProfileDraft((current) => ({ ...current, targetEntityTypes: value }))}
+              helperText="Optional. Restricts which entity types can be returned by the traversal."
+            />
+          )}
+          {profileDraft.kind === "section_properties" && (
+            <MultiSelectField
+              id="profile-sections"
+              label="Profile sections"
+              options={profileSectionOptions}
+              value={profileDraft.profileSections}
+              onChange={(value) => setProfileDraft((current) => ({ ...current, profileSections: value }))}
+              helperText="Which canonical-class section(s) this profile projects. Options come from the live ontology."
+            />
+          )}
+          {profileDraft.kind === "dossier" && (
+            <MultiSelectField
+              id="profile-section-ids"
+              label="Section profiles"
+              options={sectionProfileKeys}
+              value={profileDraft.sectionProfileIds}
+              onChange={(value) => setProfileDraft((current) => ({ ...current, sectionProfileIds: value }))}
+              helperText="Dossier profiles bundle existing section / section_properties profiles into one exact search mode."
+            />
+          )}
+        </div>
+
+        {profileDraft.kind === "section_properties" && (
+          <label className="flex-center gap-sm" style={{ marginTop: "0.75rem" }}>
+            <input
+              type="checkbox"
+              checked={profileDraft.includeAssociatedSystems}
+              onChange={(event) =>
+                setProfileDraft((current) => ({
+                  ...current,
+                  includeAssociatedSystems: event.target.checked,
+                }))
+              }
+            />
+            <span className="text-sm">
+              Include related systems via ASSOCIATED_WITH / CUES (used by System Components).
+            </span>
+          </label>
+        )}
+
+        {profileDraft.kind === "section" && (
+          <div style={{ marginTop: "1rem" }}>
+            <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
+              <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Traversal Paths</h4>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() =>
+                  setProfileDraft((current) => ({
+                    ...current,
+                    traversals: [
+                      ...current.traversals,
+                      { steps: [{ direction: "out", rel_types: [], min_hops: 1, max_hops: 1 }] },
+                    ],
+                  }))
                 }
+                style={{ marginLeft: "auto" }}
               >
-                Query Profiles
+                Add Traversal
               </button>
             </div>
 
-            {editorTab === "ontology" && (
-              <div className="field">
-                <label htmlFor="ontology-json">Ontology definition (JSON)</label>
-                <textarea
-                  id="ontology-json"
-                  rows={32}
-                  value={editor.ontologyJson}
-                  onChange={(event) => setEditor((current) => ({ ...current, ontologyJson: event.target.value }))}
-                  style={{ width: "100%", minHeight: "42rem", fontFamily: "monospace" }}
-                />
-                <div className="text-sm text-muted" style={{ marginTop: "0.5rem", marginBottom: "1rem" }}>
-                  Save and activate this registry before you create query profiles. The active ontology is what the
-                  query-profile builder, ingest path, graph extraction context, and ontology-weighted retrieval
-                  helpers will use.
-                </div>
-              </div>
-            )}
-
-            {editorTab === "profiles" && (
-              <div style={{ marginBottom: "1rem" }}>
-                {!activeOntologyReady || !selectedRegistry ? (
-                  <div className="alert alert-info">
-                    Save and activate an ontology registry first. Query profiles are only editable for the active
-                    ontology definition.
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-                      <h3 style={{ margin: 0, fontSize: "1rem" }}>
-                        {editingProfileId ? `Edit Query Profile: ${editingProfileId}` : "Add Query Profile"}
-                      </h3>
+            <div className="results">
+              {profileDraft.traversals.map((traversal, traversalIndex) => (
+                <div key={`traversal-${traversalIndex}`} className="result-card">
+                  <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
+                    <strong>Traversal {traversalIndex + 1}</strong>
+                    {profileDraft.traversals.length > 1 && (
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setProfileDraft(blankProfileDraft());
-                          setEditingProfileId(null);
-                        }}
+                        onClick={() => removeTraversal(traversalIndex)}
                         style={{ marginLeft: "auto" }}
                       >
-                        New Profile
+                        Remove Traversal
                       </button>
-                    </div>
-
-                    {starterProfiles.length > 0 && (
-                      <div className="card" style={{ padding: "1rem", marginBottom: "1rem" }}>
-                        <div style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Starter Profiles</div>
-                        <div className="text-sm text-muted" style={{ marginBottom: "0.75rem" }}>
-                          These are seeded from the repository’s current ontology and can be loaded into the form as
-                          starting points.
-                        </div>
-                        <div className="results">
-                          {starterProfiles.map((profile) => (
-                            <div key={profile.id} className="result-card">
-                              <div className="result-card-header">
-                                <strong>{profile.label}</strong>
-                                <span className={`badge ${profile.kind === "dossier" ? "badge-info" : "badge-success"}`}>
-                                  {profile.kind}
-                                </span>
-                              </div>
-                              {profile.description && (
-                                <p className="text-sm" style={{ margin: "0.5rem 0" }}>{profile.description}</p>
-                              )}
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => handleLoadStarterProfile(profile)}
-                              >
-                                Load Into Form
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
                     )}
+                  </div>
 
-                    <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
-                      Query profiles are deterministic search endpoints. Each saved profile appears as a query mode on
-                      the Search Documents page.
-                    </div>
-
-                    <div className="field-row" style={{ gap: "1rem" }}>
-                      <div className="field" style={{ flex: 1 }}>
-                        <label htmlFor="profile-label">Profile label</label>
-                        <input
-                          id="profile-label"
-                          type="text"
-                          value={profileDraft.label}
-                          onChange={(event) =>
-                            setProfileDraft((current) => {
-                              const nextLabel = event.target.value;
-                              const nextDraft = { ...current, label: nextLabel };
-                              if (!editingProfileId && (!current.id || current.id === slugify(current.label))) {
-                                nextDraft.id = slugify(nextLabel);
-                              }
-                              return nextDraft;
-                            })
-                          }
-                          placeholder="e.g. System RF Parameters"
-                        />
-                      </div>
-                      <div className="field" style={{ width: "280px" }}>
-                        <label htmlFor="profile-id">Profile id</label>
-                        <input
-                          id="profile-id"
-                          type="text"
-                          value={profileDraft.id}
-                          onChange={(event) => setProfileDraft((current) => ({ ...current, id: slugify(event.target.value) }))}
-                          placeholder="e.g. system_rf_parameters"
-                          disabled={Boolean(editingProfileId)}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="profile-description">Description</label>
-                      <textarea
-                        id="profile-description"
-                        rows={2}
-                        value={profileDraft.description}
-                        onChange={(event) => setProfileDraft((current) => ({ ...current, description: event.target.value }))}
-                        placeholder="What should this exact search mode return?"
-                        style={{ width: "100%" }}
-                      />
-                    </div>
-
-                    <div className="field-row" style={{ gap: "1rem" }}>
-                      <div className="field" style={{ width: "220px" }}>
-                        <label htmlFor="profile-kind">Profile kind</label>
-                        <select
-                          id="profile-kind"
-                          value={profileDraft.kind}
-                          onChange={(event) => {
-                            const next = event.target.value as
-                              | "section"
-                              | "section_properties"
-                              | "dossier";
-                            setProfileDraft((current) => ({
-                              ...current,
-                              kind: next,
-                              targetEntityTypes:
-                                next === "section" ? current.targetEntityTypes : [],
-                              sectionProfileIds:
-                                next === "dossier" ? current.sectionProfileIds : [],
-                              profileSections:
-                                next === "section_properties" ? current.profileSections : [],
-                              includeAssociatedSystems:
-                                next === "section_properties"
-                                  ? current.includeAssociatedSystems
-                                  : false,
-                            }));
-                          }}
-                        >
-                          <option value="section">Section (legacy traversal)</option>
-                          <option value="section_properties">Section properties (flat schema)</option>
-                          <option value="dossier">Dossier</option>
-                        </select>
-                      </div>
-                      <div className="field" style={{ flex: 1 }}>
-                        <label htmlFor="profile-placeholder">Search placeholder</label>
-                        <input
-                          id="profile-placeholder"
-                          type="text"
-                          value={profileDraft.placeholderQuery}
-                          onChange={(event) => setProfileDraft((current) => ({ ...current, placeholderQuery: event.target.value }))}
-                          placeholder="e.g. AN/MPQ-65"
-                        />
-                      </div>
-                    </div>
-
-                    <label className="flex-center gap-sm" style={{ marginBottom: "1rem" }}>
-                      <input
-                        type="checkbox"
-                        checked={profileDraft.exposed}
-                        onChange={(event) => setProfileDraft((current) => ({ ...current, exposed: event.target.checked }))}
-                      />
-                      <span className="text-sm">Expose this profile as a Search Documents query mode</span>
-                    </label>
-
-                    <div className="field-row" style={{ gap: "1rem", alignItems: "stretch", flexWrap: "wrap" }}>
-                      <MultiSelectField
-                        id="profile-root-types"
-                        label="Root entity types"
-                        options={ontologyEntityTypes}
-                        value={profileDraft.rootEntityTypes}
-                        onChange={(value) => setProfileDraft((current) => ({ ...current, rootEntityTypes: value }))}
-                        helperText="Optional. Restricts which entity types can be resolved as the search root."
-                      />
-
-                      {profileDraft.kind === "section" && (
-                        <MultiSelectField
-                          id="profile-target-types"
-                          label="Target entity types"
-                          options={ontologyEntityTypes}
-                          value={profileDraft.targetEntityTypes}
-                          onChange={(value) => setProfileDraft((current) => ({ ...current, targetEntityTypes: value }))}
-                          helperText="Optional. Restricts which entity types can be returned by the traversal."
-                        />
-                      )}
-                      {profileDraft.kind === "section_properties" && (
-                        <MultiSelectField
-                          id="profile-sections"
-                          label="Profile sections"
-                          options={["rf_parameters", "components", "performance"]}
-                          value={profileDraft.profileSections}
-                          onChange={(value) => setProfileDraft((current) => ({ ...current, profileSections: value }))}
-                          helperText="Which canonical-class section(s) this profile projects (e.g. rf_parameters, components, performance)."
-                        />
-                      )}
-                      {profileDraft.kind === "dossier" && (
-                        <MultiSelectField
-                          id="profile-section-ids"
-                          label="Section profiles"
-                          options={sectionProfiles.map((profile) => profile.id)}
-                          value={profileDraft.sectionProfileIds}
-                          onChange={(value) => setProfileDraft((current) => ({ ...current, sectionProfileIds: value }))}
-                          helperText="Dossier profiles bundle existing section / section_properties profiles into one exact search mode."
-                        />
-                      )}
-                    </div>
-
-                    {profileDraft.kind === "section_properties" && (
-                      <label className="flex-center gap-sm" style={{ marginTop: "0.75rem" }}>
-                        <input
-                          type="checkbox"
-                          checked={profileDraft.includeAssociatedSystems}
-                          onChange={(event) =>
-                            setProfileDraft((current) => ({
-                              ...current,
-                              includeAssociatedSystems: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span className="text-sm">
-                          Include related systems via ASSOCIATED_WITH / CUES (used by System Components).
-                        </span>
-                      </label>
-                    )}
-
-                    {profileDraft.kind === "section" && (
-                      <div style={{ marginTop: "1rem" }}>
-                        <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-                          <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Traversal Paths</h4>
+                  {traversal.steps.map((step, stepIndex) => (
+                    <div
+                      key={`step-${traversalIndex}-${stepIndex}`}
+                      className="card"
+                      style={{ padding: "1rem", marginBottom: "0.75rem" }}
+                    >
+                      <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
+                        <strong>Step {stepIndex + 1}</strong>
+                        {traversal.steps.length > 1 && (
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
-                            onClick={() =>
-                              setProfileDraft((current) => ({
-                                ...current,
-                                traversals: [
-                                  ...current.traversals,
-                                  {
-                                    steps: [
-                                      {
-                                        direction: "out",
-                                        rel_types: [],
-                                        min_hops: 1,
-                                        max_hops: 1,
-                                      },
-                                    ],
-                                  },
-                                ],
-                              }))
-                            }
+                            onClick={() => removeStep(traversalIndex, stepIndex)}
                             style={{ marginLeft: "auto" }}
                           >
-                            Add Traversal
+                            Remove Step
                           </button>
+                        )}
+                      </div>
+
+                      <div className="field-row" style={{ gap: "1rem", alignItems: "flex-end" }}>
+                        <div className="field" style={{ width: "160px" }}>
+                          <label>Direction</label>
+                          <select
+                            value={step.direction}
+                            onChange={(event) =>
+                              updateTraversalStep(traversalIndex, stepIndex, (current) => ({
+                                ...current,
+                                direction: event.target.value as "out" | "in",
+                              }))
+                            }
+                          >
+                            <option value="out">Outgoing</option>
+                            <option value="in">Incoming</option>
+                          </select>
                         </div>
-
-                        <div className="results">
-                          {profileDraft.traversals.map((traversal, traversalIndex) => (
-                            <div key={`traversal-${traversalIndex}`} className="result-card">
-                              <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-                                <strong>Traversal {traversalIndex + 1}</strong>
-                                {profileDraft.traversals.length > 1 && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm"
-                                    onClick={() => removeTraversal(traversalIndex)}
-                                    style={{ marginLeft: "auto" }}
-                                  >
-                                    Remove Traversal
-                                  </button>
-                                )}
-                              </div>
-
-                              {traversal.steps.map((step, stepIndex) => (
-                                <div
-                                  key={`step-${traversalIndex}-${stepIndex}`}
-                                  className="card"
-                                  style={{ padding: "1rem", marginBottom: "0.75rem" }}
-                                >
-                                  <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-                                    <strong>Step {stepIndex + 1}</strong>
-                                    {traversal.steps.length > 1 && (
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm"
-                                        onClick={() => removeStep(traversalIndex, stepIndex)}
-                                        style={{ marginLeft: "auto" }}
-                                      >
-                                        Remove Step
-                                      </button>
-                                    )}
-                                  </div>
-
-                                  <div className="field-row" style={{ gap: "1rem", alignItems: "flex-end" }}>
-                                    <div className="field" style={{ width: "160px" }}>
-                                      <label>Direction</label>
-                                      <select
-                                        value={step.direction}
-                                        onChange={(event) =>
-                                          updateTraversalStep(traversalIndex, stepIndex, (current) => ({
-                                            ...current,
-                                            direction: event.target.value as "out" | "in",
-                                          }))
-                                        }
-                                      >
-                                        <option value="out">Outgoing</option>
-                                        <option value="in">Incoming</option>
-                                      </select>
-                                    </div>
-                                    <div className="field" style={{ width: "120px" }}>
-                                      <label>Min hops</label>
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        max={4}
-                                        value={step.min_hops}
-                                        onChange={(event) =>
-                                          updateTraversalStep(traversalIndex, stepIndex, (current) => ({
-                                            ...current,
-                                            min_hops: Number(event.target.value) || 1,
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                    <div className="field" style={{ width: "120px" }}>
-                                      <label>Max hops</label>
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        max={4}
-                                        value={step.max_hops}
-                                        onChange={(event) =>
-                                          updateTraversalStep(traversalIndex, stepIndex, (current) => ({
-                                            ...current,
-                                            max_hops: Number(event.target.value) || 1,
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                  </div>
-
-                                  <MultiSelectField
-                                    id={`step-rel-types-${traversalIndex}-${stepIndex}`}
-                                    label="Relationship types"
-                                    options={ontologyRelationshipTypes}
-                                    value={step.rel_types}
-                                    onChange={(value) =>
-                                      updateTraversalStep(traversalIndex, stepIndex, (current) => ({
-                                        ...current,
-                                        rel_types: value,
-                                      }))
-                                    }
-                                    helperText="Select the relationship types this step is allowed to traverse."
-                                  />
-                                </div>
-                              ))}
-
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                onClick={() =>
-                                  setProfileDraft((current) => ({
-                                    ...current,
-                                    traversals: current.traversals.map((currentTraversal, index) => {
-                                      if (index !== traversalIndex) return currentTraversal;
-                                      return {
-                                        ...currentTraversal,
-                                        steps: [
-                                          ...currentTraversal.steps,
-                                          {
-                                            direction: "out",
-                                            rel_types: [],
-                                            min_hops: 1,
-                                            max_hops: 1,
-                                          },
-                                        ],
-                                      };
-                                    }),
-                                  }))
-                                }
-                              >
-                                Add Step
-                              </button>
-                            </div>
-                          ))}
+                        <div className="field" style={{ width: "120px" }}>
+                          <label>Min hops</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={4}
+                            value={step.min_hops}
+                            onChange={(event) =>
+                              updateTraversalStep(traversalIndex, stepIndex, (current) => ({
+                                ...current,
+                                min_hops: Number(event.target.value) || 1,
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="field" style={{ width: "120px" }}>
+                          <label>Max hops</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={4}
+                            value={step.max_hops}
+                            onChange={(event) =>
+                              updateTraversalStep(traversalIndex, stepIndex, (current) => ({
+                                ...current,
+                                max_hops: Number(event.target.value) || 1,
+                              }))
+                            }
+                          />
                         </div>
                       </div>
-                    )}
 
-                    <div className="flex-center gap-sm" style={{ marginTop: "1rem" }}>
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={profileSaving}
-                        onClick={() => void handleSaveProfile()}
-                      >
-                        {profileSaving
-                          ? "Saving..."
-                          : editingProfileId
-                            ? "Save Query Profile"
-                            : "Add Query Profile"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost"
-                        onClick={() => {
-                          setProfileDraft(blankProfileDraft());
-                          setEditingProfileId(null);
-                        }}
-                      >
-                        Clear Profile Form
-                      </button>
+                      <MultiSelectField
+                        id={`step-rel-types-${traversalIndex}-${stepIndex}`}
+                        label="Relationship types"
+                        options={relationshipTypeOptions}
+                        value={step.rel_types}
+                        onChange={(value) =>
+                          updateTraversalStep(traversalIndex, stepIndex, (current) => ({
+                            ...current,
+                            rel_types: value,
+                          }))
+                        }
+                        helperText="Select the relationship types this step is allowed to traverse."
+                      />
                     </div>
+                  ))}
 
-                    <div style={{ marginTop: "1.5rem" }}>
-                      <h4 style={{ marginBottom: "0.75rem" }}>Saved Profiles</h4>
-                      {(selectedRegistry.profiles ?? []).length === 0 ? (
-                        <div className="empty-state">
-                          <div className="empty-state-title">No query profiles yet</div>
-                          <div className="text-muted text-sm">
-                            Add section and dossier profiles one at a time. Exposed profiles will appear in Search
-                            Documents automatically.
-                          </div>
-                        </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() =>
+                      setProfileDraft((current) => ({
+                        ...current,
+                        traversals: current.traversals.map((currentTraversal, index) => {
+                          if (index !== traversalIndex) return currentTraversal;
+                          return {
+                            ...currentTraversal,
+                            steps: [
+                              ...currentTraversal.steps,
+                              { direction: "out", rel_types: [], min_hops: 1, max_hops: 1 },
+                            ],
+                          };
+                        }),
+                      }))
+                    }
+                  >
+                    Add Step
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex-center gap-sm" style={{ marginTop: "1rem" }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={saving}
+            onClick={() => void handleSaveProfile()}
+          >
+            {saving ? "Saving…" : editingProfileKey ? "Save Query Profile" : "Create Query Profile"}
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={resetForm}>
+            Clear Form
+          </button>
+        </div>
+
+        {error && <div className="alert alert-error mt-md">{error}</div>}
+        {success && <div className="alert alert-success mt-md">{success}</div>}
+
+        <div style={{ marginTop: "1.5rem" }}>
+          <h4 style={{ marginBottom: "0.75rem" }}>Saved Profiles ({profiles.length})</h4>
+          {profiles.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-title">No query profiles yet</div>
+              <div className="text-muted text-sm">
+                Create section, section-properties, and dossier profiles. Enabled profiles appear in Search
+                Documents automatically.
+              </div>
+            </div>
+          ) : (
+            <div className="results">
+              {profiles.map((profile) => (
+                <div key={profile.profile_key} className="result-card">
+                  <div className="result-card-header">
+                    <strong>{profile.label}</strong>
+                    <div className="flex-center gap-sm">
+                      <span className={`badge ${profile.kind === "dossier" ? "badge-info" : "badge-success"}`}>
+                        {profile.kind}
+                      </span>
+                      {profile.enabled ? (
+                        <span className="badge badge-success">Enabled</span>
                       ) : (
-                        <div className="results">
-                          {selectedRegistry.profiles.map((profile) => (
-                            <div key={profile.id} className="result-card">
-                              <div className="result-card-header">
-                                <strong>{profile.label}</strong>
-                                <div className="flex-center gap-sm">
-                                  <span className={`badge ${profile.kind === "dossier" ? "badge-info" : "badge-success"}`}>
-                                    {profile.kind}
-                                  </span>
-                                  {profile.exposed && <span className="badge badge-success">Exposed</span>}
-                                </div>
-                              </div>
-                              <div className="text-xs text-muted" style={{ marginBottom: "0.5rem" }}>
-                                {profile.id}
-                              </div>
-                              {profile.description && (
-                                <p className="text-sm" style={{ margin: "0.5rem 0" }}>{profile.description}</p>
-                              )}
-                              <div className="text-xs text-muted" style={{ marginBottom: "0.75rem" }}>
-                                {profile.kind === "section"
-                                  ? `${profile.traversals.length} traversal path(s)`
-                                  : profile.kind === "section_properties"
-                                    ? `Sections: ${profile.profile_sections.join(", ") || "(none)"}`
-                                    : `${profile.section_profile_ids.length} section profile reference(s)`}
-                              </div>
-                              <div className="flex-center gap-sm">
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-sm"
-                                  onClick={() => handleEditProfile(profile)}
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-sm"
-                                  onClick={() => void handleDeleteProfile(profile.id)}
-                                  disabled={deletingProfileId === profile.id}
-                                >
-                                  {deletingProfileId === profile.id ? "Deleting..." : "Delete"}
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                        <span className="badge">Disabled</span>
                       )}
                     </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            <div className="flex-center gap-sm">
-              <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? "Saving..." : selectedId ? "Save Registry" : "Create Registry"}
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={resetEditor}>
-                Clear Form
-              </button>
-            </div>
-          </form>
-
-          {error && <div className="alert alert-error mt-md">{error}</div>}
-          {success && <div className="alert alert-success mt-md">{success}</div>}
-        </section>
-      )}
-
-      {pageTab === "registries" && (
-        <section className="card card-body">
-          <div className="flex-center gap-sm" style={{ marginBottom: "0.75rem" }}>
-            <h2 style={{ margin: 0, fontSize: "1rem" }}>Registries</h2>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => void loadData(selectedId)}
-              disabled={loading}
-              style={{ marginLeft: "auto" }}
-            >
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-
-          <div className="flex-center gap-sm" style={{ marginBottom: "1rem" }}>
-            <button type="button" className="btn btn-primary" onClick={resetEditor}>
-              New Registry
-            </button>
-            <span className="text-sm text-muted">
-              Save and activate an ontology registry before you build query profiles for it.
-            </span>
-          </div>
-
-          <div className="results">
-            {registries.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-state-title">No registries yet</div>
-                <div className="text-muted text-sm">
-                  Create one to define the ontology and exact graph query modes for a project.
-                </div>
-              </div>
-            ) : (
-              registries.map((registry) => (
-                <div
-                  key={registry.id}
-                  className="result-card"
-                  style={{
-                    borderColor: selectedRegistry?.id === registry.id ? "var(--color-primary)" : undefined,
-                  }}
-                >
-                  <div className="result-card-header">
-                    <strong>{registry.name}</strong>
-                    {registry.is_active && <span className="badge badge-success">Active</span>}
                   </div>
-                  {registry.description && (
-                    <p className="text-sm" style={{ margin: "0.5rem 0" }}>{registry.description}</p>
-                  )}
                   <div className="text-xs text-muted" style={{ marginBottom: "0.5rem" }}>
-                    {registry.ontology_name || "Untitled ontology"}
-                    {registry.ontology_version ? ` · v${registry.ontology_version}` : ""}
-                    {registry.source_id ? " · linked to source" : ""}
-                    {registry.profiles.length > 0 ? ` · ${registry.profiles.length} profile(s)` : ""}
+                    {profile.profile_key} · {sourceName(profile.source_id)}
+                  </div>
+                  {profile.description && (
+                    <p className="text-sm" style={{ margin: "0.5rem 0" }}>{profile.description}</p>
+                  )}
+                  <div className="text-xs text-muted" style={{ marginBottom: "0.75rem" }}>
+                    {profile.kind === "section"
+                      ? `${(profile.definition.traversals ?? []).length} traversal path(s)`
+                      : profile.kind === "section_properties"
+                        ? `Sections: ${(profile.definition.profile_sections ?? []).join(", ") || "(none)"}`
+                        : `${(profile.definition.section_profile_ids ?? []).length} section profile reference(s)`}
                   </div>
                   <div className="flex-center gap-sm">
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      onClick={() => loadRegistryIntoEditor(registry)}
+                      onClick={() => handleEditProfile(profile)}
                     >
                       Edit
                     </button>
-                    {!registry.is_active && (
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        disabled={activatingId === registry.id}
-                        onClick={() => void handleActivate(registry.id)}
-                      >
-                        {activatingId === registry.id ? "Activating..." : "Activate"}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => void handleDeleteProfile(profile.profile_key)}
+                      disabled={deletingKey === profile.profile_key}
+                    >
+                      {deletingKey === profile.profile_key ? "Deleting…" : "Delete"}
+                    </button>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </section>
-      )}
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

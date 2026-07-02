@@ -527,19 +527,73 @@ export interface QueryProfileTraversal {
   steps: QueryProfileStep[];
 }
 
-export interface QueryProfileDefinition {
-  id: string;
+export type QueryProfileKind = "section" | "section_properties" | "dossier";
+
+/** The nested ``definition`` dict carried by a flat query profile row. */
+export interface QueryProfileDefinitionBody {
+  target_entity_types?: string[];
+  traversals?: QueryProfileTraversal[];
+  section_profile_ids?: string[];
+  profile_sections?: string[];
+  profile_subgroup?: string | null;
+  include_associated_systems?: boolean;
+  placeholder_query?: string | null;
+}
+
+/** A query profile row as returned by the flat CRUD + list endpoints. */
+export interface QueryProfileResponse {
+  id?: string | null;
+  profile_key: string;
   label: string;
   description?: string | null;
-  kind: "section" | "section_properties" | "dossier";
-  exposed: boolean;
+  kind: QueryProfileKind;
   root_entity_types: string[];
-  target_entity_types: string[];
-  traversals: QueryProfileTraversal[];
+  definition: QueryProfileDefinitionBody;
+  source_id?: string | null;
+  enabled: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** Create payload for POST /v1/query-profiles. */
+export interface QueryProfileCreate {
+  profile_key: string;
+  label: string;
+  description?: string | null;
+  kind: QueryProfileKind;
+  root_entity_types: string[];
+  definition: QueryProfileDefinitionBody;
+  source_id?: string | null;
+  enabled: boolean;
+}
+
+/** Partial update payload for PUT /v1/query-profiles/{profile_key}. Only
+ * fields present are applied; an explicit ``source_id: null`` clears to Global. */
+export interface QueryProfileUpdate {
+  label?: string;
+  description?: string | null;
+  kind?: QueryProfileKind;
+  root_entity_types?: string[];
+  definition?: QueryProfileDefinitionBody;
+  source_id?: string | null;
+  enabled?: boolean;
+}
+
+// Live ontology (GET /v1/ontology) — served from the air_defense_v3 SSoT.
+export interface OntologyEntityType {
+  name: string;
+  label: string;
+}
+
+export interface OntologyRelationshipType {
+  name: string;
+}
+
+export interface OntologyResponse {
+  version: string;
+  entity_types: OntologyEntityType[];
+  relationship_types: OntologyRelationshipType[];
   profile_sections: string[];
-  include_associated_systems: boolean;
-  section_profile_ids: string[];
-  placeholder_query?: string | null;
 }
 
 export interface QueryProfileFieldEvidence {
@@ -573,37 +627,6 @@ export interface QueryProfileFieldGroup {
   subgroup?: string | null;
   subgroup_label?: string | null;
   fields: QueryProfileFieldEntry[];
-}
-
-export interface QueryProfileRegistry {
-  id: string;
-  name: string;
-  description?: string | null;
-  source_id?: string | null;
-  ontology_name?: string | null;
-  ontology_version?: string | null;
-  ontology_definition?: Record<string, unknown> | null;
-  profiles: QueryProfileDefinition[];
-  is_active: boolean;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface QueryProfileRegistryTemplate {
-  name: string;
-  description?: string | null;
-  source_id?: string | null;
-  ontology_name?: string | null;
-  ontology_version?: string | null;
-  ontology_definition?: Record<string, unknown> | null;
-  profiles: QueryProfileDefinition[];
-  is_active: boolean;
-}
-
-export interface ActiveQueryProfilesResponse {
-  registry: QueryProfileRegistry | null;
-  exposed_profiles: QueryProfileDefinition[];
 }
 
 export interface GraphProfileEntityResult {
@@ -660,105 +683,55 @@ export interface QueryProfileDossierResponse {
   total?: number;
 }
 
-export async function listQueryProfileRegistries(): Promise<QueryProfileRegistry[]> {
-  const res = await fetch("/v1/query-profiles/registries");
-  return handleResponse<QueryProfileRegistry[]>(res);
+export async function getOntology(): Promise<OntologyResponse> {
+  return handleResponse<OntologyResponse>(await fetch("/v1/ontology"));
 }
 
-export async function createQueryProfileRegistry(params: {
-  name: string;
-  description?: string;
-  source_id?: string | null;
-  ontology_name?: string;
-  ontology_version?: string;
-  ontology_definition?: Record<string, unknown> | null;
-  profiles: QueryProfileDefinition[];
-  is_active?: boolean;
-}): Promise<QueryProfileRegistry> {
-  const res = await fetch("/v1/query-profiles/registries", {
+export async function listQueryProfiles(enabledOnly = false): Promise<QueryProfileResponse[]> {
+  const url = enabledOnly ? "/v1/query-profiles?enabled_only=true" : "/v1/query-profiles";
+  return handleResponse<QueryProfileResponse[]>(await fetch(url));
+}
+
+export async function getQueryProfile(profileKey: string): Promise<QueryProfileResponse> {
+  const res = await fetch(`/v1/query-profiles/${encodeURIComponent(profileKey)}`);
+  return handleResponse<QueryProfileResponse>(res);
+}
+
+export async function createQueryProfile(body: QueryProfileCreate): Promise<QueryProfileResponse> {
+  const res = await fetch("/v1/query-profiles", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(body),
   });
-  return handleResponse<QueryProfileRegistry>(res);
+  return handleResponse<QueryProfileResponse>(res);
 }
 
-export async function updateQueryProfileRegistry(
-  registryId: string,
-  params: {
-    name?: string;
-    description?: string;
-    source_id?: string | null;
-    ontology_name?: string;
-    ontology_version?: string;
-    ontology_definition?: Record<string, unknown> | null;
-    profiles?: QueryProfileDefinition[];
-    is_active?: boolean;
-  },
-): Promise<QueryProfileRegistry> {
-  const res = await fetch(`/v1/query-profiles/registries/${registryId}`, {
+export async function updateQueryProfile(
+  profileKey: string,
+  body: QueryProfileUpdate,
+): Promise<QueryProfileResponse> {
+  const res = await fetch(`/v1/query-profiles/${encodeURIComponent(profileKey)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(body),
   });
-  return handleResponse<QueryProfileRegistry>(res);
+  return handleResponse<QueryProfileResponse>(res);
 }
 
-export async function activateQueryProfileRegistry(
-  registryId: string,
-): Promise<QueryProfileRegistry> {
-  const res = await fetch(`/v1/query-profiles/registries/${registryId}/activate`, {
-    method: "POST",
-  });
-  return handleResponse<QueryProfileRegistry>(res);
-}
-
-export async function createRegistryQueryProfile(
-  registryId: string,
-  profile: QueryProfileDefinition,
-): Promise<QueryProfileRegistry> {
-  const res = await fetch(`/v1/query-profiles/registries/${registryId}/profiles`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(profile),
-  });
-  return handleResponse<QueryProfileRegistry>(res);
-}
-
-export async function updateRegistryQueryProfile(
-  registryId: string,
-  profileId: string,
-  profile: QueryProfileDefinition,
-): Promise<QueryProfileRegistry> {
-  const res = await fetch(
-    `/v1/query-profiles/registries/${registryId}/profiles/${profileId}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(profile),
-    },
-  );
-  return handleResponse<QueryProfileRegistry>(res);
-}
-
-export async function deleteRegistryQueryProfile(
-  registryId: string,
-  profileId: string,
-): Promise<QueryProfileRegistry> {
-  const res = await fetch(`/v1/query-profiles/registries/${registryId}/profiles/${profileId}`, {
+export async function deleteQueryProfile(profileKey: string): Promise<void> {
+  const res = await fetch(`/v1/query-profiles/${encodeURIComponent(profileKey)}`, {
     method: "DELETE",
   });
-  return handleResponse<QueryProfileRegistry>(res);
-}
-
-export async function getActiveQueryProfiles(): Promise<ActiveQueryProfilesResponse> {
-  const res = await fetch("/v1/query-profiles");
-  return handleResponse<ActiveQueryProfilesResponse>(res);
-}
-
-export async function getDefaultQueryProfileTemplate(): Promise<QueryProfileRegistryTemplate> {
-  const res = await fetch("/v1/query-profiles/default-template");
-  return handleResponse<QueryProfileRegistryTemplate>(res);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      // ignore parse error
+    }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
 }
 
 export async function searchQueryProfileSection(params: {
