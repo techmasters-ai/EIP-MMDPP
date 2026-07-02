@@ -394,3 +394,63 @@ def test_project_field_groups_handles_missing_field_evidence():
     antenna = next(g for g in groups if g.subgroup == "antenna")
     gain = next(f for f in antenna.fields if f.name == "gain_dbi")
     assert gain.evidence == []
+
+
+def test_project_field_groups_dossier_catchall_spans_all_sections():
+    """The reserved ``"dossier"`` section is a catch-all: it projects EVERY
+    field carrying any ``profile_sections`` tag, across all sections, still
+    grouped by ``profile_subgroup``, and each field appears exactly ONCE even
+    when it carries multiple in-scope section tags."""
+    from ontology_bundles.air_defense_v3.entities import MissileSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    # Values spanning distinct sections:
+    #   nomenclature   -> ['identification']              (single-tag)
+    #   system_status  -> ['governance']                  (single-tag)
+    #   platform       -> ['deployment']                  (single-tag)
+    #   emitter_function -> ['performance']               (single-tag)
+    #   body_length_m  -> ['components', 'performance']   (multi-tag)
+    #   max_speed_mps  -> ['performance', 'engagement_envelope'] (multi-tag)
+    instance_data = {
+        "system_name": "SA-2",
+        "nomenclature": "SA-2 Guideline",
+        "system_status": "operational",
+        "platform": "towed launcher",
+        "emitter_function": "surface-to-air",
+        "body_length_m": 10.6,
+        "max_speed_mps": 1100.0,
+        "min_intercept_km": None,  # None values are still skipped in dossier
+    }
+
+    groups = _project_field_groups(MissileSystemEntity, instance_data, "dossier")
+
+    # Every non-None field with a profile tag is projected, spanning
+    # identification / governance / deployment / performance / components /
+    # engagement_envelope sections.
+    all_names = [f.name for g in groups for f in g.fields]
+    for expected in (
+        "nomenclature",
+        "system_status",
+        "platform",
+        "emitter_function",
+        "body_length_m",
+        "max_speed_mps",
+    ):
+        assert expected in all_names, f"{expected} missing from dossier projection"
+
+    # None-valued field is dropped just like in a single-section projection.
+    assert "min_intercept_km" not in all_names
+
+    # Grouped by profile_subgroup — the multiple distinct subgroups are present.
+    subgroups = {g.subgroup for g in groups}
+    for expected_sub in ("designators", "lifecycle", "deployment", "airframe", "kinematics"):
+        assert expected_sub in subgroups, f"subgroup {expected_sub} missing"
+
+    # NO duplicates: a field tagged with two in-scope sections (e.g.
+    # max_speed_mps is performance + engagement_envelope; body_length_m is
+    # components + performance) appears exactly once across all groups.
+    assert len(all_names) == len(set(all_names)), (
+        f"duplicate field(s) in dossier projection: {all_names}"
+    )
+    assert all_names.count("max_speed_mps") == 1
+    assert all_names.count("body_length_m") == 1
