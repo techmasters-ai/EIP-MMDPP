@@ -1,4 +1,10 @@
-"""Schemas for ontology-backed query profile registries and exact graph search."""
+"""Schemas for standalone ontology-backed query profiles and exact graph search.
+
+Profiles are first-class ``governance.query_profiles`` rows (no registry
+layer); ``QueryProfileCreate``/``QueryProfileUpdate``/``QueryProfileResponse``
+are the flat CRUD payloads. ``QueryProfileDefinition`` remains the canonical
+shape validator (``validate_shape`` + the RADAR/MISSILE root frozenset) used to
+enforce profile well-formedness on the write path."""
 
 import uuid
 from datetime import datetime

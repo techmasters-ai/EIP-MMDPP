@@ -31,7 +31,6 @@ pytestmark = pytest.mark.integration
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 _PLACEHOLDER_USER = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
-_SVC = "app.services.query_profiles"
 _API = "app.api.v1.query_profiles"
 
 
@@ -169,12 +168,19 @@ async def test_list_profiles_enabled_only_forwarded(api):
 # ---------------------------------------------------------------------------
 
 
+_VALID_SECTION_PROPERTIES = {
+    "kind": "section_properties",
+    "root_entity_types": ["RADAR_SYSTEM"],
+    "definition": {"profile_sections": ["rf_parameters"]},
+}
+
+
 @pytest.mark.asyncio
 async def test_create_profile_201(api):
     client, mock_db = api
     row = _make_profile_row(profile_key="new_profile", label="New Profile")
     create_mock = AsyncMock(return_value=row)
-    with patch(f"{_SVC}.get_profile", new=AsyncMock(return_value=None)), patch(
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=None)), patch(
         f"{_API}.create_profile", new=create_mock
     ):
         resp = await client.post(
@@ -182,9 +188,7 @@ async def test_create_profile_201(api):
             json={
                 "profile_key": "new_profile",
                 "label": "New Profile",
-                "kind": "section_properties",
-                "root_entity_types": ["RADAR_SYSTEM"],
-                "definition": {"profile_sections": ["rf_parameters"]},
+                **_VALID_SECTION_PROPERTIES,
                 "source_id": None,
                 "enabled": True,
             },
@@ -205,18 +209,150 @@ async def test_create_profile_201(api):
 async def test_create_profile_duplicate_409(api):
     client, _ = api
     existing = _make_profile_row(profile_key="dupe")
-    with patch(f"{_SVC}.get_profile", new=AsyncMock(return_value=existing)):
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=existing)):
         resp = await client.post(
             "/v1/query-profiles",
-            json={
-                "profile_key": "dupe",
-                "label": "Dupe",
-                "kind": "section",
-                "definition": {"traversals": []},
-            },
+            json={"profile_key": "dupe", "label": "Dupe", **_VALID_SECTION_PROPERTIES},
         )
     assert resp.status_code == 409
     assert "already exists" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_profile_integrity_error_maps_409(api):
+    """A TOCTOU race that slips past the pre-check and hits the unique
+    ``profile_key`` constraint surfaces as 409, not an unhandled 500."""
+    from sqlalchemy.exc import IntegrityError
+
+    client, _ = api
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=None)), patch(
+        f"{_API}.create_profile",
+        new=AsyncMock(side_effect=IntegrityError("insert", {}, Exception("dup"))),
+    ):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={"profile_key": "racy", "label": "Racy", **_VALID_SECTION_PROPERTIES},
+        )
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_valid_dossier_201(api):
+    """A dossier whose section_profile_ids all resolve is created."""
+    client, _ = api
+    row = _make_profile_row(profile_key="dossier_ok", kind="dossier")
+
+    async def _lookup(_db, key):
+        # referenced section exists; the dossier's own key does not (not a dup)
+        return _make_profile_row(profile_key=key) if key == "system_components" else None
+
+    with patch(f"{_API}.get_profile", new=AsyncMock(side_effect=_lookup)), patch(
+        f"{_API}.create_profile", new=AsyncMock(return_value=row)
+    ):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "dossier_ok",
+                "label": "Dossier OK",
+                "kind": "dossier",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"section_profile_ids": ["system_components"]},
+            },
+        )
+    assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Write-path shape validation → 422
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_section_without_traversals_422(api):
+    """kind=section with no traversals violates validate_shape."""
+    client, _ = api
+    resp = await client.post(
+        "/v1/query-profiles",
+        json={
+            "profile_key": "bad_section",
+            "label": "Bad Section",
+            "kind": "section",
+            "definition": {"traversals": []},
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_section_properties_empty_sections_422(api):
+    """section_properties with empty profile_sections violates validate_shape."""
+    client, _ = api
+    resp = await client.post(
+        "/v1/query-profiles",
+        json={
+            "profile_key": "bad_sp",
+            "label": "Bad SP",
+            "kind": "section_properties",
+            "root_entity_types": ["RADAR_SYSTEM"],
+            "definition": {"profile_sections": []},
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_section_properties_noncanonical_root_422(api):
+    """section_properties root_entity_types must be RADAR/MISSILE only."""
+    client, _ = api
+    resp = await client.post(
+        "/v1/query-profiles",
+        json={
+            "profile_key": "bad_root",
+            "label": "Bad Root",
+            "kind": "section_properties",
+            "root_entity_types": ["FOO_SYSTEM"],
+            "definition": {"profile_sections": ["rf_parameters"]},
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_dossier_without_refs_422(api):
+    """kind=dossier with no section_profile_ids violates validate_shape."""
+    client, _ = api
+    resp = await client.post(
+        "/v1/query-profiles",
+        json={
+            "profile_key": "bad_dossier",
+            "label": "Bad Dossier",
+            "kind": "dossier",
+            "root_entity_types": ["RADAR_SYSTEM"],
+            "definition": {"section_profile_ids": []},
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_dossier_nonexistent_ref_422(api):
+    """A dossier referencing a profile_key that doesn't exist is rejected."""
+    client, _ = api
+    # get_profile → None for every lookup: the referenced section is missing.
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=None)):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "dossier_bad_ref",
+                "label": "Dossier Bad Ref",
+                "kind": "dossier",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"section_profile_ids": ["ghost_section"]},
+            },
+        )
+    assert resp.status_code == 422
+    assert "ghost_section" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +391,16 @@ async def test_get_profile_not_found_404(api):
 @pytest.mark.asyncio
 async def test_update_profile_partial(api):
     client, _ = api
-    row = _make_profile_row(profile_key="system_components", enabled=False, description="updated")
-    update_mock = AsyncMock(return_value=row)
-    with patch(f"{_API}.update_profile", new=update_mock):
+    # existing row is a valid section_properties profile, so the merged shape
+    # (existing + delta) stays valid.
+    existing = _make_profile_row(profile_key="system_components")
+    updated = _make_profile_row(
+        profile_key="system_components", enabled=False, description="updated"
+    )
+    update_mock = AsyncMock(return_value=updated)
+    with patch(
+        f"{_API}.get_required_profile", new=AsyncMock(return_value=existing)
+    ), patch(f"{_API}.update_profile", new=update_mock):
         resp = await client.put(
             "/v1/query-profiles/system_components",
             json={"enabled": False, "description": "updated"},
@@ -276,13 +419,37 @@ async def test_update_profile_not_found_404(api):
 
     client, _ = api
     with patch(
-        f"{_API}.update_profile",
+        f"{_API}.get_required_profile",
         new=AsyncMock(side_effect=QueryProfileNotFoundError("nope")),
     ):
         resp = await client.put(
             "/v1/query-profiles/missing", json={"label": "x"}
         )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_profile_makes_invalid_shape_422(api):
+    """A partial update that would invalidate the MERGED profile is rejected:
+    flip an existing section_properties profile to kind=section (which then has
+    no traversals) → validate_shape fails."""
+    client, _ = api
+    existing = _make_profile_row(
+        profile_key="system_components",
+        kind="section_properties",
+        definition={"profile_sections": ["components"]},
+    )
+    update_mock = AsyncMock()
+    with patch(
+        f"{_API}.get_required_profile", new=AsyncMock(return_value=existing)
+    ), patch(f"{_API}.update_profile", new=update_mock):
+        resp = await client.put(
+            "/v1/query-profiles/system_components",
+            json={"kind": "section"},
+        )
+    assert resp.status_code == 422
+    # The service update was never reached — validation short-circuited.
+    update_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
