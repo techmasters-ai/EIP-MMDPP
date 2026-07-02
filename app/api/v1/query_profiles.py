@@ -1,100 +1,44 @@
-"""CRUD and search endpoints for ontology-backed query profile registries."""
+"""CRUD and search endpoints for standalone ontology-backed query profiles.
+
+Query profiles are first-class ``governance.query_profiles`` rows keyed by the
+stable string ``profile_key`` (the old ``QueryProfileDefinition.id``). There is
+no registry layer, no stored ontology copy, and no active/exposed gate — the
+live ontology is served separately by ``GET /v1/ontology`` straight from the
+air_defense_v3 Pydantic SSoT.
+"""
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session, get_graph_store
-from app.models.query_profiles import QueryProfileRegistry
 from app.schemas.query_profiles import (
-    ActiveQueryProfilesResponse,
     OntologyResponse,
-    QueryProfileDefinition,
+    QueryProfileCreate,
     QueryProfileDossierResponse,
-    QueryProfileRegistryCreate,
-    QueryProfileRegistryResponse,
-    QueryProfileRegistryUpdate,
+    QueryProfileResponse,
     QueryProfileSearchRequest,
     QueryProfileSectionResponse,
+    QueryProfileUpdate,
 )
 from app.services.ontology_service import get_live_ontology
 from app.services.query_profiles import (
     QueryProfileNotFoundError,
-    QueryProfileRegistryNotFoundError,
+    QueryProfileReferencedError,
     QueryRootNotFoundError,
-    active_registry_payload,
-    build_default_registry_template,
+    create_profile,
+    delete_profile,
     execute_dossier_search,
     execute_section_search,
-    get_active_registry,
-    registry_to_response,
+    get_required_profile,
+    list_profiles,
+    update_profile,
 )
-from app.services.ontology_templates import invalidate_ontology_cache
 
 router = APIRouter(tags=["query-profiles"])
 
 _PLACEHOLDER_USER = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
-def _registry_profile_models(registry: QueryProfileRegistry) -> list[QueryProfileDefinition]:
-    return [
-        QueryProfileDefinition.model_validate(profile)
-        for profile in (registry.profiles or [])
-    ]
-
-
-def _ensure_profile_editable(registry: QueryProfileRegistry) -> None:
-    if not registry.is_active:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Query profiles can only be edited on an active ontology registry. "
-                "Activate the ontology definition first."
-            ),
-        )
-    if not isinstance(registry.ontology_definition, dict) or not registry.ontology_definition:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "The active registry does not have an ontology definition yet. "
-                "Save the ontology definition before creating query profiles."
-            ),
-        )
-
-
-def _validate_profile_references(
-    profile: QueryProfileDefinition,
-    existing_profiles: list[QueryProfileDefinition],
-    *,
-    replacing_profile_id: str | None = None,
-) -> None:
-    if profile.kind != "dossier":
-        return
-
-    # Dossier may reference either kind="section" (legacy traversal) or
-    # kind="section_properties" (Phase 2 flat-schema refactor) profiles.
-    available_section_ids = {
-        item.id
-        for item in existing_profiles
-        if item.kind in ("section", "section_properties")
-        and item.id != replacing_profile_id
-    }
-    missing = [
-        section_id
-        for section_id in profile.section_profile_ids
-        if section_id not in available_section_ids
-    ]
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Dossier profiles can only reference existing section or "
-                "section_properties profiles. "
-                f"Missing section ids: {', '.join(sorted(missing))}"
-            ),
-        )
 
 
 @router.get("/ontology", response_model=OntologyResponse)
@@ -104,258 +48,113 @@ async def get_ontology() -> OntologyResponse:
     return OntologyResponse.model_validate(get_live_ontology())
 
 
-@router.get(
-    "/query-profiles/registries",
-    response_model=list[QueryProfileRegistryResponse],
-)
-async def list_query_profile_registries(
-    db: AsyncSession = Depends(get_async_session),
-) -> list[QueryProfileRegistryResponse]:
-    result = await db.execute(
-        select(QueryProfileRegistry).order_by(
-            QueryProfileRegistry.is_active.desc(),
-            QueryProfileRegistry.updated_at.desc(),
-        )
-    )
-    registries = result.scalars().all()
-    return [registry_to_response(registry) for registry in registries]
+# ---------------------------------------------------------------------------
+# Flat profile CRUD — keyed by the stable string ``profile_key``.
+# ---------------------------------------------------------------------------
 
 
-@router.get(
-    "/query-profiles/registries/{registry_id}",
-    response_model=QueryProfileRegistryResponse,
-)
-async def get_query_profile_registry(
-    registry_id: uuid.UUID,
+@router.get("/query-profiles", response_model=list[QueryProfileResponse])
+async def list_query_profiles(
+    enabled_only: bool = False,
     db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-    return registry_to_response(registry)
+) -> list[QueryProfileResponse]:
+    """List all query profiles (``?enabled_only=true`` to hide disabled)."""
+    profiles = await list_profiles(db, enabled_only=enabled_only)
+    return [QueryProfileResponse.model_validate(p) for p in profiles]
 
 
 @router.post(
-    "/query-profiles/registries",
-    response_model=QueryProfileRegistryResponse,
+    "/query-profiles",
+    response_model=QueryProfileResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_query_profile_registry(
-    body: QueryProfileRegistryCreate,
+async def create_query_profile(
+    body: QueryProfileCreate,
     db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    if body.profiles:
+) -> QueryProfileResponse:
+    """Create a query profile. ``profile_key`` must be unique."""
+    from app.services.query_profiles import get_profile
+
+    if await get_profile(db, body.profile_key) is not None:
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "Create and activate an ontology registry first. "
-                "Query profiles can only be added after an ontology definition is active."
-            ),
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Query profile '{body.profile_key}' already exists",
         )
 
-    if body.is_active:
-        await db.execute(update(QueryProfileRegistry).values(is_active=False))
-
-    registry = QueryProfileRegistry(
-        name=body.name,
+    profile = await create_profile(
+        db,
+        profile_key=body.profile_key,
+        label=body.label,
+        kind=body.kind,
         description=body.description,
+        root_entity_types=body.root_entity_types,
+        definition=body.definition,
         source_id=body.source_id,
-        ontology_name=body.ontology_name,
-        ontology_version=body.ontology_version,
-        ontology_definition=body.ontology_definition,
-        profiles=[profile.model_dump(mode="json") for profile in body.profiles],
-        is_active=body.is_active,
+        enabled=body.enabled,
         created_by=_PLACEHOLDER_USER,
     )
-    db.add(registry)
-    await db.commit()
-    await db.refresh(registry)
-    invalidate_ontology_cache()
-    return registry_to_response(registry)
+    await db.refresh(profile)
+    return QueryProfileResponse.model_validate(profile)
+
+
+@router.get(
+    "/query-profiles/{profile_key}",
+    response_model=QueryProfileResponse,
+)
+async def get_query_profile(
+    profile_key: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> QueryProfileResponse:
+    try:
+        profile = await get_required_profile(db, profile_key)
+    except QueryProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return QueryProfileResponse.model_validate(profile)
 
 
 @router.put(
-    "/query-profiles/registries/{registry_id}",
-    response_model=QueryProfileRegistryResponse,
-)
-async def update_query_profile_registry(
-    registry_id: uuid.UUID,
-    body: QueryProfileRegistryUpdate,
-    db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-
-    if body.is_active is True:
-        await db.execute(
-            update(QueryProfileRegistry)
-            .where(QueryProfileRegistry.id != registry_id)
-            .values(is_active=False)
-        )
-
-    if body.profiles is not None:
-        _ensure_profile_editable(registry)
-
-    payload = body.model_dump(exclude_unset=True)
-    for field in ("name", "description", "source_id", "ontology_name", "ontology_version", "ontology_definition", "is_active"):
-        if field in payload:
-            setattr(registry, field, payload[field])
-    if body.profiles is not None:
-        registry.profiles = [profile.model_dump(mode="json") for profile in body.profiles]
-
-    await db.commit()
-    await db.refresh(registry)
-    invalidate_ontology_cache()
-    return registry_to_response(registry)
-
-
-@router.post(
-    "/query-profiles/registries/{registry_id}/activate",
-    response_model=QueryProfileRegistryResponse,
-)
-async def activate_query_profile_registry(
-    registry_id: uuid.UUID,
-    db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-
-    await db.execute(update(QueryProfileRegistry).values(is_active=False))
-    registry.is_active = True
-    await db.commit()
-    await db.refresh(registry)
-    invalidate_ontology_cache()
-    return registry_to_response(registry)
-
-
-@router.post(
-    "/query-profiles/registries/{registry_id}/profiles",
-    response_model=QueryProfileRegistryResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def append_query_profile(
-    registry_id: uuid.UUID,
-    body: QueryProfileDefinition,
-    db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-
-    _ensure_profile_editable(registry)
-
-    profiles = _registry_profile_models(registry)
-    if any(profile.id == body.id for profile in profiles):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Query profile '{body.id}' already exists in this registry",
-        )
-
-    _validate_profile_references(body, profiles)
-    profiles.append(body)
-    registry.profiles = [profile.model_dump(mode="json") for profile in profiles]
-    await db.commit()
-    await db.refresh(registry)
-    return registry_to_response(registry)
-
-
-@router.put(
-    "/query-profiles/registries/{registry_id}/profiles/{profile_id}",
-    response_model=QueryProfileRegistryResponse,
+    "/query-profiles/{profile_key}",
+    response_model=QueryProfileResponse,
 )
 async def update_query_profile(
-    registry_id: uuid.UUID,
-    profile_id: str,
-    body: QueryProfileDefinition,
+    profile_key: str,
+    body: QueryProfileUpdate,
     db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-
-    _ensure_profile_editable(registry)
-
-    if body.id != profile_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Query profile id in the payload must match the URL path",
-        )
-
-    profiles = _registry_profile_models(registry)
-    _validate_profile_references(body, profiles, replacing_profile_id=profile_id)
-    updated = False
-    next_profiles: list[QueryProfileDefinition] = []
-    for profile in profiles:
-        if profile.id == profile_id:
-            next_profiles.append(body)
-            updated = True
-        else:
-            next_profiles.append(profile)
-
-    if not updated:
-        raise HTTPException(status_code=404, detail="Query profile not found")
-
-    registry.profiles = [profile.model_dump(mode="json") for profile in next_profiles]
-    await db.commit()
-    await db.refresh(registry)
-    return registry_to_response(registry)
+) -> QueryProfileResponse:
+    """Partial update — only fields present in the request body are applied."""
+    updates = body.model_dump(exclude_unset=True)
+    try:
+        profile = await update_profile(db, profile_key, **updates)
+    except QueryProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.refresh(profile)
+    return QueryProfileResponse.model_validate(profile)
 
 
 @router.delete(
-    "/query-profiles/registries/{registry_id}/profiles/{profile_id}",
-    response_model=QueryProfileRegistryResponse,
+    "/query-profiles/{profile_key}",
+    status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_query_profile(
-    registry_id: uuid.UUID,
-    profile_id: str,
+    profile_key: str,
     db: AsyncSession = Depends(get_async_session),
-) -> QueryProfileRegistryResponse:
-    registry = await db.get(QueryProfileRegistry, registry_id)
-    if registry is None:
-        raise HTTPException(status_code=404, detail="Query profile registry not found")
-
-    _ensure_profile_editable(registry)
-
-    profiles = _registry_profile_models(registry)
-    referencing = [
-        profile.id
-        for profile in profiles
-        if profile.kind == "dossier" and profile_id in profile.section_profile_ids
-    ]
-    if referencing:
+) -> None:
+    """Delete a profile. A section profile still referenced by a dossier
+    profile cannot be deleted (409)."""
+    try:
+        await delete_profile(db, profile_key)
+    except QueryProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except QueryProfileReferencedError as exc:
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "This section profile is still referenced by dossier profiles: "
-                + ", ".join(sorted(referencing))
-            ),
-        )
-    next_profiles = [profile for profile in profiles if profile.id != profile_id]
-    if len(next_profiles) == len(profiles):
-        raise HTTPException(status_code=404, detail="Query profile not found")
-
-    registry.profiles = [profile.model_dump(mode="json") for profile in next_profiles]
-    await db.commit()
-    await db.refresh(registry)
-    return registry_to_response(registry)
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
 
-@router.get("/query-profiles", response_model=ActiveQueryProfilesResponse)
-async def get_active_query_profiles(
-    db: AsyncSession = Depends(get_async_session),
-) -> ActiveQueryProfilesResponse:
-    registry = await get_active_registry(db)
-    return active_registry_payload(registry)
-
-
-@router.get(
-    "/query-profiles/default-template",
-    response_model=QueryProfileRegistryCreate,
-)
-async def get_default_query_profile_template() -> QueryProfileRegistryCreate:
-    return build_default_registry_template()
+# ---------------------------------------------------------------------------
+# Exact graph search — profile resolved by ``profile_key`` (search request's
+# ``profile_id`` string), honoring the profile's ``source_id`` scope.
+# ---------------------------------------------------------------------------
 
 
 @router.post(
@@ -370,7 +169,6 @@ async def search_query_profile_section(
     try:
         return await execute_section_search(graph_store, db, body)
     except (
-        QueryProfileRegistryNotFoundError,
         QueryProfileNotFoundError,
         QueryRootNotFoundError,
     ) as exc:
@@ -389,7 +187,6 @@ async def search_query_profile_dossier(
     try:
         return await execute_dossier_search(graph_store, db, body)
     except (
-        QueryProfileRegistryNotFoundError,
         QueryProfileNotFoundError,
         QueryRootNotFoundError,
     ) as exc:

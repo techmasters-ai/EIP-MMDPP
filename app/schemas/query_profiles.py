@@ -129,46 +129,72 @@ class QueryProfileDefinition(APIModel):
         return self
 
 
-class QueryProfileRegistryCreate(APIModel):
-    name: str = Field(..., min_length=1, max_length=255)
+class QueryProfileCreate(APIModel):
+    """Create a first-class query profile row (``governance.query_profiles``).
+
+    ``profile_key`` is the stable EXTERNAL identifier (was the old
+    ``QueryProfileDefinition.id``) — dossier ``section_profile_ids`` and search
+    ``profile_id`` reference it. The remaining profile body (traversals,
+    target_entity_types, section_profile_ids, profile_sections,
+    include_associated_systems, placeholder_query, …) rides in the nested
+    ``definition`` dict — matching ``services.query_profiles.create_profile``'s
+    ``definition=`` parameter."""
+
+    profile_key: str = Field(..., min_length=1, max_length=100)
+    label: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    kind: Literal["section", "section_properties", "dossier"] = "section"
+    root_entity_types: list[str] = Field(default_factory=list)
+    definition: dict[str, Any] = Field(default_factory=dict)
     source_id: Optional[uuid.UUID] = None
-    ontology_name: Optional[str] = Field(default=None, max_length=255)
-    ontology_version: Optional[str] = Field(default=None, max_length=100)
-    ontology_definition: Optional[dict[str, Any]] = None
-    profiles: list[QueryProfileDefinition] = Field(default_factory=list)
-    is_active: bool = False
+    enabled: bool = True
+
+    @field_validator("root_entity_types")
+    @classmethod
+    def strip_root_entity_types(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item and item.strip()]
 
 
-class QueryProfileRegistryUpdate(APIModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+class QueryProfileUpdate(APIModel):
+    """Partial update — every field optional; only fields present in the
+    request body are applied (the route uses ``model_dump(exclude_unset=True)``
+    so an omitted ``source_id`` is left untouched while an explicit
+    ``source_id: null`` clears the scope back to Global). Field names mirror
+    ``services.query_profiles.update_profile``'s keyword parameters."""
+
+    label: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = None
+    kind: Optional[Literal["section", "section_properties", "dossier"]] = None
+    root_entity_types: Optional[list[str]] = None
+    definition: Optional[dict[str, Any]] = None
     source_id: Optional[uuid.UUID] = None
-    ontology_name: Optional[str] = Field(default=None, max_length=255)
-    ontology_version: Optional[str] = Field(default=None, max_length=100)
-    ontology_definition: Optional[dict[str, Any]] = None
-    profiles: Optional[list[QueryProfileDefinition]] = None
-    is_active: Optional[bool] = None
+    enabled: Optional[bool] = None
 
 
-class QueryProfileRegistryResponse(APIModel):
-    id: uuid.UUID
-    name: str
+class QueryProfileResponse(APIModel):
+    """A query profile row as returned by the flat CRUD + list endpoints."""
+
+    id: Optional[uuid.UUID] = None
+    profile_key: str
+    label: str
     description: Optional[str] = None
+    kind: str
+    root_entity_types: list[str] = Field(default_factory=list)
+    definition: dict[str, Any] = Field(default_factory=dict)
     source_id: Optional[uuid.UUID] = None
-    ontology_name: Optional[str] = None
-    ontology_version: Optional[str] = None
-    ontology_definition: Optional[dict[str, Any]] = None
-    profiles: list[QueryProfileDefinition] = Field(default_factory=list)
-    is_active: bool
-    created_by: uuid.UUID
-    created_at: datetime
-    updated_at: datetime
+    enabled: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
+    @field_validator("root_entity_types", mode="before")
+    @classmethod
+    def _coerce_roots(cls, value: Any) -> Any:
+        return value or []
 
-class ActiveQueryProfilesResponse(APIModel):
-    registry: Optional[QueryProfileRegistryResponse] = None
-    exposed_profiles: list[QueryProfileDefinition] = Field(default_factory=list)
+    @field_validator("definition", mode="before")
+    @classmethod
+    def _coerce_definition(cls, value: Any) -> Any:
+        return value or {}
 
 
 class QueryProfileSearchRequest(APIModel):

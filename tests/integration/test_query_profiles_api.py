@@ -1,25 +1,25 @@
-"""Integration tests for the query profile CRUD and search endpoints.
+"""Integration tests for the standalone query-profile CRUD and search endpoints.
 
-All database and GraphStore interactions are mocked so that tests run without
-external infrastructure.
+The registry layer is gone: profiles are first-class ``governance.query_profiles``
+rows keyed by the string ``profile_key``. All service + GraphStore interactions
+are patched so the tests run without external infrastructure.
 
 Endpoints under test:
-  GET    /v1/query-profiles/registries
-  POST   /v1/query-profiles/registries
-  GET    /v1/query-profiles/registries/{id}
-  PUT    /v1/query-profiles/registries/{id}
-  POST   /v1/query-profiles/registries/{id}/activate
-  POST   /v1/query-profiles/registries/{id}/profiles
-  PUT    /v1/query-profiles/registries/{id}/profiles/{profile_id}
-  DELETE /v1/query-profiles/registries/{id}/profiles/{profile_id}
-  GET    /v1/query-profiles
-  GET    /v1/query-profiles/default-template
+  GET    /v1/ontology
+  GET    /v1/query-profiles            (?enabled_only=bool)
+  POST   /v1/query-profiles
+  GET    /v1/query-profiles/{profile_key}
+  PUT    /v1/query-profiles/{profile_key}
+  DELETE /v1/query-profiles/{profile_key}
   POST   /v1/query-profiles/search/section
   POST   /v1/query-profiles/search/dossier
+
+Plus assertions that the removed registry routes are gone.
 """
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,125 +28,68 @@ from httpx import ASGITransport, AsyncClient
 
 pytestmark = pytest.mark.integration
 
+_NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+_PLACEHOLDER_USER = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+_SVC = "app.services.query_profiles"
+_API = "app.api.v1.query_profiles"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER_USER = uuid.UUID("00000000-0000-0000-0000-000000000001")
-_NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-_ONTOLOGY_DEFINITION = {
-    "version": "1.0.0",
-    "entity_types": [
-        {"name": "EQUIPMENT_SYSTEM"},
-        {"name": "COMPONENT"},
-    ],
-    "relationship_types": [
-        {"name": "HAS_SUBSYSTEM"},
-        {"name": "HAS_COMPONENT"},
-    ],
-}
-
-_SECTION_PROFILE_DICT = {
-    "id": "system_components",
-    "label": "System Components",
-    "kind": "section",
-    "exposed": True,
-    "root_entity_types": ["EQUIPMENT_SYSTEM"],
-    "target_entity_types": ["COMPONENT"],
-    "traversals": [
-        {
-            "steps": [
-                {
-                    "direction": "out",
-                    "rel_types": ["HAS_SUBSYSTEM"],
-                    "min_hops": 1,
-                    "max_hops": 2,
-                }
-            ]
-        }
-    ],
-    "section_profile_ids": [],
-}
-
-_DOSSIER_PROFILE_DICT = {
-    "id": "system_dossier",
-    "label": "System Dossier",
-    "kind": "dossier",
-    "exposed": True,
-    "root_entity_types": ["EQUIPMENT_SYSTEM"],
-    "target_entity_types": [],
-    "traversals": [],
-    "section_profile_ids": ["system_components"],
-}
-
-
-def _make_registry_row(
+def _make_profile_row(
     *,
-    registry_id: uuid.UUID | None = None,
-    name: str = "Test Registry",
-    description: str | None = None,
-    ontology_name: str | None = "Test Ontology",
-    ontology_version: str | None = "1.0.0",
-    ontology_definition: dict | None = None,
-    profiles: list | None = None,
-    is_active: bool = False,
-) -> MagicMock:
-    """Build a MagicMock that looks like a QueryProfileRegistry ORM instance."""
-    row = MagicMock()
-    row.id = registry_id or uuid.uuid4()
-    row.name = name
-    row.description = description
-    row.source_id = None
-    row.ontology_name = ontology_name
-    row.ontology_version = ontology_version
-    row.ontology_definition = ontology_definition if ontology_definition is not None else _ONTOLOGY_DEFINITION
-    row.profiles = profiles if profiles is not None else []
-    row.is_active = is_active
-    row.created_by = _PLACEHOLDER_USER
-    row.created_at = _NOW
-    row.updated_at = _NOW
-    return row
+    profile_key: str = "system_components",
+    label: str = "System Components",
+    description: str | None = "A section profile",
+    kind: str = "section_properties",
+    root_entity_types: list[str] | None = None,
+    definition: dict | None = None,
+    source_id: uuid.UUID | None = None,
+    enabled: bool = True,
+) -> SimpleNamespace:
+    """A duck-typed stand-in for a ``QueryProfile`` ORM row.
 
-
-def _mock_scalars_all(rows: list) -> MagicMock:
-    """Create the result wrapper returned by ``db.execute(...).scalars().all()``."""
-    scalars = MagicMock()
-    scalars.all.return_value = rows
-    result = MagicMock()
-    result.scalars.return_value = scalars
-    return result
-
-
-def _mock_scalar_one_or_none(row) -> MagicMock:
-    """Create the result wrapper for ``db.execute(...).scalar_one_or_none()``."""
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = row
-    return result
+    ``QueryProfileResponse.model_validate`` reads attributes off it
+    (``from_attributes=True``), so every field must hold a real typed value
+    (a bare ``MagicMock`` would fail validation)."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        profile_key=profile_key,
+        label=label,
+        description=description,
+        kind=kind,
+        root_entity_types=root_entity_types
+        if root_entity_types is not None
+        else ["RADAR_SYSTEM", "MISSILE_SYSTEM"],
+        definition=definition if definition is not None else {"profile_sections": ["components"]},
+        source_id=source_id,
+        enabled=enabled,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
 
 
 def _build_mock_db() -> AsyncMock:
-    """Create a fully mocked async database session."""
     db = AsyncMock()
     db.get = AsyncMock(return_value=None)
-    db.execute = AsyncMock(return_value=_mock_scalars_all([]))
+    db.execute = AsyncMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
+    db.flush = AsyncMock()
     db.add = MagicMock()
+    db.delete = AsyncMock()
     return db
 
-
-# ---------------------------------------------------------------------------
-# Fixture: yields (AsyncClient, mock_db) as a single tuple so that both the
-# HTTP client and the mock database reference the same object.  This avoids
-# the pytest-asyncio issue where dependent async fixtures resolve to separate
-# instances.
-# ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def api():
     """Yield ``(client, mock_db)`` — an async HTTP client whose DB dependency
-    is overridden with a shared ``AsyncMock``."""
+    is overridden with a shared ``AsyncMock``. Service functions are patched
+    per-test, so the mock DB is only a placeholder the dependency yields."""
     from app.db.session import get_async_session
     from app.main import create_app
 
@@ -165,467 +108,359 @@ async def api():
 
 
 # ---------------------------------------------------------------------------
-# GET /v1/query-profiles/registries -- list registries
+# GET /v1/ontology (Task 1 route preserved)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_list_registries_empty(api):
-    """Returns an empty list when no registries exist."""
-    client, mock_db = api
-    mock_db.execute.return_value = _mock_scalars_all([])
 
-    resp = await client.get("/v1/query-profiles/registries")
+@pytest.mark.asyncio
+async def test_ontology_route_still_served(api):
+    client, _ = api
+    resp = await client.get("/v1/ontology")
+    assert resp.status_code == 200
+    data = resp.json()
+    names = {e["name"] for e in data["entity_types"]}
+    assert "RADAR_SYSTEM" in names
+    assert "MISSILE_SYSTEM" in names
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/query-profiles -- list
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_profiles_empty(api):
+    client, _ = api
+    with patch(f"{_API}.list_profiles", new=AsyncMock(return_value=[])):
+        resp = await client.get("/v1/query-profiles")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 @pytest.mark.asyncio
-async def test_list_registries_returns_items(api):
-    """Returns a populated list when registries exist."""
-    client, mock_db = api
-    row = _make_registry_row(name="Alpha Registry")
-    mock_db.execute.return_value = _mock_scalars_all([row])
-
-    resp = await client.get("/v1/query-profiles/registries")
+async def test_list_profiles_returns_items(api):
+    client, _ = api
+    rows = [
+        _make_profile_row(profile_key="system_components"),
+        _make_profile_row(profile_key="system_dossier", kind="dossier"),
+    ]
+    with patch(f"{_API}.list_profiles", new=AsyncMock(return_value=rows)):
+        resp = await client.get("/v1/query-profiles")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Alpha Registry"
+    assert [p["profile_key"] for p in data] == ["system_components", "system_dossier"]
+    assert data[0]["source_id"] is None
+    assert data[0]["enabled"] is True
 
-
-# ---------------------------------------------------------------------------
-# POST /v1/query-profiles/registries -- create registry
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_create_registry_returns_201(api):
-    """Creating a registry with name and ontology returns 201."""
+async def test_list_profiles_enabled_only_forwarded(api):
+    client, _ = api
+    mock = AsyncMock(return_value=[])
+    with patch(f"{_API}.list_profiles", new=mock):
+        resp = await client.get("/v1/query-profiles?enabled_only=true")
+    assert resp.status_code == 200
+    # enabled_only=True is threaded through to the service.
+    assert mock.await_args.kwargs.get("enabled_only") is True
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/query-profiles -- create
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_profile_201(api):
     client, mock_db = api
-    created_id = uuid.uuid4()
-
-    async def fake_refresh(obj):
-        obj.id = created_id
-        obj.created_by = _PLACEHOLDER_USER
-        obj.created_at = _NOW
-        obj.updated_at = _NOW
-
-    mock_db.refresh.side_effect = fake_refresh
-
-    resp = await client.post(
-        "/v1/query-profiles/registries",
-        json={
-            "name": "New Registry",
-            "ontology_name": "Test Ontology",
-            "ontology_version": "1.0.0",
-            "ontology_definition": _ONTOLOGY_DEFINITION,
-        },
-    )
+    row = _make_profile_row(profile_key="new_profile", label="New Profile")
+    create_mock = AsyncMock(return_value=row)
+    with patch(f"{_SVC}.get_profile", new=AsyncMock(return_value=None)), patch(
+        f"{_API}.create_profile", new=create_mock
+    ):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "new_profile",
+                "label": "New Profile",
+                "kind": "section_properties",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"profile_sections": ["rf_parameters"]},
+                "source_id": None,
+                "enabled": True,
+            },
+        )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["name"] == "New Registry"
-    assert data["is_active"] is False
-    mock_db.add.assert_called_once()
-    mock_db.commit.assert_awaited()
+    assert data["profile_key"] == "new_profile"
+    assert data["source_id"] is None
+    # source_id + enabled are threaded into the service create call.
+    kwargs = create_mock.await_args.kwargs
+    assert kwargs["profile_key"] == "new_profile"
+    assert kwargs["source_id"] is None
+    assert kwargs["enabled"] is True
+    assert kwargs["created_by"] == _PLACEHOLDER_USER
 
 
 @pytest.mark.asyncio
-async def test_create_registry_with_profiles_rejected(api):
-    """Supplying profiles on create returns 400."""
-    client, _mock_db = api
-    resp = await client.post(
-        "/v1/query-profiles/registries",
-        json={
-            "name": "Bad Registry",
-            "profiles": [_SECTION_PROFILE_DICT],
-        },
-    )
-    assert resp.status_code == 400
-    assert "ontology" in resp.json()["detail"].lower()
-
-
-# ---------------------------------------------------------------------------
-# GET /v1/query-profiles/registries/{id} -- get one
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_registry_not_found(api):
-    """Returns 404 for a missing registry."""
-    client, mock_db = api
-    mock_db.get.return_value = None
-    missing_id = uuid.uuid4()
-
-    resp = await client.get(f"/v1/query-profiles/registries/{missing_id}")
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_get_registry_found(api):
-    """Returns 200 and the registry when found."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(registry_id=reg_id, name="Found Registry")
-    mock_db.get.return_value = row
-
-    resp = await client.get(f"/v1/query-profiles/registries/{reg_id}")
-    assert resp.status_code == 200
-    assert resp.json()["name"] == "Found Registry"
-
-
-# ---------------------------------------------------------------------------
-# PUT /v1/query-profiles/registries/{id} -- update
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_update_registry_not_found(api):
-    """Returns 404 when updating a missing registry."""
-    client, mock_db = api
-    mock_db.get.return_value = None
-    missing_id = uuid.uuid4()
-
-    resp = await client.put(
-        f"/v1/query-profiles/registries/{missing_id}",
-        json={"name": "Updated"},
-    )
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_update_registry_name(api):
-    """Updating the name returns 200 with the new name."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(registry_id=reg_id, name="Original")
-    mock_db.get.return_value = row
-
-    resp = await client.put(
-        f"/v1/query-profiles/registries/{reg_id}",
-        json={"name": "Updated Name"},
-    )
-    assert resp.status_code == 200
-    # The mock row's name should have been mutated by the endpoint
-    assert row.name == "Updated Name"
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/query-profiles/registries/{id}/activate -- activate
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_activate_registry(api):
-    """Activating an existing registry returns 200 with is_active=True."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(registry_id=reg_id, is_active=False)
-    mock_db.get.return_value = row
-
-    resp = await client.post(f"/v1/query-profiles/registries/{reg_id}/activate")
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is True
-
-
-@pytest.mark.asyncio
-async def test_activate_registry_not_found(api):
-    """Activating a missing registry returns 404."""
-    client, mock_db = api
-    mock_db.get.return_value = None
-    missing_id = uuid.uuid4()
-
-    resp = await client.post(f"/v1/query-profiles/registries/{missing_id}/activate")
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/query-profiles/registries/{id}/profiles -- append profile
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_append_profile_to_active_registry(api):
-    """Appending a section profile to an active registry with ontology returns 201."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[],
-    )
-    mock_db.get.return_value = row
-
-    resp = await client.post(
-        f"/v1/query-profiles/registries/{reg_id}/profiles",
-        json=_SECTION_PROFILE_DICT,
-    )
-    assert resp.status_code == 201
-    data = resp.json()
-    assert len(data["profiles"]) == 1
-    assert data["profiles"][0]["id"] == "system_components"
-
-
-@pytest.mark.asyncio
-async def test_append_duplicate_profile_409(api):
-    """Appending a profile with an existing id returns 409."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[_SECTION_PROFILE_DICT],
-    )
-    mock_db.get.return_value = row
-
-    resp = await client.post(
-        f"/v1/query-profiles/registries/{reg_id}/profiles",
-        json=_SECTION_PROFILE_DICT,
-    )
+async def test_create_profile_duplicate_409(api):
+    client, _ = api
+    existing = _make_profile_row(profile_key="dupe")
+    with patch(f"{_SVC}.get_profile", new=AsyncMock(return_value=existing)):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "dupe",
+                "label": "Dupe",
+                "kind": "section",
+                "definition": {"traversals": []},
+            },
+        )
     assert resp.status_code == 409
     assert "already exists" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
-async def test_append_profile_inactive_registry_400(api):
-    """Appending to an inactive registry returns 400."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=False,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-    )
-    mock_db.get.return_value = row
-
-    resp = await client.post(
-        f"/v1/query-profiles/registries/{reg_id}/profiles",
-        json=_SECTION_PROFILE_DICT,
-    )
-    assert resp.status_code == 400
-    assert "active" in resp.json()["detail"].lower()
-
-
-@pytest.mark.asyncio
-async def test_append_profile_no_ontology_400(api):
-    """Appending when ontology_definition is empty returns 400."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition={},
-    )
-    mock_db.get.return_value = row
-
-    resp = await client.post(
-        f"/v1/query-profiles/registries/{reg_id}/profiles",
-        json=_SECTION_PROFILE_DICT,
-    )
-    assert resp.status_code == 400
-    assert "ontology" in resp.json()["detail"].lower()
-
-
 # ---------------------------------------------------------------------------
-# PUT /v1/query-profiles/registries/{id}/profiles/{profile_id} -- update profile
+# GET /v1/query-profiles/{profile_key}
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_update_profile_id_mismatch_400(api):
-    """Path profile_id must match body id."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[_SECTION_PROFILE_DICT],
-    )
-    mock_db.get.return_value = row
 
-    body = {**_SECTION_PROFILE_DICT, "id": "different_id"}
-    resp = await client.put(
-        f"/v1/query-profiles/registries/{reg_id}/profiles/system_components",
-        json=body,
-    )
-    assert resp.status_code == 400
-    assert "match" in resp.json()["detail"].lower()
+@pytest.mark.asyncio
+async def test_get_profile_found(api):
+    client, _ = api
+    row = _make_profile_row(profile_key="system_performance", label="System Performance")
+    with patch(f"{_API}.get_required_profile", new=AsyncMock(return_value=row)):
+        resp = await client.get("/v1/query-profiles/system_performance")
+    assert resp.status_code == 200
+    assert resp.json()["label"] == "System Performance"
 
 
 @pytest.mark.asyncio
-async def test_update_profile_not_found_404(api):
-    """Updating a profile that does not exist returns 404."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[_SECTION_PROFILE_DICT],
-    )
-    mock_db.get.return_value = row
+async def test_get_profile_not_found_404(api):
+    from app.services.query_profiles import QueryProfileNotFoundError
 
-    body = {**_SECTION_PROFILE_DICT, "id": "nonexistent"}
-    resp = await client.put(
-        f"/v1/query-profiles/registries/{reg_id}/profiles/nonexistent",
-        json=body,
-    )
+    client, _ = api
+    with patch(
+        f"{_API}.get_required_profile",
+        new=AsyncMock(side_effect=QueryProfileNotFoundError("nope")),
+    ):
+        resp = await client.get("/v1/query-profiles/missing")
     assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# DELETE /v1/query-profiles/registries/{id}/profiles/{profile_id}
+# PUT /v1/query-profiles/{profile_key} -- partial update
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_delete_profile_success(api):
-    """Deleting an unreferenced section profile succeeds."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[_SECTION_PROFILE_DICT],
-    )
-    mock_db.get.return_value = row
 
-    resp = await client.delete(
-        f"/v1/query-profiles/registries/{reg_id}/profiles/system_components"
-    )
+@pytest.mark.asyncio
+async def test_update_profile_partial(api):
+    client, _ = api
+    row = _make_profile_row(profile_key="system_components", enabled=False, description="updated")
+    update_mock = AsyncMock(return_value=row)
+    with patch(f"{_API}.update_profile", new=update_mock):
+        resp = await client.put(
+            "/v1/query-profiles/system_components",
+            json={"enabled": False, "description": "updated"},
+        )
     assert resp.status_code == 200
-    assert len(resp.json()["profiles"]) == 0
+    # exclude_unset: only the two supplied fields are forwarded (source_id/kind
+    # untouched so the service leaves them at their _UNSET default).
+    kwargs = update_mock.await_args.kwargs
+    assert set(kwargs) == {"enabled", "description"}
+    assert kwargs["enabled"] is False
 
 
 @pytest.mark.asyncio
-async def test_delete_profile_referenced_by_dossier_400(api):
-    """Cannot delete a section profile that is referenced by a dossier profile."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[_SECTION_PROFILE_DICT, _DOSSIER_PROFILE_DICT],
-    )
-    mock_db.get.return_value = row
+async def test_update_profile_not_found_404(api):
+    from app.services.query_profiles import QueryProfileNotFoundError
 
-    resp = await client.delete(
-        f"/v1/query-profiles/registries/{reg_id}/profiles/system_components"
-    )
-    assert resp.status_code == 400
+    client, _ = api
+    with patch(
+        f"{_API}.update_profile",
+        new=AsyncMock(side_effect=QueryProfileNotFoundError("nope")),
+    ):
+        resp = await client.put(
+            "/v1/query-profiles/missing", json={"label": "x"}
+        )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/query-profiles/{profile_key}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_204(api):
+    client, _ = api
+    del_mock = AsyncMock(return_value=None)
+    with patch(f"{_API}.delete_profile", new=del_mock):
+        resp = await client.delete("/v1/query-profiles/system_components")
+    assert resp.status_code == 204
+    assert del_mock.await_args.args[1] == "system_components"
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_referenced_409(api):
+    from app.services.query_profiles import QueryProfileReferencedError
+
+    client, _ = api
+    with patch(
+        f"{_API}.delete_profile",
+        new=AsyncMock(side_effect=QueryProfileReferencedError("still referenced")),
+    ):
+        resp = await client.delete("/v1/query-profiles/system_components")
+    assert resp.status_code == 409
     assert "referenced" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_delete_profile_not_found_404(api):
-    """Deleting a non-existent profile returns 404."""
-    client, mock_db = api
-    reg_id = uuid.uuid4()
-    row = _make_registry_row(
-        registry_id=reg_id,
-        is_active=True,
-        ontology_definition=_ONTOLOGY_DEFINITION,
-        profiles=[],
-    )
-    mock_db.get.return_value = row
+    from app.services.query_profiles import QueryProfileNotFoundError
 
-    resp = await client.delete(
-        f"/v1/query-profiles/registries/{reg_id}/profiles/nonexistent"
-    )
+    client, _ = api
+    with patch(
+        f"{_API}.delete_profile",
+        new=AsyncMock(side_effect=QueryProfileNotFoundError("nope")),
+    ):
+        resp = await client.delete("/v1/query-profiles/missing")
     assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# GET /v1/query-profiles -- active profiles
+# POST /v1/query-profiles/search/section + /dossier
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_active_profiles_no_registry(api):
-    """Returns empty exposed_profiles when no registry is active."""
-    client, mock_db = api
-    mock_db.execute.return_value = _mock_scalar_one_or_none(None)
 
-    resp = await client.get("/v1/query-profiles")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["registry"] is None
-    assert data["exposed_profiles"] == []
+def _section_response():
+    from app.schemas.graph_store import GraphEntityResult
+    from app.schemas.query_profiles import QueryProfileSectionResponse
 
-
-@pytest.mark.asyncio
-async def test_active_profiles_with_registry(api):
-    """Returns exposed profiles from the active registry."""
-    client, mock_db = api
-    row = _make_registry_row(
-        is_active=True,
-        profiles=[_SECTION_PROFILE_DICT],
+    return QueryProfileSectionResponse(
+        profile_id="system_components",
+        profile_label="System Components",
+        resolved_root=GraphEntityResult(name="SA-2", entity_type="MISSILE_SYSTEM"),
+        items=[],
+        total=0,
     )
-    mock_db.execute.return_value = _mock_scalar_one_or_none(row)
-
-    resp = await client.get("/v1/query-profiles")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["registry"] is not None
-    assert len(data["exposed_profiles"]) == 1
-    assert data["exposed_profiles"][0]["id"] == "system_components"
 
 
-# ---------------------------------------------------------------------------
-# GET /v1/query-profiles/default-template -- template
-# ---------------------------------------------------------------------------
+def _dossier_response():
+    from app.schemas.graph_store import GraphEntityResult
+    from app.schemas.query_profiles import QueryProfileDossierResponse
+
+    return QueryProfileDossierResponse(
+        profile_id="system_dossier",
+        profile_label="System Dossier",
+        resolved_root=GraphEntityResult(name="SA-2", entity_type="MISSILE_SYSTEM"),
+        sections=[],
+    )
+
 
 @pytest.mark.asyncio
-async def test_default_template_returns_200(api):
-    """The default template endpoint returns a valid registry create payload."""
-    client, _mock_db = api
-    resp = await client.get("/v1/query-profiles/default-template")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "name" in data
-    assert "profiles" in data
-    assert isinstance(data["profiles"], list)
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/query-profiles/search/section -- section search
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_search_section_no_active_registry_404(api):
-    """Section search returns 404 when there is no active registry."""
-    client, mock_db = api
-    mock_db.execute.return_value = _mock_scalar_one_or_none(None)
-
-    with patch(
-        "app.api.v1.query_profiles.get_graph_store"
-    ) as mock_gs:
-        mock_store = MagicMock()
-        mock_gs.return_value = mock_store
-
+async def test_search_section_happy_path(api):
+    client, _ = api
+    with patch(f"{_API}.get_graph_store", return_value=MagicMock()), patch(
+        f"{_API}.execute_section_search",
+        new=AsyncMock(return_value=_section_response()),
+    ):
         resp = await client.post(
             "/v1/query-profiles/search/section",
-            json={
-                "profile_id": "system_components",
-                "query_text": "AN/MPQ-65",
-            },
+            json={"profile_id": "system_components", "query_text": "SA-2"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["profile_id"] == "system_components"
+
+
+@pytest.mark.asyncio
+async def test_search_section_profile_missing_404(api):
+    from app.services.query_profiles import QueryProfileNotFoundError
+
+    client, _ = api
+    with patch(f"{_API}.get_graph_store", return_value=MagicMock()), patch(
+        f"{_API}.execute_section_search",
+        new=AsyncMock(side_effect=QueryProfileNotFoundError("nope")),
+    ):
+        resp = await client.post(
+            "/v1/query-profiles/search/section",
+            json={"profile_id": "missing", "query_text": "SA-2"},
         )
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_search_dossier_no_active_registry_404(api):
-    """Dossier search returns 404 when there is no active registry."""
-    client, mock_db = api
-    mock_db.execute.return_value = _mock_scalar_one_or_none(None)
-
-    with patch(
-        "app.api.v1.query_profiles.get_graph_store"
-    ) as mock_gs:
-        mock_store = MagicMock()
-        mock_gs.return_value = mock_store
-
+async def test_search_dossier_happy_path(api):
+    client, _ = api
+    with patch(f"{_API}.get_graph_store", return_value=MagicMock()), patch(
+        f"{_API}.execute_dossier_search",
+        new=AsyncMock(return_value=_dossier_response()),
+    ):
         resp = await client.post(
             "/v1/query-profiles/search/dossier",
-            json={
-                "profile_id": "system_dossier",
-                "query_text": "AN/MPQ-65",
-            },
+            json={"profile_id": "system_dossier", "query_text": "SA-2"},
         )
+    assert resp.status_code == 200
+    assert resp.json()["profile_id"] == "system_dossier"
+
+
+@pytest.mark.asyncio
+async def test_search_dossier_root_not_found_404(api):
+    from app.services.query_profiles import QueryRootNotFoundError
+
+    client, _ = api
+    with patch(f"{_API}.get_graph_store", return_value=MagicMock()), patch(
+        f"{_API}.execute_dossier_search",
+        new=AsyncMock(side_effect=QueryRootNotFoundError("no root")),
+    ):
+        resp = await client.post(
+            "/v1/query-profiles/search/dossier",
+            json={"profile_id": "system_dossier", "query_text": "SA-2"},
+        )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Removed registry routes are gone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_registry_list_route_gone(api):
+    client, _ = api
+    # GET /query-profiles/registries now falls through to GET {profile_key}
+    # ("registries" as a key) which 404s — the registry list route is gone.
+    with patch(
+        f"{_API}.get_required_profile",
+        new=AsyncMock(
+            side_effect=__import__(
+                "app.services.query_profiles", fromlist=["QueryProfileNotFoundError"]
+            ).QueryProfileNotFoundError("nope")
+        ),
+    ):
+        resp = await client.get("/v1/query-profiles/registries")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_registry_create_route_gone(api):
+    client, _ = api
+    # No POST handler exists for /query-profiles/{profile_key}, so POSTing the
+    # old registry-create path yields 405 (method not allowed) — the route is
+    # definitively gone.
+    resp = await client.post("/v1/query-profiles/registries", json={})
+    assert resp.status_code in (404, 405)
+
+
+@pytest.mark.asyncio
+async def test_default_template_route_gone(api):
+    client, _ = api
+    with patch(
+        f"{_API}.get_required_profile",
+        new=AsyncMock(
+            side_effect=__import__(
+                "app.services.query_profiles", fromlist=["QueryProfileNotFoundError"]
+            ).QueryProfileNotFoundError("nope")
+        ),
+    ):
+        resp = await client.get("/v1/query-profiles/default-template")
     assert resp.status_code == 404
