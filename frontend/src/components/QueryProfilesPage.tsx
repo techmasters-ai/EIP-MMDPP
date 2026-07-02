@@ -185,11 +185,11 @@ function OntologyPanel({ ontology }: { ontology: OntologyResponse | null }) {
 
       <div style={{ marginBottom: "0.75rem" }}>
         <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
-          Entity types ({ontology.entity_types.length})
+          Entity Types ({ontology.entity_types.length})
         </div>
         <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
           {ontology.entity_types.map((e) => (
-            <span key={e.name} className="badge badge-success" title={e.label}>
+            <span key={e.name} className="badge badge-info" title={e.label}>
               {e.name}
             </span>
           ))}
@@ -198,7 +198,7 @@ function OntologyPanel({ ontology }: { ontology: OntologyResponse | null }) {
 
       <div style={{ marginBottom: "0.75rem" }}>
         <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
-          Relationship types ({ontology.relationship_types.length})
+          Relationship Types ({ontology.relationship_types.length})
         </div>
         <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
           {ontology.relationship_types.map((r) => (
@@ -211,11 +211,11 @@ function OntologyPanel({ ontology }: { ontology: OntologyResponse | null }) {
 
       <div>
         <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
-          Profile sections ({ontology.profile_sections.length})
+          Profile Sections ({ontology.profile_sections.length})
         </div>
         <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
           {ontology.profile_sections.map((s) => (
-            <span key={s} className="badge">
+            <span key={s} className="badge badge-info">
               {s}
             </span>
           ))}
