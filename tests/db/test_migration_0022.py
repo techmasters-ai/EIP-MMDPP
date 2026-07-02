@@ -41,9 +41,35 @@ def _load_migration():
 _MIG = _load_migration()
 
 
+def _ensure_registry_table(conn):
+    """Create a minimal ``governance.query_profile_registries`` table if it
+    is absent.
+
+    Migration 0023 drops the real registry table, so once the DB is at head
+    this table no longer exists — but 0022's ``_seed_query_profiles`` still
+    reads it (``SELECT profiles ... WHERE is_active ... ORDER BY updated_at``).
+    This recreates just the columns that seed function (and these tests)
+    touch, so the migration's frozen seed logic can be exercised regardless
+    of whether 0023 has already dropped the real table. Inside the
+    ``db_session`` rollback transaction this DDL is transactional and rolls
+    back with the fixture.
+    """
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS governance.query_profile_registries ("
+            "  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+            "  profiles jsonb NOT NULL DEFAULT '[]'::jsonb,"
+            "  is_active boolean NOT NULL DEFAULT false,"
+            "  updated_at timestamptz NOT NULL DEFAULT now()"
+            ")"
+        )
+    )
+
+
 def _reset(conn):
     """Clear the target table + neutralize existing registry rows so the
     seed function starts from a known-empty registry state."""
+    _ensure_registry_table(conn)
     conn.execute(text("DELETE FROM governance.query_profiles"))
     conn.execute(
         text(
@@ -127,11 +153,10 @@ def test_seed_preserves_custom_profile_and_adds_missing(db_session):
     conn.execute(
         text(
             "INSERT INTO governance.query_profile_registries "
-            "(id, name, profiles, is_active, created_by, created_at, updated_at) "
-            "VALUES (gen_random_uuid(), :name, CAST(:profiles AS jsonb), true, "
-            "gen_random_uuid(), now(), now())"
+            "(id, profiles, is_active, updated_at) "
+            "VALUES (gen_random_uuid(), CAST(:profiles AS jsonb), true, now())"
         ),
-        {"name": "custom-test-registry-0022", "profiles": json.dumps([custom])},
+        {"profiles": json.dumps([custom])},
     )
 
     _MIG._seed_query_profiles(conn)
