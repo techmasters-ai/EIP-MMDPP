@@ -107,7 +107,11 @@ _CANONICAL_PROFILES = {
 }
 
 # Keys of a profile dict that get promoted into the flat `definition` JSONB
-# column rather than their own `query_profiles` column.
+# column rather than their own `query_profiles` column. Includes
+# `placeholder_query` — a live per-profile UI field (rendered/edited in the
+# frontend) that would otherwise be lost when the registry table is dropped.
+# `exposed` is intentionally NOT preserved: it is replaced by the `enabled`
+# column.
 _DEFINITION_KEYS = (
     "target_entity_types",
     "traversals",
@@ -115,7 +119,101 @@ _DEFINITION_KEYS = (
     "profile_sections",
     "profile_subgroup",
     "include_associated_systems",
+    "placeholder_query",
 )
+
+
+def _seed_query_profiles(conn) -> None:
+    """Merge-preserving data migration: seed governance.query_profiles from
+    the active/latest registry row's ``profiles`` list, then ADD only the
+    canonical starter profiles that are missing.
+
+    The registry ``profiles`` list is editable via live CRUD endpoints, so we
+    must NOT blindly replace it — a strict "not exactly 4 → replace" rule would
+    silently discard real custom/edited profiles. Instead every registry
+    profile is preserved and canonical starters only fill gaps. The source row
+    disappears once a later task drops the registry table, so this is the last
+    chance to carry that data forward.
+
+    Extracted to module level so tests can exercise the merge behavior against
+    a real connection inside a rollback transaction.
+    """
+    row = conn.execute(
+        sa.text(
+            "SELECT profiles FROM governance.query_profile_registries "
+            "WHERE is_active IS TRUE ORDER BY updated_at DESC LIMIT 1"
+        )
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            sa.text(
+                "SELECT profiles FROM governance.query_profile_registries "
+                "ORDER BY updated_at DESC LIMIT 1"
+            )
+        ).fetchone()
+
+    registry_profiles = row[0] if row else []
+    if isinstance(registry_profiles, str):
+        registry_profiles = json.loads(registry_profiles)
+    registry_profiles = registry_profiles or []
+
+    # Preserve ALL registry profiles (custom ones included), keyed by id.
+    merged: dict = {}
+    for p in registry_profiles:
+        if isinstance(p, dict) and p.get("id"):
+            merged[p["id"]] = p
+    n_registry = len(merged)
+
+    # Fill only the MISSING canonical starters.
+    n_added = 0
+    for pid, canonical in _CANONICAL_PROFILES.items():
+        if pid not in merged:
+            merged[pid] = canonical
+            n_added += 1
+
+    for p in merged.values():
+        definition = {k: p[k] for k in _DEFINITION_KEYS if k in p}
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO governance.query_profiles
+                    (id, profile_key, label, description, kind,
+                     root_entity_types, definition, source_id, enabled,
+                     created_by, created_at, updated_at)
+                VALUES
+                    (gen_random_uuid(), :profile_key, :label, :description, :kind,
+                     CAST(:root_entity_types AS jsonb), CAST(:definition AS jsonb),
+                     NULL, TRUE, NULL, now(), now())
+                """
+            ),
+            {
+                "profile_key": p["id"],
+                "label": p["label"],
+                "description": p.get("description"),
+                "kind": p["kind"],
+                "root_entity_types": json.dumps(p.get("root_entity_types", [])),
+                "definition": json.dumps(definition),
+            },
+        )
+
+    # Migrations log to stdout — make which path ran visible.
+    print(
+        f"[0022] migrated {n_registry} registry profiles; "
+        f"added {n_added} missing canonical starters"
+    )
+
+    present = {
+        r[0]
+        for r in conn.execute(
+            sa.text("SELECT profile_key FROM governance.query_profiles")
+        ).fetchall()
+    }
+    missing = [pid for pid in _CANONICAL_PROFILES if pid not in present]
+    if missing:
+        raise RuntimeError(
+            f"Expected all canonical starter profiles present in "
+            f"governance.query_profiles after data migration; missing: {missing}"
+        )
 
 
 def upgrade() -> None:
@@ -164,62 +262,7 @@ def upgrade() -> None:
         schema="governance",
     )
 
-    conn = op.get_bind()
-
-    row = conn.execute(
-        sa.text(
-            "SELECT profiles FROM governance.query_profile_registries "
-            "WHERE is_active IS TRUE ORDER BY updated_at DESC LIMIT 1"
-        )
-    ).fetchone()
-    if row is None:
-        row = conn.execute(
-            sa.text(
-                "SELECT profiles FROM governance.query_profile_registries "
-                "ORDER BY updated_at DESC LIMIT 1"
-            )
-        ).fetchone()
-
-    profiles = row[0] if row else []
-    if isinstance(profiles, str):
-        profiles = json.loads(profiles)
-
-    if not profiles or len(profiles) != 4:
-        profiles = list(_CANONICAL_PROFILES.values())
-
-    for p in profiles:
-        definition = {k: p[k] for k in _DEFINITION_KEYS if k in p}
-        conn.execute(
-            sa.text(
-                """
-                INSERT INTO governance.query_profiles
-                    (id, profile_key, label, description, kind,
-                     root_entity_types, definition, source_id, enabled,
-                     created_by, created_at, updated_at)
-                VALUES
-                    (gen_random_uuid(), :profile_key, :label, :description, :kind,
-                     CAST(:root_entity_types AS jsonb), CAST(:definition AS jsonb),
-                     NULL, TRUE, NULL, now(), now())
-                """
-            ),
-            {
-                "profile_key": p["id"],
-                "label": p["label"],
-                "description": p.get("description"),
-                "kind": p["kind"],
-                "root_entity_types": json.dumps(p.get("root_entity_types", [])),
-                "definition": json.dumps(definition),
-            },
-        )
-
-    count = conn.execute(
-        sa.text("SELECT count(*) FROM governance.query_profiles")
-    ).scalar()
-    if count != 4:
-        raise RuntimeError(
-            f"Expected exactly 4 rows in governance.query_profiles after "
-            f"data migration, found {count}."
-        )
+    _seed_query_profiles(op.get_bind())
 
 
 def downgrade() -> None:

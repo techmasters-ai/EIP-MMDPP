@@ -43,7 +43,8 @@ class QueryProfile(Base, TimestampMixin):
 
     ``definition`` holds the remaining profile body not promoted to its own
     column: ``target_entity_types``, ``traversals``, ``section_profile_ids``,
-    ``profile_sections``, ``profile_subgroup``, ``include_associated_systems``.
+    ``profile_sections``, ``profile_subgroup``, ``include_associated_systems``,
+    and ``placeholder_query`` (a live per-profile UI field).
     """
 
     __tablename__ = "query_profiles"

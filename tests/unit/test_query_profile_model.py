@@ -52,8 +52,8 @@ def test_source_id_foreign_key_to_sources():
 def test_enabled_not_null_default_true():
     col = _column("enabled")
     assert col.nullable is False
-    # server default renders TRUE; Python-side default (if any) must also be True
-    assert col.default is None or col.default.arg is True
+    # Python-side default must be present and True (not merely absent).
+    assert col.default is not None and col.default.arg is True
 
 
 def test_root_entity_types_and_definition_are_jsonb():
