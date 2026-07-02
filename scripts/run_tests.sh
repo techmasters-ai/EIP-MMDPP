@@ -114,8 +114,6 @@ run_migrations() {
   cd "${PROJECT_ROOT}"
   DATABASE_URL="${DATABASE_URL_SYNC:-postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT:-5435}/${POSTGRES_DB}}"
   DATABASE_URL="${DATABASE_URL}" alembic upgrade head
-  info "Seeding ontology..."
-  python3 scripts/seed_ontology.py
 }
 
 # ---------------------------------------------------------------------------

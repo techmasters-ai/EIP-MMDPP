@@ -12,7 +12,6 @@
 #   ./manage.sh --logs [service] Stream logs
 #   ./manage.sh --blow-away      Destroy everything
 #   ./manage.sh --migrate        Run database migrations
-#   ./manage.sh --seed           Seed ontology data
 #   ./manage.sh --db-shell       Open psql shell
 #   ./manage.sh --worker-status  Show Celery worker status
 #   ./manage.sh --test [mode]    Run tests (delegates to scripts/run_tests.sh)
@@ -355,12 +354,6 @@ cmd_migrate() {
   info "Migrations complete."
 }
 
-cmd_seed() {
-  header "Seeding ontology"
-  dc exec api python scripts/seed_ontology.py
-  info "Ontology seeded."
-}
-
 cmd_db_shell() {
   header "Opening PostgreSQL shell"
   dc exec postgres psql -U "${POSTGRES_USER:-eip}" -d "${POSTGRES_DB:-eip}"
@@ -442,7 +435,6 @@ ${CYAN}Service Lifecycle:${NC}
 
 ${CYAN}Database:${NC}
   --migrate            Run alembic upgrade head in the api container
-  --seed               Run ontology seeder (scripts/seed_ontology.py)
   --db-shell           Open interactive psql shell
 
 ${CYAN}Workers:${NC}
@@ -488,7 +480,6 @@ main() {
     --logs)           cmd_logs "${2:-}" ;;
     --blow-away)      cmd_blow_away ;;
     --migrate)        cmd_migrate ;;
-    --seed)           cmd_seed ;;
     --db-shell)       cmd_db_shell ;;
     --worker-status)  cmd_worker_status ;;
     --test)           cmd_test "${2:-}" ;;

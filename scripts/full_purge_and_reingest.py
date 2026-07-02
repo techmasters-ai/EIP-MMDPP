@@ -55,11 +55,7 @@ POSTGRES_TRUNCATE_TABLES: list[str] = [
     "governance.patch_approvals",
     "governance.patch_events",
     "governance.patches",
-    "governance.query_profile_registries",
     "governance.trusted_data_submissions",
-    "ontology.entity_types",
-    "ontology.relationship_types",
-    "ontology.versions",
     "ingest.watch_logs",
 ]
 

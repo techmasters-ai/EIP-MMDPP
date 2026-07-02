@@ -3,7 +3,7 @@ from app.models.ingest import Source, Document, Artifact, WatchDir, WatchLog, Pi
 from app.models.retrieval import TextChunk, ImageChunk, Chunk  # Chunk = TextChunk (deprecated alias)
 from app.models.governance import Feedback, Patch, PatchApproval, PatchEvent
 from app.models.trusted_data import TrustedDataSubmission
-from app.models.query_profiles import QueryProfileRegistry
+from app.models.query_profiles import QueryProfile
 from app.models.auth import User, UserRole
 
 __all__ = [
@@ -24,7 +24,7 @@ __all__ = [
     "PatchApproval",
     "PatchEvent",
     "TrustedDataSubmission",
-    "QueryProfileRegistry",
+    "QueryProfile",
     "User",
     "UserRole",
 ]
