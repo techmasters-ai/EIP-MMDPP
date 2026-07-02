@@ -500,28 +500,43 @@ async def _in_source_document_ids(
     return {str(row[0]) for row in rows}
 
 
-async def _entity_document_ids(
+async def _entity_document_ids_batch(
     graph_store: Any,
-    node_id: str,
-    limit: int = 25,
-) -> set[str]:
-    """Document ids of an entity's EXTRACTED_FROM chunks (empty on any error)."""
-    if not node_id:
-        return set()
-    try:
-        chunks = await graph_store.get_entity_evidence_chunks(node_id, limit)
-    except Exception:
-        return set()
-    doc_ids: set[str] = set()
-    for chunk in chunks or []:
-        did = (
-            chunk.get("document_id")
-            if isinstance(chunk, dict)
-            else getattr(chunk, "document_id", None)
+    node_ids: list[str],
+    *,
+    cache: dict[str, set[str]] | None = None,
+) -> dict[str, set[str]]:
+    """COMPLETE distinct EXTRACTED_FROM document_ids per node, in ONE graph
+    call for the whole set (never per-candidate, never a chunk sample).
+
+    Graph errors are NOT swallowed — a transient failure must surface as an
+    error rather than silently emptying an entity's document set (which would
+    wrongly drop the candidate under scope while it survives under Global).
+
+    A caller-supplied *cache* memoizes per-node results across the candidate
+    sets of a single resolve pass so the same entity is never re-queried.
+    """
+    cache = cache if cache is not None else {}
+    result: dict[str, set[str]] = {}
+    missing: list[str] = []
+    for nid in node_ids:
+        if not nid:
+            result[nid] = set()
+        elif nid in cache:
+            result[nid] = cache[nid]
+        else:
+            missing.append(nid)
+
+    if missing:
+        fetched = await graph_store.get_entity_source_document_ids(
+            list(dict.fromkeys(missing))
         )
-        if did:
-            doc_ids.add(str(did))
-    return doc_ids
+        for nid in missing:
+            docs = set(fetched.get(nid) or set())
+            cache[nid] = docs
+            result[nid] = docs
+
+    return result
 
 
 async def _filter_candidates_in_source(
@@ -529,28 +544,32 @@ async def _filter_candidates_in_source(
     graph_store: Any,
     db: AsyncSession,
     source_id: uuid.UUID | None,
+    *,
+    doc_id_cache: dict[str, set[str]] | None = None,
 ) -> list[Any]:
     """Keep only candidates that have an EXTRACTED_FROM document in *source_id*.
 
-    No-op (returns *candidates* unchanged, no DB round-trip) when *source_id*
-    is None or the candidate set is empty — this preserves the Global path
-    byte-for-byte.
+    No-op (returns *candidates* unchanged, no graph/DB round-trip) when
+    *source_id* is None or the candidate set is empty — this preserves the
+    Global path byte-for-byte. The in-source test uses each entity's COMPLETE
+    document set, so membership never depends on an arbitrary chunk window.
     """
     if source_id is None or not candidates:
         return candidates
 
-    per_candidate: list[tuple[Any, set[str]]] = []
+    node_ids = [_entity_node_id(c) for c in candidates]
+    docs_by_node = await _entity_document_ids_batch(
+        graph_store, node_ids, cache=doc_id_cache
+    )
     all_doc_ids: set[str] = set()
-    for candidate in candidates:
-        doc_ids = await _entity_document_ids(graph_store, _entity_node_id(candidate))
-        per_candidate.append((candidate, doc_ids))
-        all_doc_ids |= doc_ids
+    for docs in docs_by_node.values():
+        all_doc_ids |= docs
 
     in_source = await _in_source_document_ids(db, all_doc_ids, source_id)
     return [
         candidate
-        for candidate, doc_ids in per_candidate
-        if doc_ids & in_source
+        for candidate in candidates
+        if docs_by_node.get(_entity_node_id(candidate), set()) & in_source
     ]
 
 
@@ -572,6 +591,9 @@ async def resolve_root_entity(
     """
     root_types = _root_entity_types(profile, section_profiles)
     scoped = source_id is not None
+    # Per-resolve memo so an entity appearing in multiple candidate sets is
+    # queried for its document membership at most once.
+    doc_id_cache: dict[str, set[str]] = {}
 
     # 1. Alias search
     alias_matches = await graph_store.search_by_alias(
@@ -583,7 +605,7 @@ async def resolve_root_entity(
     ]
     if scoped:
         alias_filtered = await _filter_candidates_in_source(
-            alias_filtered, graph_store, db, source_id
+            alias_filtered, graph_store, db, source_id, doc_id_cache=doc_id_cache
         )
 
     # 2. Fulltext search
@@ -594,7 +616,7 @@ async def resolve_root_entity(
     )
     if scoped:
         fulltext_matches = await _filter_candidates_in_source(
-            fulltext_matches, graph_store, db, source_id
+            fulltext_matches, graph_store, db, source_id, doc_id_cache=doc_id_cache
         )
 
     all_matches = alias_filtered + fulltext_matches
@@ -606,7 +628,7 @@ async def resolve_root_entity(
         resolved = await graph_store.resolve_root_entity(request.query_text)
         if resolved is not None and scoped:
             direct_in_source = await _filter_candidates_in_source(
-                [resolved], graph_store, db, source_id
+                [resolved], graph_store, db, source_id, doc_id_cache=doc_id_cache
             )
             resolved = direct_in_source[0] if direct_in_source else None
         if resolved is not None:
@@ -624,7 +646,8 @@ async def resolve_root_entity(
                 ]
                 if scoped:
                     co_filtered = await _filter_candidates_in_source(
-                        co_filtered, graph_store, db, source_id
+                        co_filtered, graph_store, db, source_id,
+                        doc_id_cache=doc_id_cache,
                     )
                 candidate = _select_best_candidate(co_filtered, request.query_text)
             except Exception:

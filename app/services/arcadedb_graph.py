@@ -2010,6 +2010,57 @@ class ArcadeDBGraphStore:
             r.pop("image_embedding", None)
         return rows
 
+    async def get_entity_source_document_ids(
+        self,
+        entity_rids: list[str],
+    ) -> dict[str, set[str]]:
+        """Return, per entity, the COMPLETE distinct set of document_ids of
+        its EXTRACTED_FROM chunks (no LIMIT — full document membership, not a
+        chunk sample). Batched into a single query across the candidate set.
+
+        Used by the Project-Source scope filter: an entity is "in-source" iff
+        this set intersects the source's documents. Sampling the first-N
+        chunks (as get_entity_evidence_chunks does) would nondeterministically
+        miss the scoped document for heavily-referenced entities, so this
+        query projects distinct document_ids directly and never truncates.
+        """
+        # Resolve any non-RID ids (most inputs are already RIDs from prior
+        # alias/fulltext/associated queries, so this is usually a no-op).
+        rid_by_input: dict[str, str] = {}
+        for nid in entity_rids:
+            if not nid:
+                continue
+            rid = nid if str(nid).startswith("#") else await self._resolve_rid(nid)
+            if rid:
+                rid_by_input[nid] = str(rid)
+        if not rid_by_input:
+            return {nid: set() for nid in entity_rids}
+
+        rid_list = ", ".join(dict.fromkeys(rid_by_input.values()))
+        # `@rid` is a valid projection (see get_entity_evidence_chunks);
+        # `out('EXTRACTED_FROM').document_id` projects document_id over the
+        # linked-chunk collection, yielding a list per entity.
+        sql = (
+            f"SELECT @rid AS entity_rid, "
+            f"out('EXTRACTED_FROM').document_id AS document_ids "
+            f"FROM [{rid_list}]"
+        )
+        rows = await self._client.query(self._database, "sql", sql)
+
+        docs_by_rid: dict[str, set[str]] = {}
+        for r in rows:
+            rid = str(r.get("entity_rid", ""))
+            raw = r.get("document_ids") or []
+            if not isinstance(raw, list):
+                raw = [raw]
+            docs_by_rid[rid] = {str(d) for d in raw if d}
+
+        # Map results back onto the caller's original input keys.
+        return {
+            nid: docs_by_rid.get(rid, set())
+            for nid, rid in rid_by_input.items()
+        }
+
     async def get_graph_stats(self) -> dict[str, Any]:
         """Return backend-level graph statistics."""
         v_sql = "SELECT count(*) AS cnt FROM V"
