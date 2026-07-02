@@ -215,6 +215,33 @@ async def test_resolve_scoped_direct_name_out_of_source_falls_to_co_extracted():
     graph_store.get_co_extracted_entities.assert_awaited()
 
 
+async def test_resolve_co_extracted_in_source_filter_error_propagates():
+    """A graph error during the co-extracted branch's in-source filter must
+    propagate — NOT be swallowed into a spurious QueryRootNotFoundError. The
+    guard around the co-extracted fetch/selection does not cover the filter."""
+    source_id = uuid.uuid4()
+    direct_out = _ent("#9", "SA-2")
+    co_ent = _ent("#7", "SA-2 System")
+
+    def _side(entity_rids):
+        if "#7" in entity_rids:  # co-extracted in-source filter
+            raise RuntimeError("graph down")
+        return {rid: {"doc-out"} for rid in entity_rids}  # direct → out of source
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[])
+    graph_store.resolve_root_entity = AsyncMock(return_value=direct_out)
+    graph_store.get_co_extracted_entities = AsyncMock(return_value=[co_ent])
+    graph_store.get_entity_source_document_ids = AsyncMock(side_effect=_side)
+    db = _mock_db(["doc-in"])
+
+    with pytest.raises(RuntimeError, match="graph down"):
+        await resolve_root_entity(
+            graph_store, _profile(), _request(), db=db, source_id=source_id
+        )
+
+
 # ---------------------------------------------------------------------------
 # (d) Global path: no filtering, no DB round-trips, no graph doc-id calls
 # ---------------------------------------------------------------------------

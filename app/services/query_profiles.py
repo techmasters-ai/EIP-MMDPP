@@ -635,7 +635,11 @@ async def resolve_root_entity(
             candidate = resolved
         else:
             # 4. Co-extracted fallback: find entities that co-occur with
-            # a partial-match entity in the same source chunks
+            # a partial-match entity in the same source chunks. Only the
+            # co-extracted fetch/selection is tolerant of failure; the
+            # in-source filter is deliberately OUTSIDE the guard so its graph
+            # errors propagate (consistent with alias/fulltext/direct) rather
+            # than being swallowed into a spurious QueryRootNotFoundError.
             try:
                 co_extracted = await graph_store.get_co_extracted_entities(
                     request.query_text, limit=5,
@@ -644,14 +648,15 @@ async def resolve_root_entity(
                     e for e in co_extracted
                     if not root_types or getattr(e, "entity_type", "") in root_types
                 ]
-                if scoped:
-                    co_filtered = await _filter_candidates_in_source(
-                        co_filtered, graph_store, db, source_id,
-                        doc_id_cache=doc_id_cache,
-                    )
-                candidate = _select_best_candidate(co_filtered, request.query_text)
             except Exception:
-                candidate = None
+                co_filtered = []
+
+            if scoped:
+                co_filtered = await _filter_candidates_in_source(
+                    co_filtered, graph_store, db, source_id,
+                    doc_id_cache=doc_id_cache,
+                )
+            candidate = _select_best_candidate(co_filtered, request.query_text)
 
             if candidate is None:
                 raise QueryRootNotFoundError(
