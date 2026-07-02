@@ -6,6 +6,8 @@ Task 1.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from app.services.query_profiles import _CANONICAL_BY_ENTITY_TYPE
 from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
 
@@ -23,12 +25,18 @@ def _collect_profile_sections() -> list[str]:
             extra = finfo.json_schema_extra or {}
             if not isinstance(extra, dict):
                 continue
-            for section in extra.get("profile_sections") or []:
-                sections.add(section)
+            raw = extra.get("profile_sections")
+            # Guard the value type: a str would silently iterate its
+            # characters. Only list/tuple of section names is valid.
+            if not isinstance(raw, (list, tuple)):
+                continue
+            for section in raw:
+                if isinstance(section, str):
+                    sections.add(section)
     return sorted(sections)
 
 
-def get_live_ontology() -> dict:
+def get_live_ontology() -> dict[str, Any]:
     """Return the live ontology payload for ``GET /v1/ontology``.
 
     Shape: ``{version, entity_types: [{name, label}],
