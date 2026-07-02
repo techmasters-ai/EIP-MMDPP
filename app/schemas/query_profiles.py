@@ -208,3 +208,22 @@ class QueryProfileDossierResponse(APIModel):
     resolved_root: GraphEntityResult
     aliases: list[str] = Field(default_factory=list)
     sections: list[QueryProfileDossierSection] = Field(default_factory=list)
+
+
+class OntologyEntityType(APIModel):
+    name: str
+    label: str
+
+
+class OntologyRelationshipType(APIModel):
+    name: str
+
+
+class OntologyResponse(APIModel):
+    """Live ontology payload for ``GET /v1/ontology`` — served straight
+    from the air_defense_v3 Pydantic SSoT (`app.services.ontology_service`),
+    no stored/registry copy."""
+    version: str
+    entity_types: list[OntologyEntityType] = Field(default_factory=list)
+    relationship_types: list[OntologyRelationshipType] = Field(default_factory=list)
+    profile_sections: list[str] = Field(default_factory=list)

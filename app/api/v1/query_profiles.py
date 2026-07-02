@@ -10,6 +10,7 @@ from app.db.session import get_async_session, get_graph_store
 from app.models.query_profiles import QueryProfileRegistry
 from app.schemas.query_profiles import (
     ActiveQueryProfilesResponse,
+    OntologyResponse,
     QueryProfileDefinition,
     QueryProfileDossierResponse,
     QueryProfileRegistryCreate,
@@ -18,6 +19,7 @@ from app.schemas.query_profiles import (
     QueryProfileSearchRequest,
     QueryProfileSectionResponse,
 )
+from app.services.ontology_service import get_live_ontology
 from app.services.query_profiles import (
     QueryProfileNotFoundError,
     QueryProfileRegistryNotFoundError,
@@ -93,6 +95,13 @@ def _validate_profile_references(
                 f"Missing section ids: {', '.join(sorted(missing))}"
             ),
         )
+
+
+@router.get("/ontology", response_model=OntologyResponse)
+async def get_ontology() -> OntologyResponse:
+    """Live ontology, served straight from the air_defense_v3 Pydantic
+    SSoT (no stored/registry copy) — see app.services.ontology_service."""
+    return OntologyResponse.model_validate(get_live_ontology())
 
 
 @router.get(
