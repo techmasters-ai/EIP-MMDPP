@@ -287,7 +287,7 @@ Full interactive docs at `/docs`.
 | `--restart` | restart without rebuild |
 | `--status` / `--worker-status` | service + Celery health |
 | `--logs [service]` | stream logs |
-| `--migrate` / `--seed` / `--db-shell` | alembic upgrade / ontology seed / psql |
+| `--migrate` / `--db-shell` | alembic upgrade / psql |
 | `--test [unit\|integration\|e2e]` | run the test suite (`scripts/run_tests.sh`) |
 | `--blow-away` | **destroy everything** (`down -v` + `rm -rf reports/`) — irreversible, confirms first |
 
@@ -299,7 +299,7 @@ Full interactive docs at `/docs`.
 
 - **`frontend/`** — React 18 + TypeScript + Vite web UI for upload, retrieval/search, the Docling viewer (with translation overlays and image descriptions), query-profile editing, governance/patch approval, community browsing, and status monitoring.
 - **`notebooks/`** — Jupyter notebooks for analysis/experimentation.
-- **`tools/`, `scripts/`** — admin/eval utilities (ontology seeding, ranker fitting, test runner, corpus surveys).
+- **`tools/`, `scripts/`** — admin/eval utilities (ranker fitting, test runner, corpus surveys).
 
 ---
 

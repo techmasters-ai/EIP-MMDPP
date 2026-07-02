@@ -107,7 +107,7 @@ stop_stack() {
 trap stop_stack EXIT
 
 # ---------------------------------------------------------------------------
-# Migrations and seed
+# Migrations
 # ---------------------------------------------------------------------------
 run_migrations() {
   info "Running database migrations..."

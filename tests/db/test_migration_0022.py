@@ -42,21 +42,26 @@ _MIG = _load_migration()
 
 
 def _ensure_registry_table(conn):
-    """Create a minimal ``governance.query_profile_registries`` table if it
-    is absent.
+    """(Re)create a minimal synthetic ``governance.query_profile_registries``
+    table with only the columns 0022's seed logic + these tests touch.
 
     Migration 0023 drops the real registry table, so once the DB is at head
     this table no longer exists — but 0022's ``_seed_query_profiles`` still
     reads it (``SELECT profiles ... WHERE is_active ... ORDER BY updated_at``).
-    This recreates just the columns that seed function (and these tests)
-    touch, so the migration's frozen seed logic can be exercised regardless
-    of whether 0023 has already dropped the real table. Inside the
-    ``db_session`` rollback transaction this DDL is transactional and rolls
-    back with the fixture.
+    We DROP-then-CREATE (rather than CREATE IF NOT EXISTS) so the table is the
+    minimal synthetic shape regardless of migration state: at exactly 0022 the
+    real full-schema table still exists with NOT NULL ``name``/``created_by``,
+    which our minimal INSERT does not supply — dropping it first guarantees
+    the minimal INSERT succeeds. Inside the ``db_session`` rollback
+    transaction this DDL is transactional and reverts with the fixture, so the
+    real table (if any) is restored on rollback.
     """
     conn.execute(
+        text("DROP TABLE IF EXISTS governance.query_profile_registries")
+    )
+    conn.execute(
         text(
-            "CREATE TABLE IF NOT EXISTS governance.query_profile_registries ("
+            "CREATE TABLE governance.query_profile_registries ("
             "  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
             "  profiles jsonb NOT NULL DEFAULT '[]'::jsonb,"
             "  is_active boolean NOT NULL DEFAULT false,"

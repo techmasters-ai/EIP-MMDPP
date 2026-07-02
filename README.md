@@ -142,7 +142,6 @@ All service lifecycle, database, worker, and test operations are available throu
 
 # Database
 ./manage.sh --migrate            # Run alembic upgrade head
-./manage.sh --seed               # Run ontology seeder
 
 # Testing (delegates to scripts/run_tests.sh)
 ./manage.sh --test               # Full suite
