@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,20 +102,44 @@ async def _assert_dossier_refs_exist(
     definition: dict[str, Any],
     self_key: str,
 ) -> None:
-    """For a dossier, every ``section_profile_id`` must resolve to an existing
-    ``profile_key`` row (replaces the removed registry ``_validate_profile_references``).
-    Missing refs → ``HTTPException(422)``."""
+    """Validate a dossier's ``section_profile_id`` references (replaces the
+    removed registry ``_validate_profile_references``). Each reference must:
+
+      * not be the dossier's own ``profile_key`` — a dossier cannot reference
+        itself (self-reference → 422);
+      * resolve to an existing ``profile_key`` row (missing → 422);
+      * point at a ``section`` / ``section_properties`` profile — a dossier
+        cannot reference another dossier (invalid-kind → 422).
+
+    Distinct messages are surfaced for each failure class so the caller can
+    tell them apart."""
     if kind != "dossier":
         return
     section_ids = [
         s for s in ((definition or {}).get("section_profile_ids") or []) if s
     ]
+
+    self_refs: list[str] = []
     missing: list[str] = []
+    invalid_kind: list[str] = []
     for section_id in section_ids:
         if section_id == self_key:
+            self_refs.append(section_id)
             continue
-        if await get_profile(db, section_id) is None:
+        referenced = await get_profile(db, section_id)
+        if referenced is None:
             missing.append(section_id)
+        elif getattr(referenced, "kind", None) not in ("section", "section_properties"):
+            invalid_kind.append(section_id)
+
+    if self_refs:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A dossier profile cannot reference itself: "
+                f"{', '.join(sorted(set(self_refs)))}"
+            ),
+        )
     if missing:
         raise HTTPException(
             status_code=422,
@@ -122,6 +147,39 @@ async def _assert_dossier_refs_exist(
                 "Dossier profiles can only reference existing profiles. "
                 f"Missing section_profile_ids: {', '.join(sorted(set(missing)))}"
             ),
+        )
+    if invalid_kind:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Dossier profiles can only reference section or "
+                "section_properties profiles, not other dossiers: "
+                f"{', '.join(sorted(set(invalid_kind)))}"
+            ),
+        )
+
+
+async def _assert_source_exists(
+    db: AsyncSession,
+    source_id: Optional[uuid.UUID],
+) -> None:
+    """When a profile carries a Project-Source scope, that source must exist.
+
+    Pre-validating here maps a bad ``source_id`` to a clean 422 instead of the
+    raw FK ``IntegrityError`` — which create mislabels as a 409 'already exists'
+    and update leaks as a 500. ``source_id=None`` (Global) is a no-op."""
+    if source_id is None:
+        return
+    row = (
+        await db.execute(
+            text("SELECT 1 FROM ingest.sources WHERE id = :source_id"),
+            {"source_id": source_id},
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Project Source '{source_id}' not found",
         )
 
 
@@ -169,6 +227,7 @@ async def create_query_profile(
     await _assert_dossier_refs_exist(
         db, kind=body.kind, definition=body.definition, self_key=body.profile_key
     )
+    await _assert_source_exists(db, body.source_id)
 
     if await get_profile(db, body.profile_key) is not None:
         raise HTTPException(
@@ -253,6 +312,10 @@ async def update_query_profile(
     await _assert_dossier_refs_exist(
         db, kind=merged_kind, definition=merged_definition, self_key=profile_key
     )
+    # Only validate the source when the update actually sets one — an omitted
+    # source_id keeps the (already-valid) existing scope, and an explicit None
+    # clears it to Global. ``updates.get`` yields None in both no-op cases.
+    await _assert_source_exists(db, updates.get("source_id"))
 
     try:
         profile = await update_profile(db, profile_key, **updates)

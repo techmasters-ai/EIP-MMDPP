@@ -194,6 +194,15 @@ def _p_include_associated(profile: Any) -> bool:
     return bool(_p_def_field(profile, "include_associated_systems", False))
 
 
+def _p_enabled(profile: Any) -> bool:
+    """Whether a profile is available for search. Duck-typed over the
+    QueryProfile model (``enabled`` column), the schema object (``enabled``
+    attribute), and a dict body — defaulting to True when absent."""
+    if isinstance(profile, dict):
+        return bool(profile.get("enabled", True))
+    return bool(getattr(profile, "enabled", True))
+
+
 def _step_field(step: Any, key: str, default: Any = None) -> Any:
     if isinstance(step, dict):
         return step.get(key, default)
@@ -893,6 +902,10 @@ async def execute_section_search(
     profile: QueryProfile | None = None,
 ) -> QueryProfileSectionResponse:
     profile = profile or await get_required_profile(db, request.profile_id)
+    if not _p_enabled(profile):
+        raise QueryProfileNotFoundError(
+            f"Query profile '{request.profile_id}' is not available (disabled)"
+        )
     kind = _p_kind(profile)
     if kind not in ("section", "section_properties"):
         raise QueryProfileNotFoundError(
@@ -900,6 +913,9 @@ async def execute_section_search(
         )
 
     source_id = _source_id_of(profile)
+    # Per-search memo for entity→document membership, used by the section-item
+    # source filter below (the resolve pass keeps its own internal memo).
+    doc_id_cache: dict[str, set[str]] = {}
     resolved = await resolve_root_entity(
         graph_store, profile, request, db=db, source_id=source_id
     )
@@ -929,6 +945,14 @@ async def execute_section_search(
         )
 
     items = raw  # list[GraphEntityResult]
+    # When source-scoped, the traversal can return neighbor entities whose
+    # documents belong to OTHER sources — drop them at the entity level before
+    # they're returned/attached-evidence (Fix 1). Global (source_id=None) is a
+    # no-op inside _filter_candidates_in_source, so this path is unchanged.
+    if source_id is not None:
+        items = await _filter_candidates_in_source(
+            items, graph_store, db, source_id, doc_id_cache=doc_id_cache
+        )
     if request.include_evidence:
         await attach_evidence(
             graph_store, db, [resolved] + items,
@@ -952,12 +976,19 @@ async def execute_dossier_search(
     profile: QueryProfile | None = None,
 ) -> QueryProfileDossierResponse:
     profile = profile or await get_required_profile(db, request.profile_id)
+    if not _p_enabled(profile):
+        raise QueryProfileNotFoundError(
+            f"Query profile '{request.profile_id}' is not available (disabled)"
+        )
     if _p_kind(profile) != "dossier":
         raise QueryProfileNotFoundError(
             f"Profile '{request.profile_id}' is not a dossier query profile"
         )
 
     source_id = _source_id_of(profile)
+    # Per-search memo for entity→document membership, shared across every
+    # section-kind item filter below (resolve keeps its own internal memo).
+    doc_id_cache: dict[str, set[str]] = {}
     section_ids = _p_section_profile_ids(profile)
 
     # Load referenced section profiles from the table by profile_key.
@@ -1005,6 +1036,13 @@ async def execute_dossier_search(
             )
         else:
             items = raw  # list[GraphEntityResult]
+            # Source-filter traversal items at the entity level so a scoped
+            # dossier section never returns entities from other sources (Fix 1).
+            # Global (source_id=None) is a no-op → path unchanged.
+            if source_id is not None:
+                items = await _filter_candidates_in_source(
+                    items, graph_store, db, source_id, doc_id_cache=doc_id_cache
+                )
             all_items.extend(items)
             sections.append(
                 QueryProfileDossierSection(

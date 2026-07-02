@@ -39,6 +39,7 @@ from app.services.query_profiles import (
     _filter_candidates_in_source,
     create_profile,
     delete_profile,
+    execute_section_search,
     resolve_root_entity,
     update_profile,
 )
@@ -402,6 +403,91 @@ async def test_associated_systems_unfiltered_when_global():
     related = await _associated_systems(graph_store, db, resolved, None)
 
     assert [r.node_id for r in related] == ["#1", "#2"]
+    graph_store.get_entity_source_document_ids.assert_not_called()
+    db.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (f) section-kind traversal items are source-filtered at the entity level
+#     when scoped (Fix 1); Global returns them all.
+# ---------------------------------------------------------------------------
+
+
+_SECTION_TRAVERSAL_DEF = {
+    "traversals": [
+        {
+            "steps": [
+                {
+                    "direction": "out",
+                    "rel_types": ["ASSOCIATED_WITH"],
+                    "min_hops": 1,
+                    "max_hops": 1,
+                }
+            ]
+        }
+    ]
+}
+
+
+async def test_section_items_source_filtered_when_scoped():
+    """A scoped ``section`` profile whose traversal returns a mix of in-source
+    and out-of-source entities returns ONLY the in-source ones (Fix 1)."""
+    source_id = uuid.uuid4()
+    profile = _profile(
+        kind="section",
+        root_entity_types=["RADAR_SYSTEM"],
+        definition=_SECTION_TRAVERSAL_DEF,
+        source_id=source_id,
+    )
+    root = _ent("#root", "SA-2")
+    item_in = _ent("#in", "In Neighbor")
+    item_out = _ent("#out", "Out Neighbor")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_directed_traversal = AsyncMock(return_value=[item_in, item_out])
+    graph_store.get_entity_source_document_ids = AsyncMock(
+        side_effect=_docs_side_effect(
+            {"#root": {"doc-in"}, "#in": {"doc-in"}, "#out": {"doc-out"}}
+        )
+    )
+    db = _mock_db(["doc-in"])
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False), profile=profile
+    )
+
+    # #out belongs to another source → dropped; only #in survives.
+    assert [i.node_id for i in resp.items] == ["#in"]
+    assert resp.total == 1
+
+
+async def test_section_items_unfiltered_when_global():
+    """Global (source_id=None) returns every traversal item — no doc lookup."""
+    profile = _profile(
+        kind="section",
+        root_entity_types=["RADAR_SYSTEM"],
+        definition=_SECTION_TRAVERSAL_DEF,
+        source_id=None,
+    )
+    root = _ent("#root", "SA-2")
+    item_a = _ent("#a", "Alpha")
+    item_b = _ent("#b", "Bravo")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_directed_traversal = AsyncMock(return_value=[item_a, item_b])
+    graph_store.get_entity_source_document_ids = AsyncMock()
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False), profile=profile
+    )
+
+    assert {i.node_id for i in resp.items} == {"#a", "#b"}
+    # No source filtering happened at all on the Global path.
     graph_store.get_entity_source_document_ids.assert_not_called()
     db.execute.assert_not_called()
 

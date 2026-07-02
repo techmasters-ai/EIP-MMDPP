@@ -355,6 +355,112 @@ async def test_create_dossier_nonexistent_ref_422(api):
     assert "ghost_section" in resp.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_create_dossier_self_reference_422(api):
+    """A dossier cannot reference its own profile_key (self-reference → 422)."""
+    client, _ = api
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=None)):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "self_dossier",
+                "label": "Self Dossier",
+                "kind": "dossier",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"section_profile_ids": ["self_dossier"]},
+            },
+        )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"].lower()
+    assert "itself" in detail
+    assert "self_dossier" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_dossier_references_dossier_422(api):
+    """A dossier cannot reference another dossier — only section /
+    section_properties profiles are valid targets (invalid-kind → 422)."""
+    client, _ = api
+
+    async def _lookup(_db, key):
+        # the referenced profile exists but is itself a dossier
+        return (
+            _make_profile_row(profile_key=key, kind="dossier")
+            if key == "other_dossier"
+            else None
+        )
+
+    with patch(f"{_API}.get_profile", new=AsyncMock(side_effect=_lookup)):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "outer_dossier",
+                "label": "Outer Dossier",
+                "kind": "dossier",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"section_profile_ids": ["other_dossier"]},
+            },
+        )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "other_dossier" in detail
+    assert "dossier" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_dossier_references_section_properties_201(api):
+    """A dossier referencing a valid section_properties profile is created."""
+    client, _ = api
+    row = _make_profile_row(profile_key="dossier_sp", kind="dossier")
+
+    async def _lookup(_db, key):
+        # referenced profile is a section_properties (valid target kind)
+        return (
+            _make_profile_row(profile_key=key, kind="section_properties")
+            if key == "system_components"
+            else None
+        )
+
+    with patch(f"{_API}.get_profile", new=AsyncMock(side_effect=_lookup)), patch(
+        f"{_API}.create_profile", new=AsyncMock(return_value=row)
+    ):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "dossier_sp",
+                "label": "Dossier SP",
+                "kind": "dossier",
+                "root_entity_types": ["RADAR_SYSTEM"],
+                "definition": {"section_profile_ids": ["system_components"]},
+            },
+        )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_create_profile_bad_source_id_422(api):
+    """A create carrying a nonexistent source_id is rejected 422 (pre-validated
+    against ingest.sources), NOT mislabeled 409 'already exists' or 500."""
+    client, mock_db = api
+    # The source lookup returns no row → 422.
+    result = MagicMock()
+    result.first.return_value = None
+    mock_db.execute = AsyncMock(return_value=result)
+    bad_source = str(uuid.uuid4())
+    with patch(f"{_API}.get_profile", new=AsyncMock(return_value=None)):
+        resp = await client.post(
+            "/v1/query-profiles",
+            json={
+                "profile_key": "scoped_profile",
+                "label": "Scoped",
+                **_VALID_SECTION_PROPERTIES,
+                "source_id": bad_source,
+            },
+        )
+    assert resp.status_code == 422
+    assert bad_source in resp.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # GET /v1/query-profiles/{profile_key}
 # ---------------------------------------------------------------------------
@@ -449,6 +555,30 @@ async def test_update_profile_makes_invalid_shape_422(api):
         )
     assert resp.status_code == 422
     # The service update was never reached — validation short-circuited.
+    update_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_profile_bad_source_id_422(api):
+    """Setting an existing profile's source_id to a nonexistent source is
+    rejected 422 (pre-validated) rather than leaking a raw FK 500."""
+    client, mock_db = api
+    existing = _make_profile_row(profile_key="system_components")
+    result = MagicMock()
+    result.first.return_value = None  # source lookup finds nothing
+    mock_db.execute = AsyncMock(return_value=result)
+    bad_source = str(uuid.uuid4())
+    update_mock = AsyncMock()
+    with patch(
+        f"{_API}.get_required_profile", new=AsyncMock(return_value=existing)
+    ), patch(f"{_API}.update_profile", new=update_mock):
+        resp = await client.put(
+            "/v1/query-profiles/system_components",
+            json={"source_id": bad_source},
+        )
+    assert resp.status_code == 422
+    assert bad_source in resp.json()["detail"]
+    # The service update was never reached — source validation short-circuited.
     update_mock.assert_not_awaited()
 
 
@@ -553,6 +683,54 @@ async def test_search_section_profile_missing_404(api):
             json={"profile_id": "missing", "query_text": "SA-2"},
         )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_search_section_disabled_profile_404_then_enabled_ok(api):
+    """A disabled profile is not available for SEARCH (404) — the real executor
+    refuses it before any graph work. Re-enabling it lets the search proceed."""
+    client, _ = api
+    _SVC = "app.services.query_profiles"
+
+    from app.services.graph_store import GraphEntityResult as StoreEntity
+
+    root = StoreEntity(node_id="rid-1", name="SA-2", entity_type="RADAR_SYSTEM")
+    graph_store = MagicMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={})
+
+    def _row(*, enabled: bool):
+        return _make_profile_row(
+            profile_key="toggle_profile",
+            kind="section_properties",
+            root_entity_types=["RADAR_SYSTEM"],
+            definition={"profile_sections": ["rf_parameters"]},
+            enabled=enabled,
+        )
+
+    # Disabled → the real executor raises QueryProfileNotFoundError → 404,
+    # before it ever resolves a root.
+    with patch(f"{_API}.get_graph_store", return_value=graph_store), patch(
+        f"{_SVC}.get_required_profile", new=AsyncMock(return_value=_row(enabled=False))
+    ):
+        resp = await client.post(
+            "/v1/query-profiles/search/section",
+            json={"profile_id": "toggle_profile", "query_text": "SA-2"},
+        )
+    assert resp.status_code == 404
+    assert "disabled" in resp.json()["detail"].lower()
+
+    # Re-enabled → the SAME real executor now resolves + returns 200.
+    with patch(f"{_API}.get_graph_store", return_value=graph_store), patch(
+        f"{_SVC}.get_required_profile", new=AsyncMock(return_value=_row(enabled=True))
+    ):
+        resp = await client.post(
+            "/v1/query-profiles/search/section",
+            json={"profile_id": "toggle_profile", "query_text": "SA-2"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["profile_id"] == "toggle_profile"
 
 
 @pytest.mark.asyncio
