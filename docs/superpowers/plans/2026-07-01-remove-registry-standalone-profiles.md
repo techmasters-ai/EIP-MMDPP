@@ -42,7 +42,7 @@
 
 **Files:**
 - Modify: `app/models/query_profiles.py` (add `QueryProfile`; keep `QueryProfileRegistry` for now — dropped in Task 5)
-- Create: `alembic/versions/0019_query_profiles_table.py`
+- Create: `alembic/versions/0022_query_profiles_table.py` (repo head is `0021` — this follows it; `0019/0020/0021` already exist for unrelated features)
 - Test: `tests/unit/test_query_profile_model.py` (create)
 
 **Acceptance Criteria:**
@@ -56,7 +56,7 @@
 
 **Steps:**
 - [ ] **Step 1:** Add `QueryProfile` to `app/models/query_profiles.py` mirroring the existing model's SQLAlchemy style (same `Base`, `TIMESTAMP`, `UUID`, `JSONB` imports). Columns per AC — note `profile_key` (unique str) + `label` (str) are distinct columns; `source_id = Column(UUID, ForeignKey("ingest.sources.id", ondelete="SET NULL"), nullable=True)`; indexes on `profile_key`(unique), `source_id`, `enabled`.
-- [ ] **Step 2:** Write `alembic/versions/0019_query_profiles_table.py` (`down_revision` = current head via `alembic heads`). `upgrade()`: `op.create_table(...)`; then a data step: `conn = op.get_bind()`; select the source registry deterministically: `row = conn.execute(sa.text("SELECT profiles FROM governance.query_profile_registries WHERE is_active IS TRUE ORDER BY updated_at DESC LIMIT 1")).fetchone()` and if None, retry without the `is_active` filter (latest by updated_at). Let `profiles = row[0] if row else []`. If `len(profiles) != 4`, set `profiles = _CANONICAL_PROFILES` (a literal list embedded in this migration, copied verbatim from `0018 NEW_PROFILES`). For each `p` in `profiles`: `conn.execute(sa.text("INSERT INTO governance.query_profiles (id,profile_key,label,description,kind,root_entity_types,definition,source_id,enabled,created_at,updated_at) VALUES (gen_random_uuid(), :key, :label, :desc, :kind, CAST(:roots AS jsonb), CAST(:defn AS jsonb), NULL, TRUE, now(), now())"), {"key": p["id"], "label": p["label"], "desc": p.get("description"), "kind": p["kind"], "roots": json.dumps(p.get("root_entity_types", [])), "defn": json.dumps({k: p[k] for k in ("target_entity_types","traversals","section_profile_ids","profile_sections","profile_subgroup","include_associated_systems") if k in p})})`. Assert 4 rows inserted (raise otherwise). `downgrade()`: `op.drop_table("query_profiles", schema="governance")`.
+- [ ] **Step 2:** Write `alembic/versions/0022_query_profiles_table.py` with `revision="0022"`, `down_revision="0021"` (repo head). `upgrade()`: `op.create_table(...)`; then a data step: `conn = op.get_bind()`; select the source registry deterministically: `row = conn.execute(sa.text("SELECT profiles FROM governance.query_profile_registries WHERE is_active IS TRUE ORDER BY updated_at DESC LIMIT 1")).fetchone()` and if None, retry without the `is_active` filter (latest by updated_at). Let `profiles = row[0] if row else []`. If `len(profiles) != 4`, set `profiles = _CANONICAL_PROFILES` (a literal list embedded in this migration, copied verbatim from `0018 NEW_PROFILES`). For each `p` in `profiles`: `conn.execute(sa.text("INSERT INTO governance.query_profiles (id,profile_key,label,description,kind,root_entity_types,definition,source_id,enabled,created_at,updated_at) VALUES (gen_random_uuid(), :key, :label, :desc, :kind, CAST(:roots AS jsonb), CAST(:defn AS jsonb), NULL, TRUE, now(), now())"), {"key": p["id"], "label": p["label"], "desc": p.get("description"), "kind": p["kind"], "roots": json.dumps(p.get("root_entity_types", [])), "defn": json.dumps({k: p[k] for k in ("target_entity_types","traversals","section_profile_ids","profile_sections","profile_subgroup","include_associated_systems") if k in p})})`. Assert 4 rows inserted (raise otherwise). `downgrade()`: `op.drop_table("query_profiles", schema="governance")`.
 - [ ] **Step 3:** Test `tests/unit/test_query_profile_model.py`: assert the model maps to `governance.query_profiles`, `source_id` nullable, `enabled` default True. (Model-level, no live DB — mirror an existing model test.)
 - [ ] **Step 4:** Run `alembic upgrade head`; run the Verify query → 4 rows. `python3 -m pytest tests/unit/test_query_profile_model.py -v`.
 - [ ] **Step 5:** Commit `feat(profiles): query_profiles table + data-migrate 4 profiles off the registry`.
@@ -111,10 +111,8 @@
 - [ ] **Step 2 (evidence):** Read `_fetch_chunk_evidence :697/723`. Add `AND d.source_id = :source_id` to BOTH `UNION ALL` branches, bind `:source_id`, and pass it through `attach_evidence`. None path unchanged.
 - [ ] **Step 3 (associated systems):** In the `include_associated_systems` path, when scoped, drop associated systems whose documents aren't in the source (reuse the same in-source check as resolve).
 - [ ] **Step 4 (CRUD):** Replace `get_active_registry`/template helpers with table-backed CRUD (`list_profiles`/`get_profile`/`create_profile`/`update_profile`/`delete_profile` by `profile_key` and/or uuid `id`; preserve the dossier-referenced-profile delete guard, now checking other profiles' `definition.section_profile_ids` for the `profile_key`). `execute_section_search`/`execute_dossier_search` take a loaded `QueryProfile` + read its `source_id`, passing it through resolve+evidence+associated-systems.
-- [ ] **Step 5:** Test `tests/unit/test_query_profile_source_scope.py` per the Verify criteria (SQL-string/param inspection with and without `source_id`, covering both UNION branches + the pre-selection candidate filter + associated systems).
-- [ ] **Step 3:** Test `tests/unit/test_query_profile_source_scope.py`: build the resolve/evidence SQL with and without `source_id`; assert the predicate is present iff scoped (use the SQL-string builders or mock the client and inspect the emitted SQL/params, mirroring existing service tests).
-- [ ] **Step 4:** Run the touched service tests (`python3 -m pytest tests/ -k "query_profile or section or dossier" -v`) + the new test; report the delta vs pre-existing failures.
-- [ ] **Step 5:** Commit `feat(profiles): table-backed CRUD + Project-Source filtering; drop registry service logic`.
+- [ ] **Step 5:** Test `tests/unit/test_query_profile_source_scope.py` per the Verify criteria (SQL-string/param inspection with and without `source_id`, covering both UNION branches + the pre-selection candidate filter + associated systems). Then run the touched service tests (`python3 -m pytest tests/ -k "query_profile or section or dossier" -v`) + the new test; report the delta vs pre-existing failures.
+- [ ] **Step 6:** Commit `feat(profiles): table-backed CRUD + Project-Source filtering; drop registry service logic`.
 
 ---
 
@@ -136,8 +134,8 @@
 **Verify:** `curl -s localhost:8005/v1/query-profiles | python3 -m json.tool` → 4 profiles (flat list, no registry wrapper); `curl -sf -X POST localhost:8005/v1/query-profiles/registries` → 404 (route gone).
 
 **Steps:**
-- [ ] **Step 1:** In `query_profiles.py` delete the 6 registry routes + registry-nested profile routes. Add flat profile CRUD (list/create/get/update/delete) calling Task-2 service functions. Repoint `search/section`/`search/dossier` to load a `QueryProfile` by id.
-- [ ] **Step 2:** In `app/schemas/query_profiles.py` remove registry schemas; add `QueryProfileCreate/Update/Response` (fields: name, description, kind, root_entity_types, definition body, source_id, enabled). Keep `validate_shape` + the RADAR/MISSILE root frozenset (Decision 3).
+- [ ] **Step 1:** In `query_profiles.py` delete the 6 registry routes + registry-nested profile routes. Add flat profile CRUD (list/create/get/update/delete) keyed on **`profile_key`** in the path, calling Task-2 service functions. Repoint `search/section`/`search/dossier` to load a `QueryProfile` **by `profile_key`** (the existing search `profile_id` string maps to it).
+- [ ] **Step 2:** In `app/schemas/query_profiles.py` remove registry schemas; add `QueryProfileCreate/Update/Response` (fields: **`profile_key`, `label`**, description, kind, root_entity_types, definition body, source_id, enabled). Keep `validate_shape` + the RADAR/MISSILE root frozenset (Decision 3).
 - [ ] **Step 3:** Test: list returns 4; create with `source_id` persists it; `POST /registries` → 404; section/dossier search runs for a profile.
 - [ ] **Step 4:** Restart api (`docker restart eip-mmdpp-api-1`), run the curl verifies + `python3 -m pytest tests/integration/test_query_profiles_api.py -v`.
 - [ ] **Step 5:** Commit `feat(api): standalone query-profile CRUD + search; remove registry routes`.
@@ -175,7 +173,7 @@
 **Goal:** Remove the now-unused registry table and the write-only `ontology.*` tables + their seeder.
 
 **Files:**
-- Create: `alembic/versions/0020_drop_registry_and_ontology_tables.py`
+- Create: `alembic/versions/0023_drop_registry_and_ontology_tables.py` (`revision="0023"`, `down_revision="0022"`)
 - Modify: `docker-compose.yml` (remove seed step ~:338), `scripts/full_purge_and_reingest.py` (remove `ontology.*` truncate), delete `scripts/seed_ontology.py`
 - Test: grep-based verification (no runtime readers remain)
 
@@ -188,7 +186,7 @@
 
 **Steps:**
 - [ ] **Step 1:** Confirm (grep) nothing outside the removed code reads `query_profile_registries` or `ontology.*` (the analysis found none — re-verify post Tasks 2/3). Remove the `QueryProfileRegistry` model class.
-- [ ] **Step 2:** Write `0020_drop_registry_and_ontology_tables.py`: `op.drop_table("query_profile_registries", schema="governance")`; drop the three `ontology.*` tables; `op.execute("DROP SCHEMA IF EXISTS ontology CASCADE")` if desired. `downgrade()` recreates minimally (or a no-op documented as irreversible).
+- [ ] **Step 2:** Write `0023_drop_registry_and_ontology_tables.py` (`revision="0023"`, `down_revision="0022"`): `op.drop_table("query_profile_registries", schema="governance")`; drop the three `ontology.*` tables; `op.execute("DROP SCHEMA IF EXISTS ontology CASCADE")` if desired. `downgrade()` recreates minimally (or a no-op documented as irreversible).
 - [ ] **Step 3:** Delete `scripts/seed_ontology.py`; remove the seed command from `docker-compose.yml:~338`; remove the `ontology.*` truncate lines from `scripts/full_purge_and_reingest.py`.
 - [ ] **Step 4:** `alembic upgrade head`; restart api; run the Verify queries + grep. Commit `chore(db): drop registry + dead ontology.* tables and seeder`.
 
