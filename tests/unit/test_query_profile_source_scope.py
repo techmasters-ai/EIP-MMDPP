@@ -493,6 +493,275 @@ async def test_section_items_unfiltered_when_global():
 
 
 # ---------------------------------------------------------------------------
+# (g) Edge-typed profile fields (e.g. deployment.platform = INSTALLED_ON) are
+#     projected by TRAVERSING the edge from the resolved entity — not read as a
+#     vertex scalar (which is always absent for edge fields). Generalized on the
+#     field's json_schema_extra['edge_label']; no "platform"/"INSTALLED_ON"
+#     literal drives the logic. Scoped projections filter traversed targets to
+#     the source the same way root/associated candidates are.
+# ---------------------------------------------------------------------------
+
+
+def _pent(node_id: str, name: str) -> StoreEntity:
+    """A traversed PLATFORM target (the INSTALLED_ON neighbour)."""
+    return StoreEntity(node_id=node_id, name=name, entity_type="PLATFORM")
+
+
+def _deployment_profile(**kw):
+    """A section_properties profile requesting the ``deployment`` section,
+    whose only field (``platform``) is an INSTALLED_ON edge."""
+    defaults = dict(
+        kind="section_properties",
+        root_entity_types=["RADAR_SYSTEM"],
+        definition={"profile_sections": ["deployment"]},
+        source_id=None,
+    )
+    defaults.update(kw)
+    return _profile(**defaults)
+
+
+def _all_platform_names(resp) -> list[str]:
+    return [
+        f.value
+        for g in resp.field_groups
+        for f in g.fields
+        if f.name == "platform"
+    ]
+
+
+async def test_edge_field_projects_traversed_target_name():
+    """A ``deployment`` (section_properties) search over a RADAR_SYSTEM whose
+    INSTALLED_ON edge points at a platform must surface that platform's NAME as
+    the ``platform`` field value — even though the vertex has no ``platform``
+    scalar property. Proves the edge is traversed, not read as a scalar."""
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    # Vertex scalar props — deliberately NO 'platform' key (edges aren't scalars).
+    graph_store.get_entity_by_rid = AsyncMock(
+        return_value={"system_name": "Fan Song", "gain_dbi": 35.0}
+    )
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[_pent("#p1", "SA-20 TEL")]
+    )
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(),
+    )
+
+    # platform surfaces in the deployment subgroup with the traversed name.
+    assert _all_platform_names(resp) == ["SA-20 TEL"]
+    deployment_group = next(g for g in resp.field_groups if g.subgroup == "deployment")
+    assert any(f.name == "platform" for f in deployment_group.fields)
+
+    # Generalization: the traversal is driven by the field's edge_label +
+    # direction, read from json_schema_extra — a single OUT hop over
+    # 'INSTALLED_ON' (no "platform"/"INSTALLED_ON" literal in the service code).
+    args, kwargs = graph_store.get_edge_neighbors.await_args
+    assert args[0] == "#root"           # resolved entity rid
+    assert args[1] == "INSTALLED_ON"    # edge_label from the field's extra
+    assert kwargs["direction"] == "out"
+
+
+async def test_edge_field_absent_when_no_edge_target():
+    """When the INSTALLED_ON traversal yields nothing, the ``platform`` field is
+    skipped entirely (no empty row) — same contract as a None scalar."""
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={"system_name": "Fan Song"})
+    graph_store.get_edge_neighbors = AsyncMock(return_value=[])
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(),
+    )
+
+    assert _all_platform_names(resp) == []
+
+
+async def test_edge_field_excludes_self_reference():
+    """Regression for the ArcadeDB variable-depth MATCH quirk: when a step
+    yields no edges the traversal binds the target alias to the ROOT node, so
+    an entity with no INSTALLED_ON edge would otherwise project its OWN name as
+    the platform. The root (same node_id) must be excluded; any genuine target
+    still projects."""
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={"system_name": "Fan Song"})
+    # Traversal echoes the root (#root, self-reference) plus a real platform.
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[
+            StoreEntity(node_id="#root", name="Fan Song", entity_type="RADAR_SYSTEM"),
+            _pent("#p1", "SA-20 TEL"),
+        ]
+    )
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(),
+    )
+
+    # Self-reference dropped; only the genuine platform remains.
+    assert _all_platform_names(resp) == ["SA-20 TEL"]
+
+
+async def test_edge_field_only_self_reference_yields_absent():
+    """When the ONLY traversal row is the self-reference (no real edge target),
+    the platform field is skipped entirely — no self-referential value."""
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={"system_name": "Fan Song"})
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[
+            StoreEntity(node_id="#root", name="Fan Song", entity_type="RADAR_SYSTEM"),
+        ]
+    )
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(),
+    )
+
+    assert _all_platform_names(resp) == []
+
+
+async def test_edge_field_source_scoped_filters_traversed_targets():
+    """A source-scoped deployment search must drop platforms reachable only via
+    OTHER sources' documents — the traversed targets are in-source filtered the
+    same way root/associated candidates are."""
+    source_id = uuid.uuid4()
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={"system_name": "Fan Song"})
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[_pent("#pin", "In Platform"), _pent("#pout", "Out Platform")]
+    )
+    graph_store.get_entity_source_document_ids = AsyncMock(
+        side_effect=_docs_side_effect({
+            "#root": {"doc-in"},   # root must survive the scoped resolve
+            "#pin": {"doc-in"},
+            "#pout": {"doc-out"},  # platform reachable only via another source
+        })
+    )
+    db = _mock_db(["doc-in"])
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(source_id=source_id),
+    )
+
+    # Out-of-source platform dropped; only the in-source platform is projected.
+    assert _all_platform_names(resp) == ["In Platform"]
+
+
+async def test_edge_field_global_projects_all_targets_joined():
+    """Global (source_id=None): every traversed platform is projected, joined
+    for the single-cardinality ``platform`` field, and NO source filtering runs."""
+    root = _ent("#root", "Fan Song", "RADAR_SYSTEM")
+
+    graph_store = AsyncMock()
+    graph_store.search_by_alias = AsyncMock(return_value=[])
+    graph_store.fulltext_search = AsyncMock(return_value=[root])
+    graph_store.get_entity_by_rid = AsyncMock(return_value={"system_name": "Fan Song"})
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[_pent("#a", "Bravo"), _pent("#b", "Alpha")]
+    )
+    graph_store.get_entity_source_document_ids = AsyncMock()
+    db = AsyncMock()
+
+    resp = await execute_section_search(
+        graph_store, db, _request(include_evidence=False),
+        profile=_deployment_profile(source_id=None),
+    )
+
+    # Single-cardinality field -> deterministically sorted, comma-joined names.
+    assert _all_platform_names(resp) == ["Alpha, Bravo"]
+    # Global path never touches the in-source machinery.
+    graph_store.get_entity_source_document_ids.assert_not_called()
+    db.execute.assert_not_called()
+
+
+async def test_project_edge_fields_direct_returns_joined_and_no_traversal_off_section():
+    """Directly exercise _project_edge_fields: an in-scope edge field is
+    traversed + projected; a request whose sections don't include the field's
+    section performs NO traversal (no wasted graph round-trip)."""
+    from app.services.query_profiles import _project_edge_fields
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+
+    graph_store = AsyncMock()
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[_pent("#p1", "SA-20 TEL")]
+    )
+
+    # In scope -> traversed + projected as a joined string (single-cardinality).
+    values = await _project_edge_fields(
+        RadarSystemEntity, "#root", graph_store, ["deployment"],
+    )
+    assert values == {"platform": "SA-20 TEL"}
+    assert graph_store.get_edge_neighbors.await_count == 1
+
+    # Off-section (rf_parameters has no edge field) -> no traversal at all.
+    graph_store.get_edge_neighbors.reset_mock()
+    values2 = await _project_edge_fields(
+        RadarSystemEntity, "#root", graph_store, ["rf_parameters"],
+    )
+    assert values2 == {}
+    graph_store.get_edge_neighbors.assert_not_called()
+
+
+async def test_project_edge_fields_dossier_catchall_includes_edge_field():
+    """The reserved ``dossier`` catch-all section selects every projectable edge
+    field, so the platform edge is traversed + projected in a dossier pass."""
+    from app.services.query_profiles import _project_edge_fields
+    from ontology_bundles.air_defense_v3.entities import MissileSystemEntity
+
+    graph_store = AsyncMock()
+    graph_store.get_edge_neighbors = AsyncMock(
+        return_value=[_pent("#p1", "9K52 TEL")]
+    )
+
+    values = await _project_edge_fields(
+        MissileSystemEntity, "#root", graph_store, ["dossier"],
+    )
+    assert values == {"platform": "9K52 TEL"}
+
+
+def test_edge_field_is_list_distinguishes_cardinality():
+    """The list/single cardinality detector underpins list-vs-joined value
+    representation and must see through Optional/Union wrappers."""
+    from typing import List, Optional
+
+    from app.services.query_profiles import _edge_field_is_list
+
+    class _Platform:  # stand-in target type
+        pass
+
+    assert _edge_field_is_list(List[_Platform]) is True
+    assert _edge_field_is_list(Optional[List[_Platform]]) is True
+    assert _edge_field_is_list(Optional[_Platform]) is False
+    assert _edge_field_is_list(_Platform) is False
+
+
+# ---------------------------------------------------------------------------
 # Table-backed CRUD (pure logic)
 # ---------------------------------------------------------------------------
 

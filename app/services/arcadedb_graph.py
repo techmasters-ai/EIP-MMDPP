@@ -1730,6 +1730,73 @@ class ArcadeDBGraphStore:
         rows = await self._client.query(self._database, "sql", sql)
         return [_to_entity(r) for r in rows]
 
+    async def get_edge_neighbors(
+        self,
+        node_id: str,
+        edge_label: str,
+        direction: str = "out",
+        limit: int = 25,
+    ) -> list[GraphEntityResult]:
+        """Return entities one *edge_label* hop from *node_id* in *direction*.
+
+        A plain, native single-hop directed MATCH over one edge label —
+        deliberately WITHOUT the variable-depth ``while:`` clause that
+        ``get_directed_traversal`` emits. On this ArcadeDB build that
+        ``while: ($depth >= 1 AND $depth <= 1)`` clause mis-binds the target
+        alias to the ROOT vertex for a single hop (verified live: it returns
+        the source node instead of its neighbours), which makes it unusable for
+        projecting an edge-typed field's target. This method mirrors the proven
+        pattern of ``get_associated_systems`` (typed seed + vertex traversal +
+        ``@rid <> root`` self-exclusion) but directed and parameterised on the
+        edge label.
+
+        Used by the query-profile projection to surface edge-typed fields
+        (e.g. ``INSTALLED_ON`` → platform). The source vertex is excluded.
+        """
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
+        # edge_label originates from the ontology's json_schema_extra (a
+        # RelationshipType name), but validate it is a bare identifier before
+        # interpolating it into the MATCH to keep this injection-safe.
+        if not edge_label or not edge_label.replace("_", "").isalnum():
+            return []
+        dir_fn = "out" if direction == "out" else "in" if direction == "in" else "both"
+
+        # ArcadeDB MATCH requires a concrete `type:` on the seed node (omitting
+        # it throws UnsupportedOperationException), so resolve @type first.
+        type_rows = await self._client.query(
+            self._database, "sql",
+            f"SELECT @type AS node_type FROM {rid}",
+        )
+        if not type_rows or not isinstance(type_rows[0], dict):
+            return []
+        seed_type = type_rows[0].get("node_type")
+        if not seed_type:
+            return []
+
+        sql = (
+            f"MATCH {{type: {seed_type}, as: src, where: (@rid = {rid})}}"
+            f".{dir_fn}('{edge_label}') {{as: tgt, where: (@rid <> {rid})}} "
+            f"RETURN tgt.name AS name, tgt.entity_type AS entity_type, "
+            f"tgt.canonical_name AS canonical_name, "
+            f"tgt.extraction_confidence AS extraction_confidence, "
+            f"tgt.@rid AS node_id "
+            f"LIMIT {limit}"
+        )
+        rows = await self._client.query(self._database, "sql", sql)
+        # Deduplicate by rid (the same neighbour can be reached via parallel
+        # edges) while preserving order.
+        seen: set[str] = set()
+        out: list[GraphEntityResult] = []
+        for r in rows:
+            nid = str(r.get("node_id", "") or "")
+            if nid and nid in seen:
+                continue
+            seen.add(nid)
+            out.append(_to_entity(r))
+        return out
+
     async def get_ontology_linked_chunks(
         self,
         node_id: str,

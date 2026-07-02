@@ -249,6 +249,15 @@ class OntologyRelationshipType(APIModel):
     name: str
 
 
+class OntologySection(APIModel):
+    """One query-profile section advertised by ``GET /v1/ontology``:
+    the section ``name`` (used as the value in a ``section_properties``
+    profile's ``profile_sections`` list) plus a human-readable
+    ``description`` sourced from the bundle's ``SECTION_DESCRIPTIONS``."""
+    name: str
+    description: str = ""
+
+
 class OntologyResponse(APIModel):
     """Live ontology payload for ``GET /v1/ontology`` — served straight
     from the air_defense_v3 Pydantic SSoT (`app.services.ontology_service`),
@@ -256,4 +265,4 @@ class OntologyResponse(APIModel):
     version: str
     entity_types: list[OntologyEntityType] = Field(default_factory=list)
     relationship_types: list[OntologyRelationshipType] = Field(default_factory=list)
-    profile_sections: list[str] = Field(default_factory=list)
+    profile_sections: list[OntologySection] = Field(default_factory=list)

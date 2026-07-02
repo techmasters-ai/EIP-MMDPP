@@ -133,6 +133,7 @@ function MultiSelectField(props: {
   disabled?: boolean;
   helperText?: string;
   id: string;
+  optionTitles?: Record<string, string>;
 }) {
   const size = Math.min(Math.max(props.options.length, 4), 10);
   return (
@@ -148,7 +149,7 @@ function MultiSelectField(props: {
         style={{ minHeight: "10rem" }}
       >
         {props.options.map((option) => (
-          <option key={option} value={option}>
+          <option key={option} value={option} title={props.optionTitles?.[option]}>
             {option}
           </option>
         ))}
@@ -213,11 +214,22 @@ function OntologyPanel({ ontology }: { ontology: OntologyResponse | null }) {
         <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
           Profile Sections ({ontology.profile_sections.length})
         </div>
-        <div className="flex-center gap-sm" style={{ flexWrap: "wrap", justifyContent: "flex-start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
           {ontology.profile_sections.map((s) => (
-            <span key={s} className="badge badge-info">
-              {s}
-            </span>
+            <div
+              key={s.name}
+              className="flex-center gap-sm"
+              style={{ justifyContent: "flex-start", alignItems: "baseline" }}
+            >
+              <span
+                className="badge badge-info"
+                title={s.description}
+                style={{ flexShrink: 0 }}
+              >
+                {s.name}
+              </span>
+              <span className="text-xs text-muted">{s.description}</span>
+            </div>
           ))}
         </div>
       </div>
@@ -245,7 +257,17 @@ export function QueryProfilesPage() {
     () => uniqueSorted((ontology?.relationship_types ?? []).map((r) => r.name)),
     [ontology],
   );
-  const profileSectionOptions = ontology?.profile_sections ?? [];
+  // Ontology sections are now {name, description}; the multiselect submits an
+  // array of section-name strings, so options are the names and the
+  // descriptions ride along as per-option tooltips.
+  const profileSectionOptions = (ontology?.profile_sections ?? []).map((s) => s.name);
+  const profileSectionTitles = useMemo(
+    () =>
+      Object.fromEntries(
+        (ontology?.profile_sections ?? []).map((s) => [s.name, s.description]),
+      ),
+    [ontology],
+  );
 
   const sectionProfileKeys = useMemo(
     () =>
@@ -606,9 +628,10 @@ export function QueryProfilesPage() {
               id="profile-sections"
               label="Profile sections"
               options={profileSectionOptions}
+              optionTitles={profileSectionTitles}
               value={profileDraft.profileSections}
               onChange={(value) => setProfileDraft((current) => ({ ...current, profileSections: value }))}
-              helperText="Which canonical-class section(s) this profile projects. Options come from the live ontology."
+              helperText="Which canonical-class section(s) this profile projects. Options come from the live ontology; hover a section for its description."
             />
           )}
           {profileDraft.kind === "dossier" && (
