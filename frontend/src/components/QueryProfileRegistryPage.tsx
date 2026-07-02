@@ -16,6 +16,12 @@ import {
 } from "../api/client";
 import { uniqueSorted } from "../utils/ontologyHelpers";
 
+// Mirror of the backend's `_CANONICAL_ROOT_ENTITY_TYPES` frozenset
+// (app/schemas/query_profiles.py) — section_properties profiles may only be
+// rooted on these canonical classes. Kept here for fast inline feedback; the
+// backend remains the authority.
+const CANONICAL_ROOT_ENTITY_TYPES = ["RADAR_SYSTEM", "MISSILE_SYSTEM"];
+
 function slugify(value: string): string {
   return value
     .trim()
@@ -287,16 +293,48 @@ export function QueryProfilesPage() {
     setError(null);
   };
 
+  /**
+   * Fast, inline validation of the 4 known business rules before hitting the
+   * API. Mirrors the backend's `validate_shape`; the backend 422 remains the
+   * authoritative backstop (surfaced readably via formatApiErrorDetail).
+   */
+  const validateDraft = (): string | null => {
+    if (!profileDraft.label.trim()) return "Profile label is required";
+    const key = editingProfileKey ?? (profileDraft.profileKey.trim() || slugify(profileDraft.label));
+    if (!key) return "Profile key is required";
+
+    if (profileDraft.kind === "section") {
+      const hasTraversal = cleanTraversals(profileDraft.traversals).length > 0;
+      if (!hasTraversal) {
+        return "Section profiles require at least one traversal with a relationship type";
+      }
+    } else if (profileDraft.kind === "section_properties") {
+      if (uniqueSorted(profileDraft.profileSections).length === 0) {
+        return "Section-properties profiles require at least one profile section";
+      }
+      const invalidRoots = uniqueSorted(profileDraft.rootEntityTypes).filter(
+        (t) => !CANONICAL_ROOT_ENTITY_TYPES.includes(t),
+      );
+      if (invalidRoots.length > 0) {
+        return `Section-properties root entity types must be one of ${CANONICAL_ROOT_ENTITY_TYPES.join(
+          ", ",
+        )}; remove: ${invalidRoots.join(", ")}`;
+      }
+    } else if (profileDraft.kind === "dossier") {
+      if (uniqueSorted(profileDraft.sectionProfileIds).length === 0) {
+        return "Dossier profiles require at least one section profile";
+      }
+    }
+    return null;
+  };
+
   const handleSaveProfile = async () => {
-    if (!profileDraft.label.trim()) {
-      setError("Profile label is required");
+    const validationError = validateDraft();
+    if (validationError) {
+      setError(validationError);
       return;
     }
     const profileKey = editingProfileKey ?? (profileDraft.profileKey.trim() || slugify(profileDraft.label));
-    if (!profileKey) {
-      setError("Profile key is required");
-      return;
-    }
 
     setSaving(true);
     setError(null);
@@ -344,7 +382,12 @@ export function QueryProfilesPage() {
     }
   };
 
-  const handleDeleteProfile = async (profileKey: string) => {
+  const handleDeleteProfile = async (profile: QueryProfileResponse) => {
+    const profileKey = profile.profile_key;
+    const confirmed = window.confirm(
+      `Delete query profile "${profile.label}" (${profileKey})? This cannot be undone.`,
+    );
+    if (!confirmed) return;
     setDeletingKey(profileKey);
     setError(null);
     setSuccess(null);
@@ -425,7 +468,7 @@ export function QueryProfilesPage() {
           >
             {loading ? "Refreshing…" : "Refresh"}
           </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={resetForm}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={resetForm} disabled={saving}>
             New Profile
           </button>
         </div>
@@ -810,14 +853,15 @@ export function QueryProfilesPage() {
                       type="button"
                       className="btn btn-ghost btn-sm"
                       onClick={() => handleEditProfile(profile)}
+                      disabled={saving || deletingKey !== null}
                     >
                       Edit
                     </button>
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      onClick={() => void handleDeleteProfile(profile.profile_key)}
-                      disabled={deletingKey === profile.profile_key}
+                      onClick={() => void handleDeleteProfile(profile)}
+                      disabled={saving || deletingKey === profile.profile_key}
                     >
                       {deletingKey === profile.profile_key ? "Deleting…" : "Delete"}
                     </button>

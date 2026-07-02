@@ -132,16 +132,46 @@ export interface TrustedDataQueryResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Turn a FastAPI error `detail` into a human-readable message.
+ *
+ * `detail` arrives as: a pre-formatted string (409s, dossier-ref errors, the
+ * backend's `_assert_valid_shape` message), OR an array of
+ * `{loc, msg, type}` request-schema validation errors. For the array form we
+ * join each `msg` (prefixed with the last, non-`body` `loc` segment) into
+ * readable lines rather than dumping raw JSON.
+ */
+export function formatApiErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const lines = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const record = item as { loc?: unknown; msg?: unknown };
+        const msg = typeof record.msg === "string" ? record.msg : null;
+        if (!msg) return null;
+        const loc = Array.isArray(record.loc)
+          ? record.loc.filter((seg) => seg !== "body").map(String)
+          : [];
+        const field = loc.length > 0 ? loc[loc.length - 1] : null;
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .filter((line): line is string => Boolean(line));
+    if (lines.length > 0) return lines.join("; ");
+  }
+  return fallback;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    let detail: unknown = null;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = body?.detail ?? null;
     } catch {
       // ignore parse error
     }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    throw new Error(formatApiErrorDetail(detail, `HTTP ${res.status}`));
   }
   return res.json() as Promise<T>;
 }
@@ -723,14 +753,14 @@ export async function deleteQueryProfile(profileKey: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    let detail: unknown = null;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      detail = body?.detail ?? null;
     } catch {
       // ignore parse error
     }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    throw new Error(formatApiErrorDetail(detail, `HTTP ${res.status}`));
   }
 }
 
