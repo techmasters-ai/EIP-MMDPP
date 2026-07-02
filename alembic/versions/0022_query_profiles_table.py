@@ -2,11 +2,12 @@
 
 Task 0 of the standalone-query-profiles plan: removes the registry-layer
 indirection by making query profiles first-class rows. Creates
-``governance.query_profiles`` and deterministically seeds it from the
-active/latest ``governance.query_profile_registries`` row's embedded
-``profiles`` JSONB list (falling back to the canonical 4 starter profiles
-— copied verbatim from 0018's ``NEW_PROFILES`` — if that row is missing or
-doesn't contain exactly 4 profiles).
+``governance.query_profiles`` and seeds it with a merge-preserving data
+migration: it reads the active/latest ``governance.query_profile_registries``
+row's embedded ``profiles`` JSONB list, preserves ALL of them keyed by ``id``
+(custom/edited profiles included), and fills in only the MISSING canonical
+starter profiles (copied verbatim from 0018's ``NEW_PROFILES``). It then
+asserts that all 4 canonical starter ids are present.
 
 The ``QueryProfileRegistry`` model/table are left in place; a later task
 removes them once callers are migrated onto ``QueryProfile``.
@@ -28,9 +29,10 @@ branch_labels = None
 depends_on = None
 
 
-# Fallback source of truth, copied verbatim from
+# Canonical starter profiles, copied verbatim from
 # alembic/versions/0018_starter_profiles_to_section_properties.py::NEW_PROFILES.
-# Used only if the live registry row can't supply exactly 4 profiles.
+# Only the starters MISSING from the registry's profiles are added (merge);
+# any that the registry already supplies are preserved as-is.
 _CANONICAL_PROFILES = {
     "system_rf_parameters": {
         "id": "system_rf_parameters",
