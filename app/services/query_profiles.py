@@ -67,6 +67,12 @@ def _project_field_groups(
     group by 'profile_subgroup'. Skip fields where instance_data[name]
     is None. Returns deterministically ordered groups (by subgroup
     name asc; fields by name asc within group). Spec §4.3.
+
+    The reserved section name ``"dossier"`` is a catch-all: rather than
+    matching a literal ``profile_sections`` tag, it selects EVERY field
+    that carries ANY profile_sections tag (i.e. every projectable field),
+    still grouped by its ``profile_subgroup``. This yields the full
+    cross-section entity dossier in one projection.
     """
     from app.schemas.query_profiles import (
         QueryProfileFieldEntry, QueryProfileFieldEvidence, QueryProfileFieldGroup,
@@ -88,7 +94,11 @@ def _project_field_groups(
         if not isinstance(extra, dict):
             continue
         sections = extra.get("profile_sections") or []
-        if profile_section not in sections:
+        if profile_section == "dossier":
+            # Catch-all: any field carrying a profile tag is in scope.
+            if not sections:
+                continue
+        elif profile_section not in sections:
             continue
         value = instance_data.get(fname)
         if value is None:

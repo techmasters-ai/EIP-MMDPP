@@ -619,11 +619,16 @@ export interface OntologyRelationshipType {
   name: string;
 }
 
+export interface OntologySection {
+  name: string;
+  description: string;
+}
+
 export interface OntologyResponse {
   version: string;
   entity_types: OntologyEntityType[];
   relationship_types: OntologyRelationshipType[];
-  profile_sections: string[];
+  profile_sections: OntologySection[];
 }
 
 export interface QueryProfileFieldEvidence {

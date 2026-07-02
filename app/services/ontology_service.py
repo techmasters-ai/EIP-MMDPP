@@ -9,15 +9,23 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.query_profiles import _CANONICAL_BY_ENTITY_TYPE
+from ontology_bundles.air_defense_v3.entities import SECTION_DESCRIPTIONS
 from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
 
+# ``dossier`` is a catch-all section (see query_profiles._project_field_groups):
+# it projects EVERY profiled field regardless of its specific section tags, so
+# no field carries a literal ``"dossier"`` tag. It is advertised explicitly,
+# appended after the field-derived (dedup+sort) section names.
+_CATCH_ALL_SECTIONS: tuple[str, ...] = ("dossier",)
 
-def _collect_profile_sections() -> list[str]:
+
+def _collect_profile_section_names() -> list[str]:
     """Walk every canonical Pydantic class registered in
     ``_CANONICAL_BY_ENTITY_TYPE`` and collect every
     ``json_schema_extra["profile_sections"]`` value found across their
     ``model_fields``. Deduped and sorted — NOT hardcoded, so new
     profile_sections tags on the canonical classes surface automatically.
+    Catch-all sections (e.g. ``dossier``) are appended by the caller.
     """
     sections: set[str] = set()
     for cls in _CANONICAL_BY_ENTITY_TYPE.values():
@@ -36,6 +44,23 @@ def _collect_profile_sections() -> list[str]:
     return sorted(sections)
 
 
+def _profile_sections_payload() -> list[dict[str, str]]:
+    """Return the ontology ``profile_sections`` as ``[{name, description}]``.
+
+    Field-derived names (dedup+sorted) come first, then the explicit
+    catch-all sections; descriptions come from ``SECTION_DESCRIPTIONS``
+    (SSoT in the bundle), falling back to ``""`` when a section has none.
+    """
+    names = _collect_profile_section_names()
+    for extra_name in _CATCH_ALL_SECTIONS:
+        if extra_name not in names:
+            names.append(extra_name)
+    return [
+        {"name": name, "description": SECTION_DESCRIPTIONS.get(name, "")}
+        for name in names
+    ]
+
+
 def get_live_ontology() -> dict[str, Any]:
     """Return the live ontology payload for ``GET /v1/ontology``.
 
@@ -43,8 +68,10 @@ def get_live_ontology() -> dict[str, Any]:
     relationship_types: [{name}], profile_sections: [str, ...]}``.
     ``version`` and the entity/relationship types come straight from
     ``build_ontology_dict()`` (the air_defense_v3 introspection SSoT);
-    ``profile_sections`` is derived from the canonical Pydantic classes'
-    field tags, not hardcoded.
+    ``profile_sections`` is a list of ``{name, description}`` derived from
+    the canonical Pydantic classes' field tags (plus the ``dossier``
+    catch-all), with descriptions from the bundle's ``SECTION_DESCRIPTIONS``
+    — not hardcoded.
     """
     ontology = build_ontology_dict()
 
@@ -60,5 +87,5 @@ def get_live_ontology() -> dict[str, Any]:
         "version": ontology["version"],
         "entity_types": entity_types,
         "relationship_types": relationship_types,
-        "profile_sections": _collect_profile_sections(),
+        "profile_sections": _profile_sections_payload(),
     }

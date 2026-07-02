@@ -94,13 +94,27 @@ def metadata_field(
     description: str,
     examples: list | None = None,
     default=None,
+    sections: list[str] | None = None,
+    subgroup: str | None = None,
 ):
     """Field constructor for system_metadata (spec §3.3 bucket 2).
 
     Real, indexed field — never surfaced by a starter profile. Used
     for audit trails, classifier IDs, status flags, review cadence.
+
+    ``sections``/``subgroup`` are OPTIONAL, purely-additive projection
+    tags. They let a metadata field ALSO surface in a query-profile
+    section (e.g. ``governance``/``identification``) WITHOUT changing its
+    bucket: the ``system_metadata`` marker is preserved, so the four-bucket
+    contract still classifies the field as metadata. Extraction ignores
+    both keys, so this is safe/additive.
     """
-    extra = {"profile_sections": [], "system_metadata": True}
+    extra: dict[str, Any] = {
+        "profile_sections": list(sections or []),
+        "system_metadata": True,
+    }
+    if subgroup is not None:
+        extra["profile_subgroup"] = subgroup
     kwargs: dict[str, Any] = {
         "default": default,
         "description": description,
@@ -116,6 +130,8 @@ def identity_field(
     description: str,
     examples: list | None = None,
     default=None,
+    sections: list[str] | None = None,
+    subgroup: str | None = None,
 ):
     """Field constructor for identity adjuncts (spec §3.3 bucket 3).
 
@@ -123,8 +139,19 @@ def identity_field(
     that are identity context but not graph_id_fields. The four-bucket
     contract test treats them as identity rather than profile-mapped
     or metadata.
+
+    ``sections``/``subgroup`` are OPTIONAL, purely-additive projection
+    tags. They let an identity adjunct ALSO surface in a query-profile
+    section (e.g. ``identification``) WITHOUT changing its bucket: the
+    ``identity_field`` marker is preserved, so graph identity handling and
+    the four-bucket contract are unaffected. Extraction ignores both keys.
     """
-    extra = {"profile_sections": [], "identity_field": True}
+    extra: dict[str, Any] = {
+        "profile_sections": list(sections or []),
+        "identity_field": True,
+    }
+    if subgroup is not None:
+        extra["profile_subgroup"] = subgroup
     kwargs: dict[str, Any] = {
         "default": default,
         "description": description,
@@ -133,6 +160,25 @@ def identity_field(
     if examples is not None:
         kwargs["examples"] = examples
     return Field(**kwargs)
+
+
+# ----------------------------------------------------------------------
+# Profile-section descriptions (SSoT)
+# ----------------------------------------------------------------------
+# One human-readable line per query-profile section. ``dossier`` is a
+# catch-all that is NOT a literal field tag (it projects EVERY field that
+# carries any profile_sections tag) — it is described here and advertised
+# by the ontology service alongside the field-derived section names.
+SECTION_DESCRIPTIONS: dict[str, str] = {
+    "rf_parameters": "RF & waveform: frequency, PRI/PD, pulse coding, and antenna beam geometry.",
+    "components": "Physical make-up: antennas, subsystems, stages, and hardware components.",
+    "performance": "Operational metrics: power, scan, kinematics, and timing.",
+    "engagement_envelope": "Engagement kinematics: intercept range, altitude ceiling/floor, speed, flight time, and guidance.",
+    "governance": "Record lifecycle: status, responsible agency, and review schedule.",
+    "identification": "Designators & reporting names: ELNOT, DIEQP, ASRD, and nomenclature.",
+    "deployment": "Deployment context: the platform the system is mounted on or operated with.",
+    "dossier": "Everything: all profiled fields across every section — the full entity dossier.",
+}
 
 
 # ----------------------------------------------------------------------
@@ -568,33 +614,41 @@ class RadarSystemEntity(BaseModel):
 
     # Identity adjuncts
     nomenclature: Optional[str] = identity_field(
+        sections=['identification'], subgroup='designators',
         description="Official military nomenclature — the formal alphanumeric designation assigned by the manufacturing country. For US radars this is the JETDS / AN-style designator (e.g. 'AN/MPQ-65'). For Russian / Soviet-origin radars it's the GRAU index or manufacturer model (e.g. '5N63S', '30N6E'). Distinct from system_name, which is the common (often NATO reporting) name. Emit when the document explicitly states the formal designation alongside the common name.",
         examples=['AN/MPQ-65', '5N63S', '30N6E', 'AN/SPY-1D'],
     )
 
     # System metadata
     elnot: Optional[str] = metadata_field(
+        sections=['identification'], subgroup='designators',
         description='ELINT Notation (ELNOT) — an ELINT-community unique alphabetic code assigned to a specific emitter signal by signals intelligence databases (typically a 4- or 5-letter code). Only appears in intelligence-community source documents. Emit verbatim from the document — do not infer.',
     )
     dieqp: Optional[str] = metadata_field(
+        sections=['identification'], subgroup='designators',
         description='Digital Intelligence Equipment Parameters (DIEQP) identifier — a cross-reference ID into the DIEQP database maintained by the MDE (Mission Data Engineering) community. Typically a short alphanumeric token. Only appears in IC / MDE source documents. Emit verbatim — do not infer.',
     )
     asrd: Optional[str] = metadata_field(
+        sections=['identification'], subgroup='designators',
         description='ASRD identifier — a catalog code from the All-Source Reference Document, a classified IC catalog of emitters. Emit verbatim when explicitly stated in the source; do not infer or cross-reference.',
     )
     system_status: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description='Lifecycle status of the radar system as described in the source. Typical values: OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn from service), UPGRADED (modified variant superseding the base model), EXPORTED (sold to foreign operators only). Emit only when the document explicitly states the status; do not infer OPERATIONAL from historical narrative or from the fact that the radar appears in a museum display.',
         examples=['OPERATIONAL', 'RETIRED', 'DEVELOPMENTAL'],
     )
     responsible_agency: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description="Organization responsible for maintaining the MDE record for this radar. Typically a 3-letter IC acronym (e.g. 'IWC' = Information Warfare Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI' = Office of Naval Intelligence, 'NGIC' = National Ground Intelligence Center).",
         examples=['IWC', 'NASIC', 'ONI', 'NGIC'],
     )
     review_cycle: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description="Scheduled cadence at which the MDE record for this radar is reviewed and re-validated. Typical values: 'annual', 'biennial', '2-year', '3-year', or an explicit duration. Free-text; emit verbatim when stated.",
         examples=['annual', 'biennial', '3-year'],
     )
     next_review_date: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description='Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD); otherwise emit the date string verbatim as written in the source.',
         examples=['2026-06-30', 'June 2026'],
     )
@@ -604,6 +658,7 @@ class RadarSystemEntity(BaseModel):
         description="Platform on which this radar system is installed.",
         examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
         default=None,
+        json_schema_extra={"profile_sections": ["deployment"], "profile_subgroup": "deployment"},
     )
     equipment_systems: List["EquipmentSystemEntity"] = edge(
         label="IS_A",
@@ -723,67 +778,67 @@ class MissileSystemEntity(BaseModel):
     )
     # engagement group — sections=['performance']
     min_intercept_km: Optional[float] = profile_field(
-        sections=['performance'], subgroup='engagement',
+        sections=['performance', 'engagement_envelope'], subgroup='engagement',
         description="Minimum effective intercept / engagement range, in kilometers. Below this range the missile's safety arm, initialization sequence, or terminal-guidance lock-on cannot complete in time. Typical SAMs: 2-10 km minimum. If source gives the value in miles, nautical miles, feet, or meters, convert to km before emitting. Do not copy the raw source number when the source unit is not already kilometers.",
         examples=[2.0, 5.0],
     )
     max_intercept_km: Optional[float] = profile_field(
-        sections=['performance'], subgroup='engagement',
+        sections=['performance', 'engagement_envelope'], subgroup='engagement',
         description="Maximum effective intercept / engagement range, in kilometers. The outer edge of the missile's engagement envelope against an assumed target profile. Use the document's effective range value here. Do NOT use slant range, ferry range, or maximum kinematic distance unless the document explicitly says those are the effective engagement range. Convert source units to km.",
         examples=[35.0, 400.0],
     )
     min_altitude_km: Optional[float] = profile_field(
-        sections=['performance'], subgroup='engagement',
+        sections=['performance', 'engagement_envelope'], subgroup='engagement',
         description='Minimum engagement altitude, in kilometers. Below this altitude the missile cannot acquire or intercept. Legacy SAMs (SA-2) have ~1 km minimum; modern systems reach sea-skimming altitudes (<0.05 km). Only populate when the document explicitly states a minimum altitude / floor; do not infer from generic system knowledge.',
         examples=[0.05, 1.0],
     )
     max_altitude_km: Optional[float] = profile_field(
-        sections=['performance'], subgroup='engagement',
+        sections=['performance', 'engagement_envelope'], subgroup='engagement',
         description="Maximum engagement altitude (ceiling), in kilometers. The top of the missile's engagement envelope. Classical high-altitude SAMs (SA-2 / S-75): ~25 km. Exo-atmospheric interceptors (SM-3, GBI): >100 km. If the source gives ceiling in feet or meters, convert to km.",
         examples=[18.0, 35.0, 180.0],
     )
     max_launch_angle_deg: Optional[float] = profile_field(
-        sections=['performance'], subgroup='engagement',
+        sections=['performance', 'engagement_envelope'], subgroup='engagement',
         description="Maximum launch angle off vertical / elevation, in degrees. For vertical-launch systems this may be fixed at 0° (true vertical) or slightly canted. For tilt-launchers (SA-2, SA-3) it's typically 50-80°. 90° means the launcher can fire horizontally.",
         examples=[60.0, 80.0],
     )
     # kinematics group — sections=['performance']
     average_speed_mps: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Average in-flight speed in meters per second (averaged over powered + coast phases). If source gives Mach, multiply by ~340 (sea-level Mach ≈ 340 m/s). If km/h, divide by 3.6.',
     )
     max_speed_mps: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Peak in-flight speed in meters per second (typically reached at end of boost phase). Same unit-conversion rules as average_speed_mps.',
     )
     max_flyout_time_sec: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Maximum total time of flight from launch to intercept or self-destruct, in seconds. Determined by fuel burn + coast dynamics + range. Typical long-range SAMs: 60-120 s.',
         examples=[60.0, 120.0],
     )
     flight_time_sec: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Typical / nominal flight time from launch to expected intercept, in seconds (for a median engagement profile). Shorter than max_flyout_time_sec, which is the worst-case.',
         examples=[30.0, 60.0],
     )
     coast_time_sec: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Duration of the unpowered (post-motor-burnout) coast phase, in seconds. The missile relies on residual kinetic energy + aerodynamic control. Longer-range missiles have more coast time; short-range MANPADS may have near-zero coast.',
         examples=[10.0, 45.0],
     )
     total_burn_time_sec: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description='Total powered-flight burn time across all propulsion stages (boost + sustain, plus ejector if applicable), in seconds. Excludes any coast phase. Typical long-range two-stage SAMs: 20-40 s total.',
         examples=[22.0, 35.0],
     )
     intra_salvo_time_sec: Optional[float] = profile_field(
-        sections=['performance'], subgroup='kinematics',
+        sections=['performance', 'engagement_envelope'], subgroup='kinematics',
         description="Time between successive missile launches in a salvo, in seconds. For multi-missile engagements (shoot-look-shoot or ripple-fire tactics). Note: the MDE checklist labels this 'Intra-Solvo Time' — source typo.",
         examples=[6.0, 30.0],
     )
     # guidance group — sections=['performance']
     guidance_type: Optional[str] = profile_field(
-        sections=['performance'], subgroup='guidance',
+        sections=['performance', 'engagement_envelope'], subgroup='guidance',
         description='Primary guidance method used to drive the missile to intercept. Enum values and meanings: COMMAND = ground station computes aim and uplinks guidance from an external control unit; BEAM_RIDING = missile rides the radar beam to target; SARH = semi-active radar homing (missile homes on target-illuminated RF energy; target illumination from a separate radar); ARH = active radar homing (missile carries its own seeker radar); IR = passive infrared homing; TVM = track-via-missile (missile relays target data back to ground, hybrid command + SARH); GPS_INS = inertial-navigation with GPS updates (usually for mid-course of a longer-range missile); DUAL_MODE = combines two modes (e.g. IR + radar). Many modern missiles combine phases: MID_COURSE + TERMINAL.',
     )
     # classification group — sections=['performance']
@@ -794,34 +849,42 @@ class MissileSystemEntity(BaseModel):
 
     # Identity adjuncts
     nomenclature: Optional[str] = identity_field(
+        sections=['identification'], subgroup='designators',
         description='Military designation or NATO reporting name.',
         examples=['MIM-104F'],
     )
     name: Optional[str] = identity_field(
+        sections=['identification'], subgroup='designators',
         description="Formal NAME field from the MDE checklist, distinct from the common ``system_name``. Often the full proper name (e.g. 'Patriot Advanced Capability 3 Missile Segment Enhancement'). Emit when the source provides a formal long-form name alongside the short system_name.",
         examples=['Patriot Advanced Capability 3 MSE', 'S-400 Triumf'],
     )
 
     # System metadata
     dieqp: Optional[str] = metadata_field(
+        sections=['identification'], subgroup='designators',
         description='Digital Intelligence Equipment Parameters (DIEQP) identifier — a cross-reference ID into the DIEQP database maintained by the MDE (Mission Data Engineering) community. Only appears in IC / MDE source documents. Emit verbatim — do not infer.',
     )
     asrd: Optional[str] = metadata_field(
+        sections=['identification'], subgroup='designators',
         description='ASRD identifier — a catalog code from the All-Source Reference Document, a classified IC catalog. Emit verbatim when explicitly stated; do not infer.',
     )
     system_status: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description='Lifecycle status of the missile system. Typical values: OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn from service), UPGRADED (modified variant superseding a base model), EXPORTED (sold to foreign operators only). Emit only when the document explicitly states the status; do not infer it from historical or descriptive text.',
         examples=['OPERATIONAL', 'RETIRED', 'DEVELOPMENTAL'],
     )
     responsible_agency: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description="Organization responsible for maintaining the MDE record for this missile system. Typically a 3-letter IC acronym (e.g. 'IWC' = Information Warfare Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI' = Office of Naval Intelligence, 'NGIC' = National Ground Intelligence Center, 'MSIC' = Missile and Space Intelligence Center).",
         examples=['IWC', 'NASIC', 'MSIC'],
     )
     review_cycle: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description="Scheduled cadence at which the MDE record for this missile is reviewed. Typical values: 'annual', 'biennial', '2-year', '3-year', or an explicit duration. Free-text; emit verbatim.",
         examples=['annual', 'biennial', '3-year'],
     )
     next_review_date: Optional[str] = metadata_field(
+        sections=['governance'], subgroup='lifecycle',
         description='Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD); otherwise emit the date string verbatim.',
         examples=['2026-06-30', 'June 2026'],
     )
@@ -831,6 +894,7 @@ class MissileSystemEntity(BaseModel):
         description="Platform on which this missile system is installed.",
         examples=["M903 Launching Station", "SA-20 TEL"],
         default=None,
+        json_schema_extra={"profile_sections": ["deployment"], "profile_subgroup": "deployment"},
     )
     platforms: List["PlatformEntity"] = edge(
         label="DEFENDS",

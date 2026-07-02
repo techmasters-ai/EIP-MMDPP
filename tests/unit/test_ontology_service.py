@@ -35,11 +35,31 @@ def test_get_live_ontology_profile_sections_derived_not_hardcoded():
 
     ontology = get_live_ontology()
     sections = ontology["profile_sections"]
-    assert "rf_parameters" in sections
-    assert "components" in sections
-    assert "performance" in sections
-    # deduped + sorted
-    assert sections == sorted(set(sections))
+    # New shape: each entry is {name, description}.
+    assert all(set(s.keys()) == {"name", "description"} for s in sections)
+    names = [s["name"] for s in sections]
+
+    # Original three field-derived sections still present.
+    assert "rf_parameters" in names
+    assert "components" in names
+    assert "performance" in names
+    # Four new field-derived sections.
+    for new_section in ("engagement_envelope", "governance", "identification", "deployment"):
+        assert new_section in names
+    # The dossier catch-all is advertised even though it is not a field tag.
+    assert "dossier" in names
+    assert len(names) == 8
+
+    # Field-derived names (everything except the appended dossier catch-all)
+    # remain deduped + sorted; dossier is appended last.
+    assert names[-1] == "dossier"
+    field_derived = names[:-1]
+    assert field_derived == sorted(set(field_derived))
+
+    # Descriptions are populated (non-empty) for every advertised section.
+    by_name = {s["name"]: s["description"] for s in sections}
+    assert by_name["dossier"]
+    assert "designators" in by_name["identification"].lower() or by_name["identification"]
 
 
 def test_get_live_ontology_version_matches_bundle():
@@ -83,8 +103,15 @@ def test_ontology_response_schema_validates_live_payload():
     assert all(et.name and et.label for et in model.entity_types)
     assert model.relationship_types
     assert all(rt.name for rt in model.relationship_types)
-    for section in ("rf_parameters", "components", "performance"):
-        assert section in model.profile_sections
+    section_names = {s.name for s in model.profile_sections}
+    for section in (
+        "rf_parameters", "components", "performance",
+        "engagement_envelope", "governance", "identification",
+        "deployment", "dossier",
+    ):
+        assert section in section_names
+    # Every advertised section carries a description string.
+    assert all(isinstance(s.description, str) for s in model.profile_sections)
 
 
 def _build_route_client():
@@ -127,5 +154,10 @@ def test_ontology_route_returns_live_payload():
     names = {entry["name"] for entry in data["entity_types"]}
     assert "RADAR_SYSTEM" in names
     assert "MISSILE_SYSTEM" in names
-    for section in ("rf_parameters", "components", "performance"):
-        assert section in data["profile_sections"]
+    section_names = {s["name"] for s in data["profile_sections"]}
+    for section in (
+        "rf_parameters", "components", "performance",
+        "engagement_envelope", "governance", "identification",
+        "deployment", "dossier",
+    ):
+        assert section in section_names
