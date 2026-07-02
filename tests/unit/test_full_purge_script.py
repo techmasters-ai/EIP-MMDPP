@@ -53,11 +53,7 @@ def test_dry_run_emits_every_truncate_target():
         "governance.patch_approvals",
         "governance.patch_events",
         "governance.patches",
-        "governance.query_profile_registries",
         "governance.trusted_data_submissions",
-        "ontology.entity_types",
-        "ontology.relationship_types",
-        "ontology.versions",
         "ingest.watch_logs",
     ]
     combined = result.stdout + result.stderr

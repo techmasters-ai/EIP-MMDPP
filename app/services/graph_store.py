@@ -488,6 +488,22 @@ class GraphStore(Protocol):
         """
         ...
 
+    async def get_entity_source_document_ids(
+        self,
+        entity_rids: list[str],
+    ) -> dict[str, set[str]]:
+        """Return, per entity, the COMPLETE distinct set of ``document_id``s
+        of its EXTRACTED_FROM chunks.
+
+        Unlike ``get_entity_evidence_chunks`` (which returns a LIMIT-ed chunk
+        sample), this returns the full document membership for each entity —
+        the correct basis for a Project-Source in-source test, which must not
+        depend on an arbitrary first-N chunk window. Batched: one query for
+        the whole candidate set. Keys are the input ids; entities with no
+        EXTRACTED_FROM chunk map to an empty set.
+        """
+        ...
+
     async def graph_vector_search(
         self,
         root_id: str,

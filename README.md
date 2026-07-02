@@ -142,7 +142,6 @@ All service lifecycle, database, worker, and test operations are available throu
 
 # Database
 ./manage.sh --migrate            # Run alembic upgrade head
-./manage.sh --seed               # Run ontology seeder
 
 # Testing (delegates to scripts/run_tests.sh)
 ./manage.sh --test               # Full suite
@@ -1860,8 +1859,6 @@ tools/
 └── extraction_coverage/
     ├── rules.py                   # Rule implementations
     └── manifest_consistency.py    # Manifest self-consistency sub-checks
-scripts/
-└── seed_ontology.py              # Seed ontology types from YAML
 frontend/
 ├── src/components/       # React components
 │   ├── QueryPage.tsx     #   Multi-strategy search (4 modes, modality sub-filter, GraphRAG exploration)

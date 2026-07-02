@@ -335,7 +335,6 @@ services:
     command: >
       sh -c "
         alembic upgrade head &&
-        python scripts/seed_ontology.py &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-keep-alive 300
       "
     extra_hosts:

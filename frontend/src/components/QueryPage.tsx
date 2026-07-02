@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react";
 import {
-  getActiveQueryProfiles,
+  listQueryProfiles,
   unifiedQuery,
   getGraphNeighborhood,
   getRetrievalSettings,
   searchQueryProfileDossier,
   searchQueryProfileSection,
-  type QueryProfileDefinition,
+  type QueryProfileResponse,
   type QueryProfileSectionResponse,
   type QueryProfileDossierResponse,
   type QueryStrategy,
@@ -78,15 +78,15 @@ function isGraphProfileMode(mode: ModePreset): mode is GraphProfileModePreset {
   return mode.kind === "graph_profile";
 }
 
-function toGraphProfileMode(profile: QueryProfileDefinition): GraphProfileModePreset {
+function toGraphProfileMode(profile: QueryProfileResponse): GraphProfileModePreset {
   return {
     kind: "graph_profile",
-    key: `profile:${profile.id}`,
-    profileId: profile.id,
+    key: `profile:${profile.profile_key}`,
+    profileId: profile.profile_key,
     profileKind: profile.kind,
     label: profile.label,
-    description: profile.description || "Deterministic graph traversal from the active query profile registry",
-    placeholder: profile.placeholder_query,
+    description: profile.description || "Deterministic ontology-driven exact graph search",
+    placeholder: profile.definition?.placeholder_query ?? null,
   };
 }
 
@@ -763,7 +763,6 @@ export function QueryPage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [profileModes, setProfileModes] = useState<GraphProfileModePreset[]>([]);
-  const [activeRegistryName, setActiveRegistryName] = useState<string | null>(null);
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
   const [rerankerTopN, setRerankerTopN] = useState(20);
@@ -788,16 +787,11 @@ export function QueryPage() {
   }, []);
 
   useEffect(() => {
-    getActiveQueryProfiles()
-      .then((payload) => {
-        setActiveRegistryName(
-          payload.registry?.name
-            ?? (payload.exposed_profiles.length > 0 ? "Current ontology template" : null),
-        );
-        setProfileModes(payload.exposed_profiles.map(toGraphProfileMode));
+    listQueryProfiles(true)
+      .then((profiles) => {
+        setProfileModes(profiles.map(toGraphProfileMode));
       })
       .catch(() => {
-        setActiveRegistryName(null);
         setProfileModes([]);
       });
   }, []);
@@ -895,7 +889,6 @@ export function QueryPage() {
             mapGraphProfileItemToResult(item, {
               profile_id: res.profile_id,
               profile_label: res.profile_label,
-              registry_id: res.registry_id,
               resolved_root: res.resolved_root,
             }),
           );
@@ -949,7 +942,7 @@ export function QueryPage() {
                 ))}
               </optgroup>
               {profileModes.length > 0 && (
-                <optgroup label={activeRegistryName ? `Query Profiles (${activeRegistryName})` : "Query Profiles"}>
+                <optgroup label="Query Profiles">
                   {profileModes.map((m, i) => (
                     <option key={m.key} value={BASE_MODES.length + i}>
                       {m.label} — {m.description}
@@ -959,9 +952,9 @@ export function QueryPage() {
               )}
             </select>
             <div className="text-xs text-muted" style={{ marginBottom: "1rem" }}>
-              {activeRegistryName
-                ? `Active query profile registry: ${activeRegistryName}`
-                : "No active query profile registry. Configure one to expose ontology-specific exact graph query modes."}
+              {profileModes.length > 0
+                ? "Query Profiles are ontology-driven exact graph search modes. Manage them under the Graph → Ontology and Query Profiles tab."
+                : "No query profiles configured. Add them under the Graph → Ontology and Query Profiles tab."}
             </div>
 
             {/* Modality sub-filter for Multi-Modal */}

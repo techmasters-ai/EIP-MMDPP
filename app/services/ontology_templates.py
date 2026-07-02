@@ -3,12 +3,10 @@
 Extraction schemas, runtime Pydantic templates, and prompt construction
 have moved to ontology_bundles/<bundle_key>/extraction_schemas/ and the
 docling-graph sidecar service. This module is now a thin loader for
-ontology.yaml content, plus a small registry-lookup helper for audit
-paths.
+ontology.yaml content.
 
 Public API (spec §2 + §7.3):
 - load_ontology(*, bundle_key=None, path=None) — bundle/path loader
-- load_registry_ontology(version_id) — version-pinned registry lookup
 - load_validation_matrix(*, bundle_key=None, path=None) — derived helper
 - build_entity_type_names / build_relationship_type_names — derived helpers
 - invalidate_ontology_cache() — clear the per-bundle cache
@@ -142,9 +140,6 @@ def load_ontology(
        bundles exist today; the path is retained so future bundles
        can ship as YAML until they are separately migrated.
 
-    This function never consults the registry/version-pinning store.
-    For version-pinned loads, call ``load_registry_ontology(version_id)``.
-
     Raises UnknownBundleError when bundle_key does not resolve.
     """
     if path is not None:
@@ -157,36 +152,6 @@ def load_ontology(
         return build_ontology_dict()
     ontology_ref, _ = _ensure_bundle_cached(resolved_key)
     return deepcopy(ontology_ref)
-
-
-def load_registry_ontology(version_id: str) -> dict[str, Any]:
-    """Load a version-pinned ontology snapshot from the registry.
-
-    Consults app.models.query_profiles.QueryProfileRegistry, looking up
-    by id (the version_id). Used by audit/historical-reproduction paths
-    and by query-profile-aware readers that need a specific registry row.
-
-    Raises LookupError if no row matches.
-    """
-    from sqlalchemy import select
-    from app.db.session import get_sync_session
-    from app.models.query_profiles import QueryProfileRegistry
-
-    with get_sync_session() as session:
-        result = session.execute(
-            select(QueryProfileRegistry)
-            .where(QueryProfileRegistry.id == version_id)
-            .limit(1)
-        )
-        registry = result.scalar_one_or_none()
-        if registry is None or not isinstance(registry.ontology_definition, dict):
-            raise LookupError(
-                f"No registry ontology found for version_id={version_id!r}"
-            )
-        ontology = deepcopy(registry.ontology_definition)
-        if registry.ontology_version and not ontology.get("version"):
-            ontology["version"] = registry.ontology_version
-        return ontology
 
 
 def get_ontology_cache_signature(bundle_key: str | None = None) -> str:
