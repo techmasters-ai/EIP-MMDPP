@@ -10,8 +10,9 @@ source. ``source_id = None`` means Global (unfiltered).
 
 from __future__ import annotations
 
+import types
 import uuid
-from typing import Any
+from typing import Any, Union, get_args, get_origin
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +62,7 @@ def _project_field_groups(
     canonical_cls: type,
     instance_data: dict,
     profile_section: str,
+    edge_values: dict[str, Any] | None = None,
 ):
     """Walk canonical_cls.model_fields, pick fields whose
     json_schema_extra['profile_sections'] contains *profile_section*,
@@ -73,6 +75,15 @@ def _project_field_groups(
     that carries ANY profile_sections tag (i.e. every projectable field),
     still grouped by its ``profile_subgroup``. This yields the full
     cross-section entity dossier in one projection.
+
+    Edge-typed fields (those whose ``json_schema_extra`` carries an
+    ``edge_label``) are NOT vertex scalar properties, so they never appear
+    in *instance_data*. Their value is supplied instead via *edge_values*
+    (field_name -> projected target name(s)), pre-computed by
+    :func:`_project_edge_fields` which traverses the edge from the resolved
+    entity. When *edge_values* is absent (the default — e.g. legacy/unit
+    callers), edge-typed fields resolve to None and are skipped exactly as
+    before, so the scalar-only projection is byte-for-byte unchanged.
     """
     from app.schemas.query_profiles import (
         QueryProfileFieldEntry, QueryProfileFieldEvidence, QueryProfileFieldGroup,
@@ -100,7 +111,19 @@ def _project_field_groups(
                 continue
         elif profile_section not in sections:
             continue
-        value = instance_data.get(fname)
+        # Edge-typed fields are not vertex scalars. When edge projection has
+        # run (*edge_values* is a dict, the real service path) the traversed
+        # target name(s) are authoritative and an absent field means the edge
+        # yielded nothing -> skip (no empty rows). When *edge_values* is None
+        # (legacy/direct callers that never traversed) fall back to whatever
+        # the caller placed in *instance_data* for that field.
+        if extra.get("edge_label"):
+            if edge_values is None:
+                value = instance_data.get(fname)
+            else:
+                value = edge_values.get(fname)
+        else:
+            value = instance_data.get(fname)
         if value is None:
             continue
         subgroup = extra.get("profile_subgroup") or ""
@@ -135,6 +158,138 @@ def _project_field_groups(
             fields=entries,
         ))
     return out
+
+
+def _edge_field_is_list(annotation: Any) -> bool:
+    """True when *annotation* is (or wraps, through Optional/Union) a list.
+
+    Determines the cardinality of an edge-typed field so its projected value
+    is represented like a list-valued field (``list[str]``) vs a single-valued
+    field (a scalar/joined string). Generalized — no per-field literals.
+    """
+    origin = get_origin(annotation)
+    if origin is list:
+        return True
+    union_types: tuple[Any, ...] = (Union,)
+    union_type = getattr(types, "UnionType", None)
+    if union_type is not None:
+        union_types = (Union, union_type)
+    if origin in union_types:
+        return any(_edge_field_is_list(arg) for arg in get_args(annotation))
+    return False
+
+
+def _edge_field_specs(
+    canonical_cls: type,
+    requested_sections: list[str],
+) -> list[tuple[str, str, str, bool]]:
+    """Return ``(field_name, edge_label, direction, is_list)`` for every
+    edge-typed profile field of *canonical_cls* that is in scope for
+    *requested_sections*.
+
+    A field is edge-typed when its ``json_schema_extra`` carries an
+    ``edge_label``; it is projectable only if it ALSO carries a
+    ``profile_sections`` tag. Section scoping mirrors
+    :func:`_project_field_groups` exactly — the reserved ``"dossier"``
+    catch-all selects every projectable edge field, otherwise the field's
+    sections must intersect *requested_sections*. This keeps us from
+    traversing (and paying a graph round-trip for) edge fields that could
+    never be emitted for the requested sections. Direction defaults to
+    ``"out"`` and may be overridden per field via
+    ``json_schema_extra['edge_direction']``.
+    """
+    want_all = "dossier" in requested_sections
+    wanted = set(requested_sections)
+    specs: list[tuple[str, str, str, bool]] = []
+    for fname, finfo in canonical_cls.model_fields.items():
+        extra = finfo.json_schema_extra or {}
+        if not isinstance(extra, dict):
+            continue
+        edge_label = extra.get("edge_label")
+        if not edge_label:
+            continue
+        sections = extra.get("profile_sections") or []
+        if not sections:
+            continue
+        if not want_all and not (set(sections) & wanted):
+            continue
+        direction = extra.get("edge_direction") or "out"
+        specs.append(
+            (fname, str(edge_label), str(direction), _edge_field_is_list(finfo.annotation))
+        )
+    return specs
+
+
+async def _project_edge_fields(
+    canonical_cls: type,
+    entity_rid: str,
+    graph_store: Any,
+    requested_sections: list[str],
+    *,
+    db: AsyncSession | None = None,
+    source_id: uuid.UUID | None = None,
+    doc_id_cache: dict[str, set[str]] | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Project edge-typed profile fields by traversing each field's edge
+    from *entity_rid* and collecting the linked target entities' names.
+
+    Traverses the field's edge via ``graph_store.get_edge_neighbors`` — a
+    native single-hop directed ArcadeDB MATCH over the field's ``edge_label``
+    in the field's direction. (The section-kind ``get_directed_traversal`` is
+    NOT reused here: its variable-depth ``while:`` clause mis-binds to the root
+    for a single hop on this ArcadeDB build, so it cannot fetch the edge's
+    target.) No raw SQL is issued here.
+
+    When *source_id* is set, the traversed targets are filtered to that source
+    the same way root/associated candidates are (via
+    :func:`_filter_candidates_in_source`) so a scoped ``deployment``/dossier
+    never leaks targets from other sources. Global (``source_id=None``) skips
+    the filter entirely.
+
+    Returns ``{field_name: value}`` where *value* is a ``list[str]`` for
+    list-cardinality fields and a comma-joined string for single-cardinality
+    fields. Fields whose traversal yields no in-scope target are omitted, so
+    :func:`_project_field_groups` skips them exactly like a None scalar.
+    """
+    values: dict[str, Any] = {}
+    if not entity_rid:
+        return values
+    for fname, edge_label, direction, is_list in _edge_field_specs(
+        canonical_cls, requested_sections
+    ):
+        neighbors = await graph_store.get_edge_neighbors(
+            entity_rid, edge_label, direction=direction, limit=limit,
+        )
+        # Defensively exclude the source entity itself. get_edge_neighbors
+        # already excludes it in SQL, but keep the guard so no backend/quirk can
+        # let an entity project its OWN name as the edge value.
+        neighbors = [
+            n for n in (neighbors or [])
+            if _entity_node_id(n) != entity_rid
+        ]
+        if source_id is not None and db is not None and neighbors:
+            neighbors = await _filter_candidates_in_source(
+                neighbors, graph_store, db, source_id, doc_id_cache=doc_id_cache,
+            )
+
+        names: list[str] = []
+        seen: set[str] = set()
+        for neighbor in neighbors:
+            if isinstance(neighbor, dict):
+                raw_name = neighbor.get("name")
+            else:
+                raw_name = getattr(neighbor, "name", None)
+            name = (raw_name or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+
+        if not names:
+            continue
+        names.sort(key=str.casefold)
+        values[fname] = names if is_list else ", ".join(names)
+    return values
 
 
 class QueryProfileNotFoundError(LookupError):
@@ -695,6 +850,10 @@ async def _fetch_section_items(
     resolved: GraphEntityResult,
     request: QueryProfileSearchRequest,
     profile: Any,
+    *,
+    db: AsyncSession | None = None,
+    source_id: uuid.UUID | None = None,
+    doc_id_cache: dict[str, set[str]] | None = None,
 ):
     """Fetch section items.
 
@@ -704,7 +863,11 @@ async def _fetch_section_items(
 
     For section_properties profiles, resolves the root vertex's full property
     dict via get_entity_by_rid and projects it through _project_field_groups
-    for each requested profile_section (spec §4.4).
+    for each requested profile_section (spec §4.4). Edge-typed profile fields
+    (e.g. ``deployment.platform`` = INSTALLED_ON) are not vertex scalars, so
+    they are projected separately by traversing their edge from the resolved
+    entity (:func:`_project_edge_fields`) and merged in. ``db`` + ``source_id``
+    (both optional) enable the in-source filter for those traversed targets.
 
     For legacy section profiles, compiles the traversal steps into a native
     ArcadeDB MATCH pattern and returns matching neighbor entities.
@@ -714,9 +877,19 @@ async def _fetch_section_items(
             return []
         instance_data = await graph_store.get_entity_by_rid(resolved.node_id)
         canonical = _canonical_class_for(resolved.entity_type)
+        sections = _p_profile_sections(profile)
+        edge_values = await _project_edge_fields(
+            canonical, resolved.node_id, graph_store, sections,
+            db=db, source_id=source_id, doc_id_cache=doc_id_cache,
+            limit=request.top_k,
+        )
         groups: list = []
-        for section in _p_profile_sections(profile):
-            groups.extend(_project_field_groups(canonical, instance_data, section))
+        for section in sections:
+            groups.extend(
+                _project_field_groups(
+                    canonical, instance_data, section, edge_values=edge_values
+                )
+            )
         return groups
 
     if not resolved.node_id:
@@ -929,7 +1102,10 @@ async def execute_section_search(
     resolved = await resolve_root_entity(
         graph_store, profile, request, db=db, source_id=source_id
     )
-    raw = await _fetch_section_items(graph_store, resolved, request, profile)
+    raw = await _fetch_section_items(
+        graph_store, resolved, request, profile,
+        db=db, source_id=source_id, doc_id_cache=doc_id_cache,
+    )
 
     if kind == "section_properties":
         field_groups = raw  # list[QueryProfileFieldGroup]
@@ -1022,7 +1198,10 @@ async def execute_dossier_search(
             continue
         if _p_kind(section_profile) not in ("section", "section_properties"):
             continue
-        raw = await _fetch_section_items(graph_store, resolved, request, section_profile)
+        raw = await _fetch_section_items(
+            graph_store, resolved, request, section_profile,
+            db=db, source_id=source_id, doc_id_cache=doc_id_cache,
+        )
 
         if _p_kind(section_profile) == "section_properties":
             field_groups = raw  # list[QueryProfileFieldGroup]

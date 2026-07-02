@@ -460,6 +460,24 @@ class GraphStore(Protocol):
         """
         ...
 
+    async def get_edge_neighbors(
+        self,
+        node_id: str,
+        edge_label: str,
+        direction: str = "out",
+        limit: int = 25,
+    ) -> list[GraphEntityResult]:
+        """Return entities linked to *node_id* by a single *edge_label* hop in
+        *direction* (``"out"``/``"in"``/``"both"``).
+
+        A plain native 1-hop directed MATCH over one edge label — no
+        variable-depth ``while:`` clause. Used to project edge-typed
+        query-profile fields (e.g. ``INSTALLED_ON`` → platform) by resolving
+        the target entities' names. The source vertex is excluded from the
+        result.
+        """
+        ...
+
     async def get_structural_neighbors(
         self,
         chunk_id: str,
